@@ -130,12 +130,7 @@ pub struct LightingReport {
 }
 
 pub fn clean(img: &RgbaImage, params: &CleanParams) -> Cleaned {
-    let outline = detect_outline(img, params);
-    let straightened = outline
-        .as_ref()
-        .ok()
-        .and_then(|quad| straighten(img, quad, params.max_output_side));
-    let mut image = straightened.unwrap_or_else(|| scaled_copy(img, params.max_output_side));
+    let (mut image, outline) = crop_to_page(img, params);
     let lighting = fix_lighting(&mut image, params);
     Cleaned {
         report: CleanReport {
@@ -146,6 +141,19 @@ pub fn clean(img: &RgbaImage, params: &CleanParams) -> Cleaned {
         },
         image,
     }
+}
+
+/// The page straightened and cropped to its detected outline, no longer than
+/// `params.max_output_side`, with the lighting left alone. Without an outline, the whole photo
+/// scaled down.
+pub fn crop_to_page(img: &RgbaImage, params: &CleanParams) -> (RgbaImage, Result<Quad, NoOutline>) {
+    let outline = detect_outline(img, params);
+    let straightened = outline
+        .as_ref()
+        .ok()
+        .and_then(|quad| straighten(img, quad, params.max_output_side));
+    let image = straightened.unwrap_or_else(|| scaled_copy(img, params.max_output_side));
+    (image, outline)
 }
 
 /// Finds the page (or open notebook) as the largest region of paper, simplified to four corners.
@@ -625,6 +633,19 @@ mod tests {
         assert_eq!(cleaned.report.output_size, (w, h));
         let [r, g, b] = cleaned.report.lighting.paper_rgb;
         assert!(r > g && g > b, "paper {:?}", cleaned.report.lighting);
+    }
+
+    #[test]
+    fn crop_matches_clean_without_relighting() {
+        let photo = photo(900, 900, QUAD);
+        let params = CleanParams::default();
+        let (cropped, outline) = crop_to_page(&photo, &params);
+        let cleaned = clean(&photo, &params);
+        assert_eq!(outline, cleaned.report.outline);
+        assert_eq!(cropped.dimensions(), cleaned.image.dimensions());
+        // The dim left side stays dim; cleaning would make it white.
+        assert!(mean_luma(&cropped, 0.05, 0.3) < 200);
+        assert!(mean_luma(&cleaned.image, 0.05, 0.3) > 240);
     }
 
     #[test]

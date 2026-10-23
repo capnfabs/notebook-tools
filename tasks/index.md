@@ -5,7 +5,7 @@ In priority order.
 - [x] [Bootstrap the UI](bootstrap-ui.md)
 - [x] [Image viewer](image-viewer.md)
 - [x] [Clean images](clean-images.md)
-- [ ] [Claude OCR](claude-ocr.md)
+- [x] [Claude OCR](claude-ocr.md)
 - [ ] [Viewer actions](viewer-actions.md)
 - [ ] [Reorder pages](reorder-pages.md)
 - [ ] [HEIC decoding](heic-decoding.md)

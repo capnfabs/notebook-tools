@@ -6,8 +6,22 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "notebook-tools",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(NotebookApp::default()))),
+        Box::new(|_cc| Ok(Box::new(NotebookApp::with_transcriber(transcriber())))),
     )
+}
+
+/// Transcribes with Claude when credentials are in the environment.
+#[cfg(not(target_arch = "wasm32"))]
+fn transcriber() -> Option<notebook_app::Transcriber> {
+    use notebook_core::ocr::{Credentials, transcribe_page};
+
+    let Some(credentials) = Credentials::from_env() else {
+        log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
+        return None;
+    };
+    Some(std::sync::Arc::new(move |bytes, params| {
+        transcribe_page(&credentials, bytes, params).map_err(|e| e.to_string())
+    }))
 }
 
 #[cfg(target_arch = "wasm32")]

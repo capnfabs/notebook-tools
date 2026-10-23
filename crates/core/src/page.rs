@@ -5,6 +5,8 @@ use std::io::Cursor;
 
 use image::{DynamicImage, ImageDecoder as _, ImageReader, RgbaImage, imageops};
 
+use crate::ocr::Transcript;
+
 /// Longest side of a [`Page::thumbnail`], in pixels. Big enough for the viewer's thumbnails on a
 /// 2x display.
 pub const THUMBNAIL_SIDE_PX: u32 = 256;
@@ -17,6 +19,8 @@ pub struct Page {
     pub name: String,
     pub bytes: Vec<u8>,
     pub thumbnail: RgbaImage,
+    /// Claude's transcription, once there is one.
+    pub transcript: Option<Transcript>,
 }
 
 impl Page {
@@ -26,6 +30,7 @@ impl Page {
             name,
             bytes,
             thumbnail,
+            transcript: None,
         })
     }
 }
@@ -99,6 +104,10 @@ impl Pages {
 
     pub fn get(&self, index: usize) -> Option<&Page> {
         self.0.get(index)
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Page> {
+        self.0.get_mut(index)
     }
 
     pub fn len(&self) -> usize {

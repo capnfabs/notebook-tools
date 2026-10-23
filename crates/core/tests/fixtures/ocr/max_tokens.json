@@ -1,0 +1,27 @@
+{
+  "id": "msg_01Fixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-5-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Eq0Bfixture"
+    },
+    {
+      "type": "text",
+      "text": "{\"lines\": [{\"text_md\": \"# Thurs 23 Oct\", \"bbox\": [120, 80, 610, 150]}, {\"text_md\": \"- ring the plumber re: ~~tap~~ showe"
+    }
+  ],
+  "stop_reason": "max_tokens",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 3412,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 2210,
+    "service_tier": "standard"
+  }
+}

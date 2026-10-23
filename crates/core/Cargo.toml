@@ -5,10 +5,18 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "0.22"
 image.workspace = true
 imageproc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 # Multithreaded on native; wasm has no threads, so rayon must never reach the web build.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 imageproc = { workspace = true, features = ["rayon"] }
 rayon.workspace = true
+# Only native sends requests; Transcribe is disabled on the web.
+reqwest = { version = "0.13", features = ["blocking"] }
+
+[dev-dependencies]
+insta = { version = "1", features = ["json"] }

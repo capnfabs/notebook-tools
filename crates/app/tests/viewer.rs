@@ -1,11 +1,14 @@
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::NotebookApp;
+use notebook_app::{NotebookApp, Transcriber};
+use notebook_core::ocr::{Transcript, parse_response};
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -52,6 +55,33 @@ fn harness() -> Harness<'static, NotebookApp> {
         |ui, app: &mut NotebookApp| app.ui(ui),
         NotebookApp::default(),
     )
+}
+
+fn harness_with(transcriber: Transcriber) -> Harness<'static, NotebookApp> {
+    Harness::new_ui_state(
+        |ui, app: &mut NotebookApp| app.ui(ui),
+        NotebookApp::with_transcriber(Some(transcriber)),
+    )
+}
+
+/// The recorded response from core's OCR tests.
+fn recorded_transcript() -> Transcript {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/ocr/success.json");
+    parse_response(200, &std::fs::read(path).unwrap(), (1200, 900)).unwrap()
+}
+
+/// Steps frames until a label containing `text` appears. Transcription finishes on another
+/// thread, and the spinner keeps requesting repaints, so `run` won't do.
+fn step_until(harness: &mut Harness<'_, NotebookApp>, text: &str) {
+    for _ in 0..500 {
+        harness.step();
+        if harness.query_by_label_contains(text).is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("{text:?} never appeared");
 }
 
 fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)]) {
@@ -182,6 +212,7 @@ fn debug_overlay_shows_what_cleanup_found() {
     harness.get_by_label_contains("No page outline");
 }
 
+/// Transcribed is disabled because the harness has no transcriber (no credentials).
 #[test]
 fn unimplemented_controls_are_disabled() {
     let mut harness = harness();
@@ -195,4 +226,57 @@ fn unimplemented_controls_are_disabled() {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
+}
+
+#[test]
+fn transcribed_view_transcribes_once() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let mut harness = harness_with(Arc::new(move |_, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(recorded_transcript())
+    }));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    harness.get_by_label("Transcribed").click();
+    step_until(&mut harness, "# Thurs 23 Oct");
+    harness.get_by_label_contains("~~tap~~ shower");
+
+    harness.get_by_label("Original").click();
+    harness.run();
+    harness.get_by_label("Current: a.png");
+    harness.get_by_label("Transcribed").click();
+    harness.run();
+    harness.get_by_label_contains("# Thurs 23 Oct");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn failed_transcription_can_be_retried() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let mut harness = harness_with(Arc::new(move |_, _| {
+        match counter.fetch_add(1, Ordering::SeqCst) {
+            0 => Err("Claude API error 529 (overloaded_error): Overloaded".into()),
+            _ => Ok(recorded_transcript()),
+        }
+    }));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    harness.get_by_label("Transcribed").click();
+    step_until(
+        &mut harness,
+        "Couldn't transcribe a.png: Claude API error 529",
+    );
+    // A failure isn't retried by itself.
+    harness.run();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    harness.get_by_label("Retry").click();
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert!(
+        harness
+            .query_by_label_contains("Couldn't transcribe")
+            .is_none()
+    );
 }

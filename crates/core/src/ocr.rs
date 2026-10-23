@@ -1,0 +1,616 @@
+//! Transcribes a page with Claude through the Messages API. Building the request and parsing the
+//! response are plain functions, testable without the network; only [`send`] and
+//! [`transcribe_page`] make requests, and only natively.
+//!
+//! Response shape: `decisions/2026-10-23-ocr-response-shape.md`.
+
+use std::fmt;
+use std::ops::Range;
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use image::buffer::ConvertBuffer as _;
+use image::codecs::jpeg::JpegEncoder;
+use image::{ExtendedColorType, ImageEncoder as _, RgbImage, RgbaImage};
+use serde::{Deserialize, Deserializer};
+use serde_json::{Value, json};
+
+pub const MODEL: &str = "claude-opus-5-5";
+pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const API_VERSION: &str = "2026-10-21";
+/// Lets `fallbacks: "default"` re-run a refused request on another model.
+const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+/// Needed for OAuth access tokens sent as `Authorization: Bearer`.
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+/// Room for thinking plus a dense page. Non-streaming requests much bigger than this risk timeouts.
+const MAX_TOKENS: u32 = 16_000;
+/// The API's limit on one image, measured on the base64 text.
+pub const MAX_IMAGE_BASE64_BYTES: usize = 5 * 1024 * 1024;
+
+pub const PROMPT: &str = "\
+Transcribe this photo of a handwritten notebook page.
+- Write exactly what's on the page: keep the author's spelling, abbreviations and line breaks. Don't correct or complete anything.
+- One `lines` entry per handwritten line, top to bottom, with its markdown and box. Use markdown only for structure the page shows (headings, bullets, numbered lists, checkboxes). An empty `text_md` with a null box marks a paragraph break.
+- Crossed-out text: ~~strikethrough~~. Drawings: `[drawing: short description]`.
+- Add an `uncertain` entry for each word or phrase you're unsure of: line index (0-based), the text exactly as it appears in that line, its box, and 1–3 other likely readings.
+- Boxes are [x0, y0, x1, y1] in pixels of this image.";
+
+/// How many lines either side of its claimed line an uncertain word is looked for in.
+pub const LINE_SEARCH_RADIUS: usize = 2;
+
+/// `[x0, y0, x1, y1]` in pixels of the image sent.
+pub type Bbox = [f32; 4];
+
+/// A page's transcription, as Claude returned it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Transcript {
+    pub lines: Vec<Line>,
+    pub uncertain: Vec<Uncertain>,
+    /// Size of the image sent, which the boxes are measured in.
+    pub image_size: (u32, u32),
+    /// The model that answered; differs from [`MODEL`] if a fallback ran.
+    pub model: String,
+    pub usage: Usage,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Line {
+    pub text_md: String,
+    /// `None` for paragraph breaks, or if Claude's box wasn't four numbers.
+    #[serde(deserialize_with = "lenient_bbox")]
+    pub bbox: Option<Bbox>,
+}
+
+/// A word or phrase Claude wasn't sure of.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Uncertain {
+    /// Index into [`Transcript::lines`]. Claude sometimes miscounts this by one or so.
+    pub line: usize,
+    /// As it appears in that line's `text_md`.
+    pub text: String,
+    #[serde(deserialize_with = "lenient_bbox")]
+    pub bbox: Option<Bbox>,
+    pub alternatives: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl Transcript {
+    /// The page as markdown: one line per handwritten line.
+    pub fn markdown(&self) -> String {
+        let lines: Vec<&str> = self.lines.iter().map(|l| l.text_md.as_str()).collect();
+        lines.join("\n")
+    }
+
+    /// Where each [`Uncertain`] is in [`Self::markdown`], as a byte range, in the same order.
+    /// Its text is looked for in its line, then in the nearest lines within
+    /// [`LINE_SEARCH_RADIUS`]; the first match in a line wins. `None` if it isn't found.
+    pub fn uncertain_spans(&self) -> Vec<Option<Range<usize>>> {
+        let mut line_starts = Vec::with_capacity(self.lines.len());
+        let mut offset = 0;
+        for line in &self.lines {
+            line_starts.push(offset);
+            offset += line.text_md.len() + 1;
+        }
+        self.uncertain
+            .iter()
+            .map(|u| {
+                if u.text.is_empty() {
+                    return None;
+                }
+                let nearest_lines = (0..=LINE_SEARCH_RADIUS)
+                    .flat_map(|d| [u.line.checked_sub(d), u.line.checked_add(d)])
+                    .flatten();
+                let start = nearest_lines.into_iter().find_map(|i| {
+                    let at = self.lines.get(i)?.text_md.find(&u.text)?;
+                    Some(line_starts[i] + at)
+                })?;
+                Some(start..start + u.text.len())
+            })
+            .collect()
+    }
+}
+
+/// A box that isn't exactly four numbers becomes `None` rather than failing the whole page.
+fn lenient_bbox<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Bbox>, D::Error> {
+    let bbox = Option::<Vec<f32>>::deserialize(d)?;
+    Ok(bbox.and_then(|b| b.try_into().ok()))
+}
+
+#[derive(Debug, PartialEq)]
+pub enum OcrError {
+    /// The page's image couldn't be decoded.
+    Decode(String),
+    /// The API couldn't be reached.
+    Network(String),
+    /// The API answered with an error status.
+    Api {
+        status: u16,
+        kind: String,
+        message: String,
+    },
+    /// Claude (and any fallback) declined.
+    Refusal {
+        category: Option<String>,
+        explanation: Option<String>,
+    },
+    /// The answer was cut off at [`MAX_TOKENS`].
+    MaxTokens,
+    /// The answer wasn't in the expected shape.
+    Parse(String),
+}
+
+impl fmt::Display for OcrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decode(err) => write!(f, "couldn't decode the page: {err}"),
+            Self::Network(err) => write!(f, "couldn't reach Claude: {err}"),
+            Self::Api {
+                status,
+                kind,
+                message,
+            } => write!(f, "Claude API error {status} ({kind}): {message}"),
+            Self::Refusal {
+                category,
+                explanation,
+            } => {
+                write!(f, "Claude declined to transcribe this page")?;
+                if let Some(category) = category {
+                    write!(f, " ({category})")?;
+                }
+                if let Some(explanation) = explanation {
+                    write!(f, ": {explanation}")?;
+                }
+                Ok(())
+            }
+            Self::MaxTokens => write!(f, "the transcription was cut off (too long)"),
+            Self::Parse(err) => write!(f, "unexpected response from Claude: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for OcrError {}
+
+/// How to authenticate with the API.
+#[derive(Clone, PartialEq)]
+pub enum Credentials {
+    ApiKey(String),
+    /// An OAuth access token, e.g. from `ant auth print-credentials --access-token`.
+    OAuth(String),
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ApiKey(_) => f.write_str("ApiKey(..)"),
+            Self::OAuth(_) => f.write_str("OAuth(..)"),
+        }
+    }
+}
+
+impl Credentials {
+    /// `ANTHROPIC_API_KEY`, else `ANTHROPIC_AUTH_TOKEN`.
+    pub fn from_env() -> Option<Self> {
+        Self::from_vars(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::from_env`] with the variables looked up by `get`. Blank values count as unset.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let get = |name| {
+            get(name)
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+        };
+        get("ANTHROPIC_API_KEY")
+            .map(Self::ApiKey)
+            .or_else(|| get("ANTHROPIC_AUTH_TOKEN").map(Self::OAuth))
+    }
+}
+
+/// Request headers besides `content-type`.
+pub fn headers(credentials: &Credentials) -> Vec<(&'static str, String)> {
+    let mut headers = vec![("anthropic-version", API_VERSION.to_owned())];
+    match credentials {
+        Credentials::ApiKey(key) => {
+            headers.push(("x-api-key", key.clone()));
+            headers.push(("anthropic-beta", FALLBACK_BETA.to_owned()));
+        }
+        Credentials::OAuth(token) => {
+            headers.push(("authorization", format!("Bearer {token}")));
+            headers.push(("anthropic-beta", format!("{FALLBACK_BETA},{OAUTH_BETA}")));
+        }
+    }
+    headers
+}
+
+/// `img` as a JPEG small enough for the API.
+pub fn encode_jpeg(img: &RgbaImage) -> Vec<u8> {
+    encode_jpeg_within(img, MAX_IMAGE_BASE64_BYTES)
+}
+
+/// `img` as a JPEG whose base64 is at most `limit` bytes, lowering quality as needed. At the lowest
+/// quality tried it's returned even if still too big, and the API says so.
+fn encode_jpeg_within(img: &RgbaImage, limit: usize) -> Vec<u8> {
+    let rgb: RgbImage = img.convert();
+    let mut quality = 85;
+    loop {
+        let mut bytes = Vec::new();
+        JpegEncoder::new_with_quality(&mut bytes, quality)
+            .write_image(
+                rgb.as_raw(),
+                rgb.width(),
+                rgb.height(),
+                ExtendedColorType::Rgb8,
+            )
+            .expect("encoding a JPEG in memory can't fail");
+        if bytes.len().div_ceil(3) * 4 <= limit || quality <= 25 {
+            return bytes;
+        }
+        quality -= 15;
+    }
+}
+
+/// The Messages API request for transcribing `jpeg`.
+pub fn request_body(jpeg: &[u8]) -> Value {
+    json!({
+        "model": MODEL,
+        "max_tokens": MAX_TOKENS,
+        // Thinking is always on for this model; effort sets how much.
+        "output_config": {
+            "effort": "high",
+            "format": { "type": "json_schema", "schema": schema() },
+        },
+        "fallbacks": "default",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": BASE64.encode(jpeg),
+                    },
+                },
+                { "type": "text", "text": PROMPT },
+            ],
+        }],
+    })
+}
+
+fn schema() -> Value {
+    let bbox = json!({ "type": "array", "items": { "type": "number" } });
+    json!({
+        "type": "object",
+        "properties": {
+            "lines": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text_md": { "type": "string" },
+                        "bbox": { "anyOf": [bbox, { "type": "null" }] },
+                    },
+                    "required": ["text_md", "bbox"],
+                    "additionalProperties": false,
+                },
+            },
+            "uncertain": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "line": { "type": "integer" },
+                        "text": { "type": "string" },
+                        "bbox": bbox,
+                        "alternatives": { "type": "array", "items": { "type": "string" } },
+                    },
+                    "required": ["line", "text", "bbox", "alternatives"],
+                    "additionalProperties": false,
+                },
+            },
+        },
+        "required": ["lines", "uncertain"],
+        "additionalProperties": false,
+    })
+}
+
+#[derive(Deserialize)]
+struct Response {
+    model: String,
+    stop_reason: Option<String>,
+    stop_details: Option<StopDetails>,
+    content: Vec<Block>,
+    usage: Usage,
+}
+
+#[derive(Deserialize)]
+struct StopDetails {
+    category: Option<String>,
+    explanation: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Block {
+    #[serde(rename = "type")]
+    kind: String,
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: ErrorBody,
+}
+
+#[derive(Deserialize)]
+struct ErrorBody {
+    #[serde(rename = "type")]
+    kind: String,
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct Answer {
+    lines: Vec<Line>,
+    uncertain: Vec<Uncertain>,
+}
+
+/// Turns an API response into a [`Transcript`]. `image_size` is the size of the image sent.
+pub fn parse_response(
+    status: u16,
+    body: &[u8],
+    image_size: (u32, u32),
+) -> Result<Transcript, OcrError> {
+    if !(200..300).contains(&status) {
+        return Err(match serde_json::from_slice::<ErrorResponse>(body) {
+            Ok(err) => OcrError::Api {
+                status,
+                kind: err.error.kind,
+                message: err.error.message,
+            },
+            Err(_) => OcrError::Api {
+                status,
+                kind: "unknown".to_owned(),
+                message: String::from_utf8_lossy(body).chars().take(200).collect(),
+            },
+        });
+    }
+    let response: Response =
+        serde_json::from_slice(body).map_err(|e| OcrError::Parse(e.to_string()))?;
+    match response.stop_reason.as_deref() {
+        Some("refusal") => {
+            let details = response.stop_details;
+            return Err(OcrError::Refusal {
+                category: details.as_ref().and_then(|d| d.category.clone()),
+                explanation: details.and_then(|d| d.explanation),
+            });
+        }
+        Some("max_tokens") => return Err(OcrError::MaxTokens),
+        _ => {}
+    }
+    // Thinking and fallback blocks come first; the structured answer is the last text block.
+    let text = response
+        .content
+        .iter()
+        .rev()
+        .find(|b| b.kind == "text")
+        .and_then(|b| b.text.as_deref())
+        .ok_or_else(|| OcrError::Parse("no text in the response".to_owned()))?;
+    let answer: Answer = serde_json::from_str(text).map_err(|e| OcrError::Parse(e.to_string()))?;
+    Ok(Transcript {
+        lines: answer.lines,
+        uncertain: answer.uncertain,
+        image_size,
+        model: response.model,
+        usage: response.usage,
+    })
+}
+
+/// Posts `body` to the Messages API, returning the status and response body.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), OcrError> {
+    let network = |e: reqwest::Error| OcrError::Network(e.to_string());
+    let client = reqwest::blocking::Client::builder()
+        // Thinking at high effort can take minutes.
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(network)?;
+    let mut request = client
+        .post(API_URL)
+        .header("content-type", "application/json")
+        .body(body.to_string());
+    for (name, value) in headers(credentials) {
+        request = request.header(name, value);
+    }
+    let response = request.send().map_err(network)?;
+    let status = response.status().as_u16();
+    Ok((status, response.bytes().map_err(network)?.to_vec()))
+}
+
+/// Transcribes a page from its file's bytes: the photo straightened and cropped to the page, with
+/// no lighting fix.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn transcribe_page(
+    credentials: &Credentials,
+    page_bytes: &[u8],
+    params: &crate::CleanParams,
+) -> Result<Transcript, OcrError> {
+    let jpeg_and_size = |bytes| {
+        let img = crate::decode(bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
+        let (page, _) = crate::crop_to_page(&img, params);
+        Ok((encode_jpeg(&page), page.dimensions()))
+    };
+    let (jpeg, size) = jpeg_and_size(page_bytes)?;
+    let (status, body) = send(credentials, &request_body(&jpeg))?;
+    parse_response(status, &body, size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::Rgba;
+
+    fn line(text_md: &str) -> Line {
+        Line {
+            text_md: text_md.to_owned(),
+            bbox: (!text_md.is_empty()).then_some([0.0, 0.0, 10.0, 10.0]),
+        }
+    }
+
+    fn uncertain(line: usize, text: &str) -> Uncertain {
+        Uncertain {
+            line,
+            text: text.to_owned(),
+            bbox: Some([0.0, 0.0, 1.0, 1.0]),
+            alternatives: vec!["other".to_owned()],
+        }
+    }
+
+    fn transcript(lines: &[&str], uncertain: Vec<Uncertain>) -> Transcript {
+        Transcript {
+            lines: lines.iter().copied().map(line).collect(),
+            uncertain,
+            image_size: (100, 100),
+            model: MODEL.to_owned(),
+            usage: Usage::default(),
+        }
+    }
+
+    fn vars<'a>(set: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        |name| {
+            set.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    #[test]
+    fn markdown_joins_lines_with_paragraph_breaks() {
+        let t = transcript(&["# Monday", "- eggs", "", "Call Sam"], vec![]);
+        assert_eq!(t.markdown(), "# Monday\n- eggs\n\nCall Sam");
+    }
+
+    #[test]
+    fn uncertain_spans_point_into_markdown() {
+        let t = transcript(
+            &["# Monday", "", "buy eggs and eggs", "café visit"],
+            vec![
+                uncertain(2, "eggs"),
+                uncertain(3, "visit"),
+                uncertain(3, "café"),
+                uncertain(0, "Tuesday"),
+                uncertain(9, "eggs"),
+                uncertain(2, ""),
+            ],
+        );
+        let md = t.markdown();
+        let spans = t.uncertain_spans();
+        assert_eq!(&md[spans[0].clone().unwrap()], "eggs");
+        assert_eq!(spans[0], Some(14..18), "first match in the line");
+        assert_eq!(&md[spans[1].clone().unwrap()], "visit");
+        assert_eq!(&md[spans[2].clone().unwrap()], "café");
+        assert_eq!(spans[3..], [None, None, None]);
+    }
+
+    /// Seen in a live response: line indices one off in both directions.
+    #[test]
+    fn uncertain_spans_tolerate_miscounted_lines() {
+        let lines = ["a", "b", "eggs", "c", "d", "e", "eggs too"];
+        let line_of = |claimed: usize, text: &str| {
+            let t = transcript(&lines, vec![uncertain(claimed, text)]);
+            let start = t.uncertain_spans()[0].clone()?.start;
+            Some(t.markdown()[..start].matches('\n').count())
+        };
+        assert_eq!(line_of(3, "eggs"), Some(2), "one too high");
+        assert_eq!(line_of(5, "eggs"), Some(6), "one too low");
+        assert_eq!(line_of(4, "eggs"), Some(2), "earlier line wins a tie");
+        assert_eq!(line_of(0, "too"), None, "too far away");
+    }
+
+    #[test]
+    fn api_key_wins_over_auth_token() {
+        let both = [
+            ("ANTHROPIC_API_KEY", "key"),
+            ("ANTHROPIC_AUTH_TOKEN", "tok"),
+        ];
+        assert_eq!(
+            Credentials::from_vars(vars(&both)),
+            Some(Credentials::ApiKey("key".into()))
+        );
+        let token = [
+            ("ANTHROPIC_API_KEY", "  "),
+            ("ANTHROPIC_AUTH_TOKEN", "tok\n"),
+        ];
+        assert_eq!(
+            Credentials::from_vars(vars(&token)),
+            Some(Credentials::OAuth("tok".into()))
+        );
+        assert_eq!(Credentials::from_vars(vars(&[])), None);
+    }
+
+    #[test]
+    fn credentials_debug_hides_secret() {
+        assert_eq!(
+            format!("{:?}", Credentials::ApiKey("sk-secret".into())),
+            "ApiKey(..)"
+        );
+    }
+
+    #[test]
+    fn headers_per_credential_type() {
+        assert_eq!(
+            headers(&Credentials::ApiKey("key".into())),
+            [
+                ("anthropic-version", "2026-10-21".to_owned()),
+                ("x-api-key", "key".to_owned()),
+                (
+                    "anthropic-beta",
+                    "server-side-fallback-2026-07-01".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(
+            headers(&Credentials::OAuth("tok".into())),
+            [
+                ("anthropic-version", "2026-10-21".to_owned()),
+                ("authorization", "Bearer tok".to_owned()),
+                (
+                    "anthropic-beta",
+                    "server-side-fallback-2026-07-01,oauth-2025-04-20".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn jpeg_shrinks_to_fit_limit() {
+        // Noise compresses badly, so quality makes a big difference to size.
+        let mut seed = 1u32;
+        let noise = RgbaImage::from_fn(256, 256, |_, _| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let [r, g, b, _] = seed.to_le_bytes();
+            Rgba([r, g, b, 255])
+        });
+        let full = encode_jpeg_within(&noise, usize::MAX);
+        let limit = full.len().div_ceil(3) * 4 / 2;
+        let small = encode_jpeg_within(&noise, limit);
+        assert!(small.len().div_ceil(3) * 4 <= limit, "{}", small.len());
+        assert_eq!(
+            image::load_from_memory(&small)
+                .unwrap()
+                .into_rgba8()
+                .dimensions(),
+            (256, 256)
+        );
+    }
+
+    #[test]
+    fn malformed_box_becomes_none() {
+        let line: Line = serde_json::from_str(r#"{"text_md": "hi", "bbox": [1, 2, 3]}"#).unwrap();
+        assert_eq!(line.bbox, None);
+    }
+}

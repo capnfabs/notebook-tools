@@ -87,6 +87,10 @@ fn draw_outlines(img: &RgbaImage, detected: Option<&Quad>, labelled: &Quad) -> R
 fn fixtures_have_no_metadata() {
     for entry in std::fs::read_dir(fixtures_dir()).unwrap() {
         let path = entry.unwrap().path();
+        // Photos live at the top level; subdirectories hold other fixtures, like API responses.
+        if path.is_dir() {
+            continue;
+        }
         let bytes = std::fs::read(&path).unwrap();
         // EXIF (which holds GPS location) lives in an APP1 segment starting "Exif\0\0".
         assert!(

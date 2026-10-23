@@ -11,6 +11,11 @@ use notebook_core::{
 
 use crate::ingest::Ingest;
 use crate::timing::timed;
+use crate::transcribe::{Transcriber, Transcriptions};
+
+/// Why the Transcribed view is unavailable.
+const NO_TRANSCRIBER_HINT: &str =
+    "Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app";
 
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
@@ -22,6 +27,8 @@ enum View {
     #[default]
     Original,
     Cleaned,
+    /// Claude's transcription. Selecting it transcribes the page, once.
+    Transcribed,
 }
 
 /// The texture on screen, and what it shows.
@@ -50,9 +57,18 @@ pub struct NotebookApp {
     /// Show the cleanup debug overlay.
     debug: bool,
     errors: Vec<String>,
+    transcriptions: Transcriptions,
 }
 
 impl NotebookApp {
+    /// Without a transcriber, the Transcribed view is disabled.
+    pub fn with_transcriber(transcriber: Option<Transcriber>) -> Self {
+        Self {
+            transcriptions: Transcriptions::new(transcriber),
+            ..Self::default()
+        }
+    }
+
     /// The app's UI, separate from [`eframe::App`] so tests can drive it directly.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -60,6 +76,13 @@ impl NotebookApp {
             self.errors.clear();
         }
         self.add_next_page(&ctx);
+        while let Some((name, transcript)) = self.transcriptions.next() {
+            let index = self.pages.iter().position(|p| p.name == name);
+            // The page may have been deleted meanwhile.
+            if let Some(page) = index.and_then(|i| self.pages.get_mut(i)) {
+                page.transcript = Some(transcript);
+            }
+        }
 
         if self.pages.is_empty() {
             self.drop_zone(ui);
@@ -132,7 +155,15 @@ impl NotebookApp {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.view, View::Original, "Original");
                 ui.selectable_value(&mut self.view, View::Cleaned, "Cleaned");
-                ui.add_enabled(false, egui::Button::selectable(false, "Transcribed"));
+                let transcribed = ui
+                    .add_enabled(
+                        self.transcriptions.available(),
+                        egui::Button::selectable(self.view == View::Transcribed, "Transcribed"),
+                    )
+                    .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                if transcribed.clicked() {
+                    self.view = View::Transcribed;
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_enabled(false, egui::Button::new("Delete"));
                     ui.checkbox(&mut self.debug, "Debug");
@@ -155,14 +186,18 @@ impl NotebookApp {
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
+            if self.view == View::Transcribed {
+                self.transcript(ui);
+                return;
+            }
             let name = self
                 .pages
                 .get(self.selected_index())
                 .map(|p| p.name.clone());
             if let (Some(name), Some(texture)) = (name, self.current_texture(ui.ctx())) {
                 let alt_text = match self.view {
-                    View::Original => format!("Current: {name}"),
                     View::Cleaned => format!("Current: {name} (cleaned)"),
+                    View::Original | View::Transcribed => format!("Current: {name}"),
                 };
                 let image = egui::Image::new(&texture)
                     .shrink_to_fit()
@@ -219,6 +254,40 @@ impl NotebookApp {
             if response.clicked() {
                 self.selected = Some(page.name.clone());
             }
+        }
+    }
+
+    /// The selected page's transcription, starting it if it hasn't been tried yet.
+    fn transcript(&mut self, ui: &mut egui::Ui) {
+        let Some(page) = self.pages.get(self.selected_index()) else {
+            return;
+        };
+        let name = &page.name;
+        if let Some(transcript) = &page.transcript {
+            // Placeholder until the viewer shows the page with its transcription.
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.monospace(transcript.markdown());
+            });
+        } else if let Some(err) = self.transcriptions.error(name) {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                format!("Couldn't transcribe {name}: {err}"),
+            );
+            if ui.button("Retry").clicked() {
+                let params = self.clean_params.clone();
+                self.transcriptions
+                    .start(name, page.bytes.clone(), params, ui.ctx());
+            }
+        } else {
+            if !self.transcriptions.in_flight(name) {
+                let params = self.clean_params.clone();
+                self.transcriptions
+                    .start(name, page.bytes.clone(), params, ui.ctx());
+            }
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("Transcribing {name}…"));
+            });
         }
     }
 
@@ -318,7 +387,7 @@ impl NotebookApp {
             let texture = match timed(format_args!("{name}: decode"), || decode(&page.bytes)) {
                 Ok(img) => {
                     let img = match view {
-                        View::Original => img,
+                        View::Original | View::Transcribed => img,
                         View::Cleaned => {
                             let cleaned = timed(format_args!("{name}: clean"), || {
                                 clean(&img, &self.clean_params)

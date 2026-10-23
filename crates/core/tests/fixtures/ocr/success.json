@@ -1,0 +1,27 @@
+{
+  "id": "msg_01Fixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-5-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "Eq0Bfixture"
+    },
+    {
+      "type": "text",
+      "text": "{\"lines\": [{\"text_md\": \"# Thurs 23 Oct\", \"bbox\": [120, 80, 610, 150]}, {\"text_md\": \"- ring the plumber re: ~~tap~~ shower\", \"bbox\": [130, 190, 980, 250]}, {\"text_md\": \"- [x] buy eggs\", \"bbox\": [130, 270, 520, 330]}, {\"text_md\": \"\", \"bbox\": null}, {\"text_md\": \"Idea: notebook OCR w/ Claude [drawing: arrow to a box]\", \"bbox\": [120, 380, 1150, 450]}], \"uncertain\": [{\"line\": 1, \"text\": \"plumber\", \"bbox\": [330, 190, 520, 250], \"alternatives\": [\"plumbers\", \"plunber\"]}, {\"line\": 4, \"text\": \"w/\", \"bbox\": [620, 380, 680, 450], \"alternatives\": [\"with\"]}]}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 3412,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "output_tokens": 2210,
+    "service_tier": "standard"
+  }
+}
