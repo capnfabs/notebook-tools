@@ -18,3 +18,4 @@ In priority order.
 - [ ] [Claude auth approach](claude-auth.md)
 - [ ] [Decide: spread detection approach](spread-detection.md)
 - [ ] [Outline detection: hard photos](outline-detection.md)
+- [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
