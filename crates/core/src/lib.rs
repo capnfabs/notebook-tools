@@ -1,15 +1,6 @@
 //! UI-agnostic logic for notebook-tools. Keep the public API to plain data types.
 
-pub fn greeting(name: &str) -> String {
-    format!("Hello, {name}!")
-}
+pub mod page;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn greets_by_name() {
-        assert_eq!(greeting("notebook"), "Hello, notebook!");
-    }
-}
+pub use image::RgbaImage;
+pub use page::{DecodeError, Page, Pages, decode, shrink_to_fit};

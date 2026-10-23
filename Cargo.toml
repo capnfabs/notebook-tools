@@ -10,3 +10,12 @@ publish = false
 notebook_core = { path = "crates/core" }
 eframe = "0.37.0"
 egui_kittest = "0.37.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Image code is 5-30x slower unoptimized. Dependencies, plus core because the generic image code
+# it calls is compiled there.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.notebook_core]
+opt-level = 2

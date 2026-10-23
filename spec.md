@@ -12,8 +12,9 @@ The basic flow we're working towards is:
 - We'll send the images to Claude for transcription. The response we get back will _optionally_ include bounding boxes for uncertain words, and when you click on one of these bounding boxes, we'll offer alternatives OR the user can type their own. I've already got a bit of a design for how this should work.
 - At the end, stitch it all into a searchable PDF (that is, have the text ), _and_ offer the ability to export to markdown.
 
-Technology choices:
 
-- Everything in Rust. I am ok revising this if it's going to make _other_ stuff hard.
-- Help me pick a Gui framework.
-- Try and work with abstractions for images as opposed to HEIC / JPEG files directly, wherever possible
+## ui flow
+
+- When a user opens the app, it shows a "drop image files here" message. The user can drag-and-drop files from their desktop.
+- files are sorted by filename order by default, but can be rearranged w/ drag and drop.
+- everything else is outlined in wireframes-206-10-23.excalidraw

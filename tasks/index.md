@@ -3,7 +3,13 @@
 In priority order.
 
 - [x] [Bootstrap the UI](bootstrap-ui.md)
-- [ ] [Image viewer](image-viewer.md)
+- [x] [Image viewer](image-viewer.md)
+- [ ] [Viewer actions](viewer-actions.md)
+- [ ] [Reorder pages](reorder-pages.md)
+- [ ] [HEIC decoding](heic-decoding.md)
+- [ ] [Background decoding](background-decoding.md)
+- [ ] [Downscale on load](downscale-on-load.md)
+- [ ] [Wasm performance (or drop wasm)](wasm-performance.md)
 - [ ] [Spike: Claude bounding-box accuracy](bbox-spike.md)
 - [ ] [Claude auth approach](claude-auth.md)
 - [ ] [Decide: spread detection approach](spread-detection.md)

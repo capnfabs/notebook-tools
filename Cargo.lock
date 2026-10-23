@@ -1689,6 +1689,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2094,14 +2096,19 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "env_logger",
+ "image",
  "log",
  "notebook_core",
  "wasm-bindgen-futures",
+ "web-time",
 ]
 
 [[package]]
 name = "notebook_core"
 version = "0.1.0"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "num-traits"
