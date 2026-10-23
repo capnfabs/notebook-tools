@@ -22,7 +22,7 @@ use std::time::Instant;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
-use notebook_core::ocr::{self, Bbox, Credentials, Transcript};
+use notebook_core::ocr::{self, Bbox, Credentials, Span, Transcript};
 use notebook_core::{CleanParams, crop_to_page, decode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -308,7 +308,7 @@ struct Stats {
     /// Lines with text.
     lines: usize,
     out_of_bounds: usize,
-    /// Uncertain words whose text was found within the search radius of their line.
+    /// Uncertain words whose text was found, by box or near their claimed line.
     located: usize,
     right_by_index: usize,
     right_by_box: usize,
@@ -327,14 +327,14 @@ impl Stats {
             .filter(|&b| !in_bounds(b))
             .count();
 
-        let markdown = t.markdown();
         let (mut located, mut right_by_index, mut right_by_box) = (0, 0, 0);
         for (u, span) in t.uncertain.iter().zip(t.uncertain_spans()) {
-            let Some(span) = span else { continue };
+            let Some(Span { line, .. }) = span else {
+                continue;
+            };
             located += 1;
-            let line = markdown[..span.start].matches('\n').count();
             right_by_index += usize::from(u.line == line);
-            right_by_box += usize::from(u.bbox.and_then(|b| line_by_box(t, b)) == Some(line));
+            right_by_box += usize::from(u.bbox.and_then(|b| t.line_by_box(b)) == Some(line));
         }
         Self {
             lines: t.lines.iter().filter(|l| !l.text_md.is_empty()).count(),
@@ -344,21 +344,4 @@ impl Stats {
             right_by_box,
         }
     }
-}
-
-/// The line whose box holds the centre of `bbox`; the vertically nearest if several do.
-fn line_by_box(t: &Transcript, [x0, y0, x1, y1]: Bbox) -> Option<usize> {
-    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    t.lines
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| Some((i, l.bbox?)))
-        .filter(|(_, [lx0, ly0, lx1, ly1])| {
-            (*lx0..=*lx1).contains(&cx) && (*ly0..=*ly1).contains(&cy)
-        })
-        .min_by(|(_, a), (_, b)| {
-            let off = |[_, y0, _, y1]: Bbox| ((y0 + y1) / 2.0 - cy).abs();
-            off(*a).total_cmp(&off(*b))
-        })
-        .map(|(i, _)| i)
 }

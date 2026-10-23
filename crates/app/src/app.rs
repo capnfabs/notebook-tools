@@ -3,15 +3,17 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui::{
     Align, Color32, Layout, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle,
-    TextureOptions, Vec2,
+    TextureOptions, UiBuilder, Vec2,
 };
 use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
 };
 
+use crate::export::{Export, SavePath};
 use crate::ingest::Ingest;
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions};
+use crate::transcript_view::{self, TranscriptView};
 
 /// Why the Transcribed view is unavailable.
 const NO_TRANSCRIBER_HINT: &str =
@@ -27,14 +29,24 @@ enum View {
     #[default]
     Original,
     Cleaned,
-    /// Claude's transcription. Selecting it transcribes the page, once.
+    /// Claude's transcription beside the cleaned page, for correcting. Selecting it transcribes
+    /// the page, once.
     Transcribed,
+}
+
+impl View {
+    fn shows_cleaned(self) -> bool {
+        match self {
+            Self::Original => false,
+            Self::Cleaned | Self::Transcribed => true,
+        }
+    }
 }
 
 /// The texture on screen, and what it shows.
 struct Shown {
     name: String,
-    view: View,
+    cleaned: bool,
     texture: TextureHandle,
 }
 
@@ -58,6 +70,10 @@ pub struct NotebookApp {
     debug: bool,
     errors: Vec<String>,
     transcriptions: Transcriptions,
+    transcript_view: TranscriptView,
+    export: Export,
+    /// The transcribed page the user asked to delete, until they confirm.
+    confirm_delete: Option<String>,
 }
 
 impl NotebookApp {
@@ -66,6 +82,14 @@ impl NotebookApp {
         Self {
             transcriptions: Transcriptions::new(transcriber),
             ..Self::default()
+        }
+    }
+
+    /// Without one, exporting to a file does nothing.
+    pub fn with_save_path(self, save_path: SavePath) -> Self {
+        Self {
+            export: Export::new(Some(save_path)),
+            ..self
         }
     }
 
@@ -117,6 +141,62 @@ impl NotebookApp {
         }
     }
 
+    /// Removes page `index`, selecting the one after it, or before it if it was the last.
+    fn delete_page(&mut self, index: usize) {
+        let Some(page) = self.pages.remove(index) else {
+            return;
+        };
+        drop(self.thumbs.remove(index));
+        self.reports.remove(&page.name);
+        self.transcriptions.forget(&page.name);
+        if self.current.as_ref().is_some_and(|c| c.name == page.name) {
+            self.current = None;
+        }
+        self.transcript_view = TranscriptView::default();
+        let next = self
+            .pages
+            .get(index)
+            .or_else(|| self.pages.get(index.wrapping_sub(1)));
+        self.selected = next.map(|p| p.name.clone());
+    }
+
+    /// Deletes the selected page, asking first if it has a transcript.
+    fn request_delete(&mut self) {
+        let index = self.selected_index();
+        let Some(page) = self.pages.get(index) else {
+            return;
+        };
+        if page.transcript.is_some() {
+            self.confirm_delete = Some(page.name.clone());
+        } else {
+            self.delete_page(index);
+        }
+    }
+
+    fn delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.confirm_delete.clone() else {
+            return;
+        };
+        let (mut delete, mut cancel) = (false, false);
+        let modal = egui::Modal::new(egui::Id::unique("confirm delete")).show(ctx, |ui| {
+            ui.label(format!("Delete {name} and its transcript?"));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                delete = ui.button("Delete page").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if delete {
+            let index = self.pages.iter().position(|p| p.name == name);
+            if let Some(index) = index {
+                self.delete_page(index);
+            }
+            self.confirm_delete = None;
+        } else if cancel || modal.should_close() {
+            self.confirm_delete = None;
+        }
+    }
+
     fn selected_index(&self) -> usize {
         let name = self.selected.as_ref();
         name.and_then(|name| self.pages.iter().position(|p| p.name == *name))
@@ -165,7 +245,9 @@ impl NotebookApp {
                     self.view = View::Transcribed;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled(false, egui::Button::new("Delete"));
+                    if ui.button("Delete").clicked() {
+                        self.request_delete();
+                    }
                     ui.checkbox(&mut self.debug, "Debug");
                 });
             });
@@ -179,15 +261,29 @@ impl NotebookApp {
             ui.horizontal(|ui| {
                 self.status(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_enabled(false, egui::Button::new("Export"));
-                    ui.add_enabled(false, egui::Button::new("Re-export"));
+                    // Only transcribed pages can be exported.
+                    let can_export = self.transcriptions.available();
+                    let export = ui
+                        .add_enabled(can_export, egui::Button::new("Export"))
+                        .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                    if export.clicked() {
+                        self.export.open_dialog();
+                    }
+                    let reexport = ui.add_enabled(
+                        can_export && self.export.can_reexport(),
+                        egui::Button::new("Re-export"),
+                    );
+                    if reexport.clicked() {
+                        self.export
+                            .reexport(ui.ctx(), &self.pages, self.selected_index());
+                    }
                 });
             });
         });
 
         egui::CentralPanel::default().show(ui, |ui| {
             if self.view == View::Transcribed {
-                self.transcript(ui);
+                self.transcribed(ui);
                 return;
             }
             let name = self
@@ -195,25 +291,17 @@ impl NotebookApp {
                 .get(self.selected_index())
                 .map(|p| p.name.clone());
             if let (Some(name), Some(texture)) = (name, self.current_texture(ui.ctx())) {
-                let alt_text = match self.view {
-                    View::Cleaned => format!("Current: {name} (cleaned)"),
-                    View::Original | View::Transcribed => format!("Current: {name}"),
-                };
-                let image = egui::Image::new(&texture)
-                    .shrink_to_fit()
-                    .alt_text(alt_text);
-                // Give the image exactly the rect it's drawn in. In a justified layout its
-                // response would cover the whole panel, with the image centred inside.
                 let panel = ui.available_rect_before_wrap();
-                let size = image.calc_size(panel.size(), Some(texture.size_vec2()));
-                let image_rect = ui
-                    .put(Rect::from_center_size(panel.center(), size), image)
-                    .rect;
+                let image_rect = self.show_page(ui, &name, &texture, panel);
                 if self.debug {
                     self.debug_overlay(ui, &name, image_rect);
                 }
             }
         });
+
+        self.delete_dialog(ui.ctx());
+        self.export
+            .dialog(ui.ctx(), &self.pages, self.selected_index());
 
         if is_hovering_files(ui) {
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -257,18 +345,60 @@ impl NotebookApp {
         }
     }
 
-    /// The selected page's transcription, starting it if it hasn't been tried yet.
-    fn transcript(&mut self, ui: &mut egui::Ui) {
-        let Some(page) = self.pages.get(self.selected_index()) else {
+    /// The page named `name` as large as fits in `rect`, centred, returning where it went.
+    fn show_page(
+        &self,
+        ui: &mut egui::Ui,
+        name: &str,
+        texture: &TextureHandle,
+        rect: Rect,
+    ) -> Rect {
+        let alt_text = if self.view.shows_cleaned() {
+            format!("Current: {name} (cleaned)")
+        } else {
+            format!("Current: {name}")
+        };
+        let image = egui::Image::new(texture).shrink_to_fit().alt_text(alt_text);
+        // Give the image exactly the rect it's drawn in. In a justified layout its response
+        // would cover the whole panel, with the image centred inside.
+        let size = image.calc_size(rect.size(), Some(texture.size_vec2()));
+        ui.put(Rect::from_center_size(rect.center(), size), image)
+            .rect
+    }
+
+    /// The cleaned page beside its transcript, for correcting.
+    fn transcribed(&mut self, ui: &mut egui::Ui) {
+        let index = self.selected_index();
+        let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
+            return;
+        };
+        let gap = ui.spacing().item_spacing.x * 2.0;
+        let (page_rect, text_rect) = transcript_view::split(ui.available_rect_before_wrap(), gap);
+        let image_rect = self
+            .current_texture(ui.ctx())
+            .map(|texture| self.show_page(ui, &name, &texture, page_rect));
+        let transcript = self
+            .pages
+            .get_mut(index)
+            .and_then(|p| p.transcript.as_mut());
+        if let Some(transcript) = transcript {
+            self.transcript_view
+                .show(ui, &name, transcript, image_rect, text_rect);
+        } else {
+            ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
+                self.transcription_progress(ui, index);
+            });
+        }
+    }
+
+    /// Page `index` being transcribed, or why it couldn't be, starting it if it hasn't been
+    /// tried yet.
+    fn transcription_progress(&mut self, ui: &mut egui::Ui, index: usize) {
+        let Some(page) = self.pages.get(index) else {
             return;
         };
         let name = &page.name;
-        if let Some(transcript) = &page.transcript {
-            // Placeholder until the viewer shows the page with its transcription.
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.monospace(transcript.markdown());
-            });
-        } else if let Some(err) = self.transcriptions.error(name) {
+        if let Some(err) = self.transcriptions.error(name) {
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 format!("Couldn't transcribe {name}: {err}"),
@@ -359,7 +489,7 @@ impl NotebookApp {
         self.reports.get(name)
     }
 
-    /// Loading progress and errors from the last drop.
+    /// Loading progress and errors from the last drop, and what the last export did.
     fn status(&self, ui: &mut egui::Ui) {
         if self.ingest.pending() > 0 {
             ui.horizontal(|ui| {
@@ -370,6 +500,15 @@ impl NotebookApp {
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);
         }
+        match self.export.status() {
+            Some(Ok(done)) => {
+                ui.label(done);
+            }
+            Some(Err(err)) => {
+                ui.colored_label(ui.visuals().error_fg_color, err);
+            }
+            None => {}
+        }
     }
 
     /// The selected page at full size in the current view, decoding (and cleaning) it if the
@@ -377,24 +516,23 @@ impl NotebookApp {
     fn current_texture(&mut self, ctx: &egui::Context) -> Option<TextureHandle> {
         let index = self.selected_index();
         let page = self.pages.get(index)?;
-        let view = self.view;
+        let cleaned = self.view.shows_cleaned();
         if self
             .current
             .as_ref()
-            .is_none_or(|shown| shown.name != page.name || shown.view != view)
+            .is_none_or(|shown| shown.name != page.name || shown.cleaned != cleaned)
         {
             let name = &page.name;
             let texture = match timed(format_args!("{name}: decode"), || decode(&page.bytes)) {
                 Ok(img) => {
-                    let img = match view {
-                        View::Original | View::Transcribed => img,
-                        View::Cleaned => {
-                            let cleaned = timed(format_args!("{name}: clean"), || {
-                                clean(&img, &self.clean_params)
-                            });
-                            self.reports.insert(name.clone(), cleaned.report);
-                            cleaned.image
-                        }
+                    let img = if cleaned {
+                        let cleaned = timed(format_args!("{name}: clean"), || {
+                            clean(&img, &self.clean_params)
+                        });
+                        self.reports.insert(name.clone(), cleaned.report);
+                        cleaned.image
+                    } else {
+                        img
                     };
                     let max_side = ctx.input(|i| i.max_texture_side) as u32;
                     log::debug!(
@@ -417,7 +555,7 @@ impl NotebookApp {
             };
             self.current = Some(Shown {
                 name: page.name.clone(),
-                view,
+                cleaned,
                 texture,
             });
         }

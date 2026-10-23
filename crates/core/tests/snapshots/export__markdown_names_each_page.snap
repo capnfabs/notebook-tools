@@ -1,0 +1,17 @@
+---
+source: crates/core/tests/export.rs
+expression: "export::markdown(&[(\"IMG_0001.jpeg\", &first), (\"IMG_0002.jpeg\", &corrected),])"
+---
+<!-- IMG_0001.jpeg -->
+# Thurs 23 Oct
+- ring the plumber re: ~~tap~~ shower
+- [x] buy eggs
+
+Idea: notebook OCR w/ Claude [drawing: arrow to a box]
+
+<!-- IMG_0002.jpeg -->
+# Thurs 23 Oct
+- ring the plumbers re: ~~tap~~ shower
+- [x] buy eggs
+
+Idea: notebook OCR w/ Claude [drawing: arrow to a box]

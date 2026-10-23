@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
 use notebook_core::ocr::{
-    Credentials, EFFORT, MODEL, OcrError, Transcript, encode_jpeg, parse_response, request_body,
+    Credentials, EFFORT, MODEL, OcrError, Span, Transcript, encode_jpeg, parse_response,
+    request_body,
 };
 use serde::Deserialize;
 
@@ -82,11 +83,15 @@ fn parses_recorded_response() {
     // Two of these claim a line one off from where their text is.
     let spans = transcript.uncertain_spans();
     assert_eq!(spans.len(), 5);
-    let markdown = transcript.markdown();
     for (u, span) in transcript.uncertain.iter().zip(spans) {
-        assert_eq!(markdown.get(span.unwrap()), Some(u.text.as_str()));
+        assert_eq!(span_text(&transcript, span), Some(u.text.as_str()));
     }
-    insta::assert_snapshot!("spread_wood_1_markdown", markdown);
+    insta::assert_snapshot!("spread_wood_1_markdown", transcript.markdown());
+}
+
+fn span_text(transcript: &Transcript, span: Option<Span>) -> Option<&str> {
+    let Span { line, range } = span?;
+    transcript.lines[line].text_md.get(range)
 }
 
 /// One request made by the bbox spike, as in its `runs.json`.
@@ -107,6 +112,7 @@ fn parses_bbox_spike_responses() {
     let runs: Vec<SpikeRun> =
         serde_json::from_slice(&std::fs::read(dir.join("runs.json")).unwrap()).unwrap();
     assert!(!runs.is_empty());
+    let (mut words, mut unfound) = (0, 0);
     for run in runs {
         let photo = run.photo.trim_end_matches(".jpg");
         let name = format!("{photo}-{}", run.variant);
@@ -117,16 +123,15 @@ fn parses_bbox_spike_responses() {
             (Ok(transcript), None) => {
                 assert!(transcript.usage.output_tokens > 0, "{name}");
                 assert_boxes_in_bounds(&transcript);
-                // Some aren't found: their line index can be far off. See
-                // `decisions/2026-10-23-bbox-accuracy.md`.
-                let markdown = transcript.markdown();
                 for (u, span) in transcript
                     .uncertain
                     .iter()
                     .zip(transcript.uncertain_spans())
                 {
-                    if let Some(span) = span {
-                        assert_eq!(&markdown[span], u.text, "{name}");
+                    words += 1;
+                    match span_text(&transcript, span) {
+                        Some(text) => assert_eq!(text, u.text, "{name}"),
+                        None => unfound += 1,
                     }
                 }
             }
@@ -134,6 +139,9 @@ fn parses_bbox_spike_responses() {
             (parsed, recorded) => panic!("{name}: parsed {parsed:?}, recorded {recorded:?}"),
         }
     }
+    // Searching only near each word's claimed line missed 24: the index can be far off. See
+    // `decisions/2026-10-23-bbox-accuracy.md`.
+    assert_eq!((words, unfound), (123, 0));
 }
 
 #[test]

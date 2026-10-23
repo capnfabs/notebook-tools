@@ -96,6 +96,11 @@ impl Transcriptions {
         self.in_flight.contains(name)
     }
 
+    /// Forgets why the page named `name` failed, as when it's deleted.
+    pub fn forget(&mut self, name: &str) {
+        self.errors.remove(name);
+    }
+
     pub fn error(&self, name: &str) -> Option<&str> {
         self.errors.get(name).map(String::as_str)
     }

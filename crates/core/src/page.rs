@@ -102,6 +102,10 @@ impl Pages {
         Some(index)
     }
 
+    pub fn remove(&mut self, index: usize) -> Option<Page> {
+        (index < self.0.len()).then(|| self.0.remove(index))
+    }
+
     pub fn get(&self, index: usize) -> Option<&Page> {
         self.0.get(index)
     }
@@ -211,5 +215,17 @@ mod tests {
             names(&pages),
             ["IMG_0001.png", "IMG_0002.png", "IMG_0003.png"]
         );
+    }
+
+    #[test]
+    fn removes_pages() {
+        let mut pages = Pages::default();
+        pages.add(page("a.png"));
+        pages.add(page("b.png"));
+        assert_eq!(pages.remove(2).map(|p| p.name), None);
+        assert_eq!(pages.remove(0).map(|p| p.name).as_deref(), Some("a.png"));
+        assert_eq!(names(&pages), ["b.png"]);
+        // The name can be added again.
+        assert_eq!(pages.add(page("a.png")), Some(0));
     }
 }

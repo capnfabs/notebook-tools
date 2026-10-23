@@ -7,7 +7,7 @@ use std::time::Duration;
 use eframe::egui::{self, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{NotebookApp, Transcriber};
+use notebook_app::{NotebookApp, SavePath, Transcriber};
 use notebook_core::ocr::{Transcript, parse_response};
 
 /// Stands in for a file dragged from the desktop.
@@ -58,10 +58,41 @@ fn harness() -> Harness<'static, NotebookApp> {
 }
 
 fn harness_with(transcriber: Transcriber) -> Harness<'static, NotebookApp> {
-    Harness::new_ui_state(
-        |ui, app: &mut NotebookApp| app.ui(ui),
-        NotebookApp::with_transcriber(Some(transcriber)),
-    )
+    harness_for(NotebookApp::with_transcriber(Some(transcriber)))
+}
+
+fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
+    Harness::new_ui_state(|ui, app: &mut NotebookApp| app.ui(ui), app)
+}
+
+/// Every page transcribes to the recorded response.
+fn transcriber() -> Transcriber {
+    Arc::new(|_, _| Ok(recorded_transcript()))
+}
+
+/// Opens the Transcribed view of the selected page and waits for its transcript.
+fn show_transcript(harness: &mut Harness<'_, NotebookApp>) {
+    harness.get_by_label("Transcribed").click();
+    step_until(harness, "# Thurs 23 Oct");
+}
+
+/// Opens the export dialog, picks `options` in order, and clicks Go.
+fn export(harness: &mut Harness<'_, NotebookApp>, options: &[&str]) {
+    harness.get_by_label("Export").click();
+    harness.run();
+    for option in options {
+        harness.get_by_label(option).click();
+        harness.run();
+    }
+    harness.get_by_label("Go").click();
+}
+
+/// Corrects the transcript's uncertain "plumber" to "plumbers", from the text.
+fn correct_plumber(harness: &mut Harness<'_, NotebookApp>) {
+    harness.get_by_label("plumber").click();
+    harness.run();
+    harness.get_by_label("plumbers").click();
+    harness.run();
 }
 
 /// The recorded response from core's OCR tests.
@@ -212,20 +243,66 @@ fn debug_overlay_shows_what_cleanup_found() {
     harness.get_by_label_contains("No page outline");
 }
 
-/// Transcribed is disabled because the harness has no transcriber (no credentials).
+/// Without a transcriber (no credentials), there's nothing to transcribe or export.
 #[test]
-fn unimplemented_controls_are_disabled() {
+fn controls_without_a_transcriber() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png())]);
 
-    for label in ["Original", "Cleaned", "Debug"] {
+    for label in ["Original", "Cleaned", "Debug", "Delete"] {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
-    for label in ["Transcribed", "Delete", "Re-export", "Export"] {
+    for label in ["Transcribed", "Re-export", "Export"] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
+}
+
+#[test]
+fn delete_selects_the_next_page() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+    harness.get_by_label("b.png").click();
+    harness.run();
+
+    harness.get_by_label("Delete").click();
+    harness.run();
+    assert_eq!(thumbnails(&harness), ["a.png", "c.png"]);
+    harness.get_by_label("Current: c.png");
+
+    // The last page selects the one before it.
+    harness.get_by_label("Delete").click();
+    harness.run();
+    assert_eq!(thumbnails(&harness), ["a.png"]);
+    harness.get_by_label("Current: a.png");
+
+    harness.get_by_label("Delete").click();
+    harness.run();
+    harness.get_by_label("Drop image files here");
+}
+
+#[test]
+fn deleting_a_transcribed_page_asks_first() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Delete").click();
+    harness.run();
+    harness.get_by_label("Delete a.png and its transcript?");
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+
+    harness.get_by_label("Delete").click();
+    harness.run();
+    harness.get_by_label("Delete page").click();
+    harness.run();
+    assert_eq!(thumbnails(&harness), ["b.png"]);
 }
 
 #[test]
@@ -279,4 +356,208 @@ fn failed_transcription_can_be_retried() {
             .query_by_label_contains("Couldn't transcribe")
             .is_none()
     );
+}
+
+#[test]
+fn transcribed_view_shows_the_page_with_uncertain_words() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Current: a.png (cleaned)");
+    for word in ["plumber", "w/"] {
+        harness.get_by_label(word);
+        harness.get_by_label(&format!("Box: {word}"));
+    }
+}
+
+#[test]
+fn picking_an_alternative_corrects_the_word() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    correct_plumber(&mut harness);
+    harness.get_by_label("plumbers");
+    harness.get_by_label("Box: plumbers");
+    assert!(harness.query_by_label("plumber").is_none());
+
+    // The replaced reading is still on offer.
+    harness.get_by_label("plumbers").click();
+    harness.run();
+    harness.get_by_label("Keep \"plumbers\"");
+    harness.get_by_label("plumber").click();
+    harness.run();
+    harness.get_by_label("Box: plumber");
+}
+
+#[test]
+fn boxes_take_a_reading_of_your_own() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Box: plumber").click();
+    harness.run();
+    let field = harness.get_by_role(Role::TextInput);
+    field.focus();
+    field.type_text("Plumbing Co");
+    harness.run_ok();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    harness.get_by_label("Plumbing Co");
+    assert!(
+        harness.query_by_label_contains("Keep").is_none(),
+        "popup closed"
+    );
+}
+
+#[test]
+fn keeping_a_reading_closes_the_popup() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("w/").click();
+    harness.run();
+    harness.get_by_label("Keep \"w/\"").click();
+    harness.run();
+
+    harness.get_by_label("w/");
+    assert!(harness.query_by_label_contains("Keep").is_none());
+}
+
+#[test]
+fn double_clicking_a_line_edits_it() {
+    // Each click takes a few frames, so the default quarter-second frames are too slow for a
+    // double-click.
+    let mut harness = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut NotebookApp| app.ui(ui),
+        NotebookApp::with_transcriber(Some(transcriber())),
+    );
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    // Far enough after the click on Transcribed that the double-click isn't a triple.
+    harness.run_steps(30);
+    let line = harness.get_by_label("# Thurs 23 Oct");
+    line.click();
+    line.click();
+    harness.run_ok();
+    let field = harness.get_by_role(Role::TextInput);
+    assert_eq!(field.value().as_deref(), Some("# Thurs 23 Oct"));
+    harness.key_press(egui::Key::End);
+    field.type_text(" 2026");
+    harness.run_ok();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    harness.get_by_label("# Thurs 23 Oct 2026");
+    assert!(harness.query_by_role(Role::TextInput).is_none());
+
+    // Escape drops the edit.
+    harness.run_steps(30);
+    let line = harness.get_by_label("# Thurs 23 Oct 2026");
+    line.click();
+    line.click();
+    harness.run_ok();
+    harness.get_by_role(Role::TextInput).type_text("!!");
+    harness.run_ok();
+    harness.key_press(egui::Key::Escape);
+    harness.run();
+    harness.get_by_label("# Thurs 23 Oct 2026");
+}
+
+#[test]
+fn export_waits_for_every_page_in_scope() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Export").click();
+    harness.run();
+    harness.get_by_label("Everything").click();
+    harness.run();
+    harness.get_by_label("Not transcribed yet: b.png");
+    assert!(harness.get_by_label("Go").accesskit_node().is_disabled());
+
+    harness.get_by_label("Current page").click();
+    harness.run();
+    assert!(harness.query_by_label_contains("Not transcribed").is_none());
+    assert!(!harness.get_by_label("Go").accesskit_node().is_disabled());
+}
+
+#[test]
+fn exports_markdown_to_the_clipboard() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    correct_plumber(&mut harness);
+
+    export(&mut harness, &["Markdown to clipboard"]);
+    harness.step();
+    let copied: Vec<&str> = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied.len(), 1);
+    assert!(
+        copied[0].starts_with("<!-- a.png -->\n# Thurs 23 Oct\n- ring the plumbers re:"),
+        "{}",
+        copied[0]
+    );
+    harness.run();
+    harness.get_by_label("Copied a.png to the clipboard");
+    assert!(
+        !harness
+            .get_by_label("Re-export")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
+fn reexport_overwrites_the_same_file() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-reexport/a.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::remove_file(&path).ok();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let save_path: SavePath = {
+        let (asked, path) = (asked.clone(), path.clone());
+        Arc::new(move |suggested| {
+            assert_eq!(suggested, "a.md");
+            asked.fetch_add(1, Ordering::SeqCst);
+            Some(path.clone())
+        })
+    };
+    let mut harness =
+        harness_for(NotebookApp::with_transcriber(Some(transcriber())).with_save_path(save_path));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert!(
+        harness
+            .get_by_label("Re-export")
+            .accesskit_node()
+            .is_disabled()
+    );
+
+    export(&mut harness, &["Current page", "Markdown to file"]);
+    harness.run();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("ring the plumber re:"), "{written}");
+    harness.get_by_label_contains("Exported a.png to ");
+
+    correct_plumber(&mut harness);
+    harness.get_by_label("Re-export").click();
+    harness.run();
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("ring the plumbers re:"), "{written}");
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "asked where to save once");
 }

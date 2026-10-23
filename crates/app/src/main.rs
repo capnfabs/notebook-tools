@@ -6,8 +6,22 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "notebook-tools",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(NotebookApp::with_transcriber(transcriber())))),
+        Box::new(|_cc| {
+            let app = NotebookApp::with_transcriber(transcriber()).with_save_path(save_dialog());
+            Ok(Box::new(app))
+        }),
     )
+}
+
+/// Asks where to save with the system's save dialog.
+#[cfg(not(target_arch = "wasm32"))]
+fn save_dialog() -> notebook_app::SavePath {
+    std::sync::Arc::new(|suggested| {
+        rfd::FileDialog::new()
+            .add_filter("Markdown", &["md"])
+            .set_file_name(suggested)
+            .save_file()
+    })
 }
 
 /// Transcribes with Claude when credentials are in the environment.

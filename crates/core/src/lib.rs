@@ -1,6 +1,7 @@
 //! UI-agnostic logic for notebook-tools. Keep the public API to plain data types.
 
 pub mod clean;
+pub mod export;
 pub mod ocr;
 pub mod page;
 
