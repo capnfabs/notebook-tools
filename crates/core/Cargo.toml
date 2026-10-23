@@ -6,3 +6,9 @@ publish.workspace = true
 
 [dependencies]
 image.workspace = true
+imageproc.workspace = true
+
+# Multithreaded on native; wasm has no threads, so rayon must never reach the web build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+imageproc = { workspace = true, features = ["rayon"] }
+rayon.workspace = true

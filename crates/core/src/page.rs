@@ -66,9 +66,19 @@ pub fn shrink_to_fit(img: RgbaImage, max_side: u32) -> RgbaImage {
     if w <= max_side && h <= max_side {
         return img;
     }
+    let (w, h) = fitted_size(w, h, max_side);
+    imageops::thumbnail(&img, w, h)
+}
+
+/// The size `w` x `h` scales to so neither side exceeds `max_side`, keeping the aspect ratio.
+/// Never scales up.
+pub(crate) fn fitted_size(w: u32, h: u32, max_side: u32) -> (u32, u32) {
+    if w <= max_side && h <= max_side {
+        return (w, h);
+    }
     let scale = f64::from(max_side) / f64::from(w.max(h));
     let scaled = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
-    imageops::thumbnail(&img, scaled(w), scaled(h))
+    (scaled(w), scaled(h))
 }
 
 /// Pages in filename order, with no duplicate names.

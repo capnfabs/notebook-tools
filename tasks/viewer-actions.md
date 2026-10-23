@@ -1,3 +1,3 @@
 # Viewer actions
 
-Wire up the disabled viewer controls: Original/Cleaned/Transcribed toggle, Delete, Export, Re-export (see wireframe).
+Wire up the disabled viewer controls: Transcribed toggle, Delete, Export, Re-export (see wireframe). Original/Cleaned done.

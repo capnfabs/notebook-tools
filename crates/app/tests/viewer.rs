@@ -32,6 +32,21 @@ fn png() -> Vec<u8> {
     bytes
 }
 
+/// A cream page on a brown table, which cleanup finds an outline for.
+fn page_photo() -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(200, 150, |x, y| {
+        if (40..160).contains(&x) && (20..130).contains(&y) {
+            image::Rgba([235, 225, 200, 255])
+        } else {
+            image::Rgba([120, 80, 50, 255])
+        }
+    });
+    let mut bytes = Vec::new();
+    img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
 fn harness() -> Harness<'static, NotebookApp> {
     Harness::new_ui_state(
         |ui, app: &mut NotebookApp| app.ui(ui),
@@ -111,17 +126,72 @@ fn reports_files_that_are_not_images() {
 }
 
 #[test]
+fn cleaned_view_shows_the_cleaned_page() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    harness.get_by_label("Cleaned").click();
+    harness.run();
+    harness.get_by_label("Current: a.png (cleaned)");
+
+    harness.get_by_label("Original").click();
+    harness.run();
+    harness.get_by_label("Current: a.png");
+}
+
+#[test]
+fn view_stays_when_selecting_another_page() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    harness.get_by_label("Cleaned").click();
+    harness.run();
+
+    harness.get_by_label("b.png").click();
+    harness.run();
+
+    harness.get_by_label("Current: b.png (cleaned)");
+}
+
+/// The debug outline is drawn relative to the image's rect, so that rect must be where the image
+/// is drawn, not the whole panel it's centred in.
+#[test]
+fn image_rect_matches_the_drawn_image() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    let node = harness.get_by_label("Current: a.png");
+    let bounds = node.accesskit_node().bounding_box().unwrap();
+    let aspect = bounds.width() / bounds.height();
+    assert!((aspect - 200.0 / 150.0).abs() < 0.02, "{bounds:?}");
+}
+
+#[test]
+fn debug_overlay_shows_what_cleanup_found() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    assert!(harness.query_by_label_contains("Page outline").is_none());
+
+    harness.get_by_label("Debug").click();
+    harness.run();
+    harness.get_by_label_contains("Page outline: (");
+    harness.get_by_label_contains("Black / white point");
+
+    // A blank image has no page to find.
+    harness.get_by_label("b.png").click();
+    harness.run();
+    harness.get_by_label_contains("No page outline");
+}
+
+#[test]
 fn unimplemented_controls_are_disabled() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png())]);
 
-    assert!(
-        !harness
-            .get_by_label("Original")
-            .accesskit_node()
-            .is_disabled()
-    );
-    for label in ["Cleaned", "Transcribed", "Delete", "Re-export", "Export"] {
+    for label in ["Original", "Cleaned", "Debug"] {
+        let node = harness.get_by_label(label);
+        assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
+    }
+    for label in ["Transcribed", "Delete", "Re-export", "Export"] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }

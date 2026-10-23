@@ -1,6 +1,13 @@
+use std::collections::HashMap;
+
 use eframe::egui;
-use egui::{Align, Layout, Sense, Shape, StrokeKind, TextureHandle, TextureOptions, Vec2};
-use notebook_core::{Page, Pages, RgbaImage, decode, shrink_to_fit};
+use egui::{
+    Align, Color32, Layout, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle,
+    TextureOptions, Vec2,
+};
+use notebook_core::{
+    CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
+};
 
 use crate::ingest::Ingest;
 use crate::timing::timed;
@@ -8,6 +15,21 @@ use crate::timing::timed;
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
 const THUMB_SIZE_PT: f32 = 96.0;
+
+/// Which version of the selected page the viewer shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum View {
+    #[default]
+    Original,
+    Cleaned,
+}
+
+/// The texture on screen, and what it shows.
+struct Shown {
+    name: String,
+    view: View,
+    texture: TextureHandle,
+}
 
 #[derive(Default)]
 pub struct NotebookApp {
@@ -17,8 +39,16 @@ pub struct NotebookApp {
     thumbs: Vec<TextureHandle>,
     /// Name of the page the user picked. The first page is shown until they pick one.
     selected: Option<String>,
-    /// Full-size texture for the selected page, keyed by page name.
-    current: Option<(String, TextureHandle)>,
+    /// Stays the same when another page is selected.
+    view: View,
+    /// Full-size texture for the selected page and view. Only one is kept: see
+    /// `decisions/2026-10-23-pages-keep-encoded-bytes.md`.
+    current: Option<Shown>,
+    clean_params: CleanParams,
+    /// What cleaning found, by page name. Small, so kept for every page cleaned so far.
+    reports: HashMap<String, CleanReport>,
+    /// Show the cleanup debug overlay.
+    debug: bool,
     errors: Vec<String>,
 }
 
@@ -100,12 +130,12 @@ impl NotebookApp {
     fn viewer(&mut self, ui: &mut egui::Ui) {
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Only the original view exists so far.
-                let _ = ui.selectable_label(true, "Original");
-                ui.add_enabled(false, egui::Button::selectable(false, "Cleaned"));
+                ui.selectable_value(&mut self.view, View::Original, "Original");
+                ui.selectable_value(&mut self.view, View::Cleaned, "Cleaned");
                 ui.add_enabled(false, egui::Button::selectable(false, "Transcribed"));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_enabled(false, egui::Button::new("Delete"));
+                    ui.checkbox(&mut self.debug, "Debug");
                 });
             });
         });
@@ -130,13 +160,23 @@ impl NotebookApp {
                 .get(self.selected_index())
                 .map(|p| p.name.clone());
             if let (Some(name), Some(texture)) = (name, self.current_texture(ui.ctx())) {
-                ui.centered_and_justified(|ui| {
-                    ui.add(
-                        egui::Image::new(&texture)
-                            .shrink_to_fit()
-                            .alt_text(format!("Current: {name}")),
-                    );
-                });
+                let alt_text = match self.view {
+                    View::Original => format!("Current: {name}"),
+                    View::Cleaned => format!("Current: {name} (cleaned)"),
+                };
+                let image = egui::Image::new(&texture)
+                    .shrink_to_fit()
+                    .alt_text(alt_text);
+                // Give the image exactly the rect it's drawn in. In a justified layout its
+                // response would cover the whole panel, with the image centred inside.
+                let panel = ui.available_rect_before_wrap();
+                let size = image.calc_size(panel.size(), Some(texture.size_vec2()));
+                let image_rect = ui
+                    .put(Rect::from_center_size(panel.center(), size), image)
+                    .rect;
+                if self.debug {
+                    self.debug_overlay(ui, &name, image_rect);
+                }
             }
         });
 
@@ -182,6 +222,74 @@ impl NotebookApp {
         }
     }
 
+    /// The detected page outline over the original, and what cleaning found, for tuning cleanup.
+    fn debug_overlay(&mut self, ui: &mut egui::Ui, name: &str, image_rect: Rect) {
+        let Some(report) = self.report(name).cloned() else {
+            return;
+        };
+        let outline = report.outline.as_ref();
+        if let (View::Original, Ok(quad)) = (self.view, outline) {
+            let (w, h) = report.source_size;
+            let to_screen = |[x, y]: [f32; 2]| {
+                image_rect.min + Vec2::new(x / w as f32, y / h as f32) * image_rect.size()
+            };
+            let corners: Vec<Pos2> = quad.iter().copied().map(to_screen).collect();
+            let painter = ui.painter_at(image_rect.expand(4.0));
+            painter.add(Shape::closed_line(
+                corners.clone(),
+                Stroke::new(2.0, Color32::RED),
+            ));
+            for corner in corners {
+                painter.circle_filled(corner, 4.0, Color32::RED);
+            }
+        }
+
+        let lighting = &report.lighting;
+        let mut lines = vec![
+            match outline {
+                Ok(quad) => format!("Page outline: {}", format_quad(quad)),
+                Err(reason) => format!("No page outline: {reason}"),
+            },
+            format!(
+                "Output: {} x {}",
+                report.output_size.0, report.output_size.1
+            ),
+            format!("Paper colour: {:?}", lighting.paper_rgb),
+            format!(
+                "Black / white point: {} / {}",
+                lighting.black_point, lighting.white_point
+            ),
+        ];
+        lines.extend(
+            format!("{:#?}", self.clean_params)
+                .lines()
+                .map(str::to_owned),
+        );
+        egui::Area::new(egui::Id::unique("clean_debug"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(image_rect.left_top() + Vec2::splat(8.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    for line in lines {
+                        ui.monospace(line);
+                    }
+                });
+            });
+    }
+
+    /// What cleaning found for the page named `name`, cleaning it if that hasn't happened yet.
+    fn report(&mut self, name: &str) -> Option<&CleanReport> {
+        if !self.reports.contains_key(name) {
+            let page = self.pages.iter().find(|p| p.name == name)?;
+            let img = decode(&page.bytes).ok()?;
+            let cleaned = timed(format_args!("{name}: clean"), || {
+                clean(&img, &self.clean_params)
+            });
+            self.reports.insert(name.to_owned(), cleaned.report);
+        }
+        self.reports.get(name)
+    }
+
     /// Loading progress and errors from the last drop.
     fn status(&self, ui: &mut egui::Ui) {
         if self.ingest.pending() > 0 {
@@ -195,18 +303,30 @@ impl NotebookApp {
         }
     }
 
-    /// The selected page at full size, decoding it if the selection changed.
+    /// The selected page at full size in the current view, decoding (and cleaning) it if the
+    /// selection or view changed.
     fn current_texture(&mut self, ctx: &egui::Context) -> Option<TextureHandle> {
         let index = self.selected_index();
         let page = self.pages.get(index)?;
+        let view = self.view;
         if self
             .current
             .as_ref()
-            .is_none_or(|(name, _)| *name != page.name)
+            .is_none_or(|shown| shown.name != page.name || shown.view != view)
         {
             let name = &page.name;
             let texture = match timed(format_args!("{name}: decode"), || decode(&page.bytes)) {
                 Ok(img) => {
+                    let img = match view {
+                        View::Original => img,
+                        View::Cleaned => {
+                            let cleaned = timed(format_args!("{name}: clean"), || {
+                                clean(&img, &self.clean_params)
+                            });
+                            self.reports.insert(name.clone(), cleaned.report);
+                            cleaned.image
+                        }
+                    };
                     let max_side = ctx.input(|i| i.max_texture_side) as u32;
                     log::debug!(
                         "{name}: {:?}, max texture side {max_side}",
@@ -226,10 +346,22 @@ impl NotebookApp {
                     self.thumbs[index].clone()
                 }
             };
-            self.current = Some((page.name.clone(), texture));
+            self.current = Some(Shown {
+                name: page.name.clone(),
+                view,
+                texture,
+            });
         }
-        self.current.as_ref().map(|(_, texture)| texture.clone())
+        self.current.as_ref().map(|shown| shown.texture.clone())
     }
+}
+
+fn format_quad(quad: &[[f32; 2]; 4]) -> String {
+    let corners: Vec<String> = quad
+        .iter()
+        .map(|[x, y]| format!("({x:.0}, {y:.0})"))
+        .collect();
+    corners.join(" ")
 }
 
 fn is_hovering_files(ui: &egui::Ui) -> bool {

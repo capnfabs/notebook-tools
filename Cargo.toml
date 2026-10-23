@@ -11,6 +11,8 @@ notebook_core = { path = "crates/core" }
 eframe = "0.37.0"
 egui_kittest = "0.37.0"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "0.27", default-features = false }
+rayon = "1"
 
 # Image code is 5-30x slower unoptimized. Dependencies, plus core because the generic image code
 # it calls is compiled there.

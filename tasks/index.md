@@ -4,6 +4,7 @@ In priority order.
 
 - [x] [Bootstrap the UI](bootstrap-ui.md)
 - [x] [Image viewer](image-viewer.md)
+- [x] [Clean images](clean-images.md)
 - [ ] [Viewer actions](viewer-actions.md)
 - [ ] [Reorder pages](reorder-pages.md)
 - [ ] [HEIC decoding](heic-decoding.md)
@@ -13,3 +14,4 @@ In priority order.
 - [ ] [Spike: Claude bounding-box accuracy](bbox-spike.md)
 - [ ] [Claude auth approach](claude-auth.md)
 - [ ] [Decide: spread detection approach](spread-detection.md)
+- [ ] [Outline detection: hard photos](outline-detection.md)
