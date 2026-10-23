@@ -1,4 +1,4 @@
 - `spec.md` contains the core program specification.
 - setup a lightweight tracker in `tasks/index.md`, and create _new_ tasks as seperate markdown files there. Keep task descriptions extremely concise; prefer having to rediscover things to dumping all the context.
-- `decisions/` contains a decision log, each entry is `yyyy-mm-dd-$summary.md`. each shouldn't be more than two paragraph long, but prefer to be concise. "Taste" is a perfectly good reason.
+- `decisions/` contains a decision log, each entry is `yyyy-mm-dd-$summary.md`. each shouldn't be more than two paragraph long, but prefer to be concise. "Human Taste" is a perfectly good reason, as is "unquestioned agent recommendation" (when a human accepts your recommendation without questioning).
 - agents must not modify markdown files in the root directory for this project without explicit permission

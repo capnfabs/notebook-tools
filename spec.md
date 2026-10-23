@@ -5,7 +5,7 @@ Notebook-tools is a tool for OCR-ing a handwritten notebook.
 It needs a small, responsive desktop UI. We might port to mobile at some point. WASM is a bonus, but I suspect it might be difficult.
 
 The basic flow we're working towards is:
-- Allow the user to log into / connect the account to a Claude.ai account.
+- Allow the user to connect the account to a Claude.ai account.
 - Open a set of images taken by an iphone, probably in HEIC format.
 - Automatically detect whether this is one page or a two-page spread.
 - Align, transform and crop the images. Fix lighting so that they look as close to a scan as possible. I expect that we'll have to iterate on this a little.
