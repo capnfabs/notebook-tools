@@ -1,4 +1,5 @@
 pub mod app;
+mod dialog;
 mod export;
 mod ingest;
 mod timing;

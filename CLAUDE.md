@@ -1,5 +1,11 @@
+# project management
+
 - `spec.md` contains the core program specification.
-- setup a lightweight tracker in `tasks/index.md`, and create _new_ tasks as seperate markdown files there. Keep task descriptions extremely concise; prefer having to rediscover things to dumping all the context.
+- `tasks/` is a lightweight task tracker, use `tasks/index.md` as the hub and create _new_ tasks as seperate markdown files there. Keep task descriptions extremely concise; prefer having to rediscover things to dumping all the context.
 - `decisions/` contains a decision log, each entry is `yyyy-mm-dd-$summary.md`. each shouldn't be more than two paragraph long, but prefer to be concise. "Human Taste" is a perfectly good reason, as is "unquestioned agent recommendation" (when a human accepts your recommendation without questioning).
 - agents must not modify markdown files in the root directory for this project without explicit permission
 - never ask to commit your changes in this repo.
+
+# impl
+
+- build dialogs with `crates/app/src/dialog.rs` (macOS button order: affirmative rightmost); see `decisions/2026-10-23-dialog-buttons.md`.

@@ -9,6 +9,7 @@ use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
 };
 
+use crate::dialog::{self, Action, Choice};
 use crate::export::{Export, SavePath};
 use crate::ingest::Ingest;
 use crate::timing::timed;
@@ -177,22 +178,17 @@ impl NotebookApp {
         let Some(name) = self.confirm_delete.clone() else {
             return;
         };
-        let (mut delete, mut cancel) = (false, false);
-        let modal = egui::Modal::new(egui::Id::unique("confirm delete")).show(ctx, |ui| {
+        let choice = dialog::show(ctx, "confirm delete", 320.0, |ui| {
             ui.label(format!("Delete {name} and its transcript?"));
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                delete = ui.button("Delete page").clicked();
-                cancel = ui.button("Cancel").clicked();
-            });
+            dialog::buttons(ui, "Delete page", Action::Dangerous, true)
         });
-        if delete {
+        if choice == Some(Choice::Affirmative) {
             let index = self.pages.iter().position(|p| p.name == name);
             if let Some(index) = index {
                 self.delete_page(index);
             }
-            self.confirm_delete = None;
-        } else if cancel || modal.should_close() {
+        }
+        if choice.is_some() {
             self.confirm_delete = None;
         }
     }

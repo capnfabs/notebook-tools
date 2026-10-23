@@ -10,6 +10,8 @@ use eframe::egui;
 use notebook_core::Pages;
 use notebook_core::ocr::Transcript;
 
+use crate::dialog::{self, Action, Choice};
+
 /// Asks where to save a file, given a suggested file name. `None` if the user cancelled.
 pub type SavePath = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 
@@ -80,9 +82,7 @@ impl Export {
             return;
         }
         let settings = &mut self.settings;
-        let mut go = false;
-        let mut cancel = false;
-        let modal = egui::Modal::new(egui::Id::unique("export dialog")).show(ctx, |ui| {
+        let choice = dialog::show(ctx, "export dialog", 360.0, |ui| {
             ui.heading("Export");
             ui.radio_value(&mut settings.scope, Scope::Current, "Current page");
             ui.radio_value(&mut settings.scope, Scope::Everything, "Everything");
@@ -106,18 +106,14 @@ impl Export {
             if let Some(missing) = &missing {
                 ui.colored_label(ui.visuals().warn_fg_color, not_transcribed(missing));
             }
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let ready = missing.is_none() && settings.format != Format::Pdf;
-                go = ui.add_enabled(ready, egui::Button::new("Go")).clicked();
-                cancel = ui.button("Cancel").clicked();
-            });
+            let ready = missing.is_none() && settings.format != Format::Pdf;
+            dialog::buttons(ui, "Go", Action::Default, ready)
         });
-        if go {
+        if choice.is_some() {
             self.dialog_open = false;
+        }
+        if choice == Some(Choice::Affirmative) {
             self.run(ctx, self.settings, None, pages, selected);
-        } else if cancel || modal.should_close() {
-            self.dialog_open = false;
         }
     }
 

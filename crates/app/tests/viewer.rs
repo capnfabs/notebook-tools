@@ -561,3 +561,25 @@ fn reexport_overwrites_the_same_file() {
     assert!(written.contains("ring the plumbers re:"), "{written}");
     assert_eq!(asked.load(Ordering::SeqCst), 1, "asked where to save once");
 }
+
+/// macOS order: the affirmative button rightmost, after Cancel.
+#[test]
+fn dialogs_put_the_affirmative_button_last() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    let left = |harness: &Harness<'_, NotebookApp>, label: &str| {
+        let node = harness.get_by_label(label);
+        node.accesskit_node().bounding_box().unwrap().x0
+    };
+
+    harness.get_by_label("Export").click();
+    harness.run();
+    assert!(left(&harness, "Cancel") < left(&harness, "Go"));
+    harness.get_by_label("Cancel").click();
+    harness.run();
+
+    harness.get_by_label("Delete").click();
+    harness.run();
+    assert!(left(&harness, "Cancel") < left(&harness, "Delete page"));
+}
