@@ -68,7 +68,9 @@ impl Default for CleanParams {
             detect_open_radius: 2,
             min_outline_area: 0.2,
             max_outline_on_border: 0.05,
-            // Claude's image size limit.
+            // Claude's long-side limit. Transcription also caps the pixel count; see
+            // `ocr::MAX_IMAGE_PIXELS` and
+            // https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images
             max_output_side: 2576,
             background_side_px: 128,
             background_radius: 3,

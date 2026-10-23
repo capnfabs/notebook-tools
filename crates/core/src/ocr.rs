@@ -16,6 +16,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
 pub const MODEL: &str = "claude-opus-5-5";
+/// How hard Claude thinks: `low`, `medium`, `high`, `xhigh` or `max`.
+pub const EFFORT: &str = "high";
 pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2026-10-21";
 /// Lets `fallbacks: "default"` re-run a refused request on another model.
@@ -26,6 +28,14 @@ const OAUTH_BETA: &str = "oauth-2025-04-20";
 const MAX_TOKENS: u32 = 16_000;
 /// The API's limit on one image, measured on the base64 text.
 pub const MAX_IMAGE_BASE64_BYTES: usize = 5 * 1024 * 1024;
+/// Most pixels sent in one image. The API shrinks an image until neither side is over 2576px and
+/// it costs at most 4,784 visual tokens, one per 28×28px patch (about 3.75 MP). Claude's boxes are
+/// then in the shrunk image's pixels, not ours. Partial patches count as whole ones, so this is a
+/// little under, which keeps any image with sides up to 2576px within the token limit. The request
+/// asks the API to reject a bigger image rather than resize it. See
+/// <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>
+/// and `decisions/2026-10-23-bbox-accuracy.md`.
+pub const MAX_IMAGE_PIXELS: u32 = 3_600_000;
 
 pub const PROMPT: &str = "\
 Transcribe this photo of a handwritten notebook page.
@@ -254,14 +264,14 @@ fn encode_jpeg_within(img: &RgbaImage, limit: usize) -> Vec<u8> {
     }
 }
 
-/// The Messages API request for transcribing `jpeg`.
-pub fn request_body(jpeg: &[u8]) -> Value {
+/// The Messages API request for transcribing `jpeg`, thinking at `effort` (see [`EFFORT`]).
+pub fn request_body(jpeg: &[u8], effort: &str) -> Value {
     json!({
         "model": MODEL,
         "max_tokens": MAX_TOKENS,
         // Thinking is always on for this model; effort sets how much.
         "output_config": {
-            "effort": "high",
+            "effort": effort,
             "format": { "type": "json_schema", "schema": schema() },
         },
         "fallbacks": "default",
@@ -275,6 +285,9 @@ pub fn request_body(jpeg: &[u8]) -> Value {
                         "media_type": "image/jpeg",
                         "data": BASE64.encode(jpeg),
                     },
+                    // Fail rather than resize, which would put Claude's boxes in another image's
+                    // pixels. Default fallback routing skips models that would resize it.
+                    "transformations": { "oversized_image": "error" },
                 },
                 { "type": "text", "text": PROMPT },
             ],
@@ -431,8 +444,21 @@ pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), O
     Ok((status, response.bytes().map_err(network)?.to_vec()))
 }
 
-/// Transcribes a page from its file's bytes: the photo straightened and cropped to the page, with
-/// no lighting fix.
+/// What's sent for `photo`: straightened and cropped to the page, with no lighting fix, and no
+/// more than [`MAX_IMAGE_PIXELS`], so the API doesn't resize it and Claude's boxes are in its
+/// pixels. See <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>.
+pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImage {
+    let (page, _) = crate::crop_to_page(photo, params);
+    let (w, h) = page.dimensions();
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels <= u64::from(MAX_IMAGE_PIXELS) {
+        return page;
+    }
+    let scale = (f64::from(MAX_IMAGE_PIXELS) / pixels as f64).sqrt();
+    crate::shrink_to_fit(page, (f64::from(w.max(h)) * scale) as u32)
+}
+
+/// Transcribes a page from its file's bytes; see [`image_to_send`].
 #[cfg(not(target_arch = "wasm32"))]
 pub fn transcribe_page(
     credentials: &Credentials,
@@ -441,11 +467,11 @@ pub fn transcribe_page(
 ) -> Result<Transcript, OcrError> {
     let jpeg_and_size = |bytes| {
         let img = crate::decode(bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
-        let (page, _) = crate::crop_to_page(&img, params);
+        let page = image_to_send(&img, params);
         Ok((encode_jpeg(&page), page.dimensions()))
     };
     let (jpeg, size) = jpeg_and_size(page_bytes)?;
-    let (status, body) = send(credentials, &request_body(&jpeg))?;
+    let (status, body) = send(credentials, &request_body(&jpeg, EFFORT))?;
     parse_response(status, &body, size)
 }
 
@@ -606,6 +632,27 @@ mod tests {
                 .dimensions(),
             (256, 256)
         );
+    }
+
+    #[test]
+    fn image_to_send_fits_pixel_limit() {
+        let params = crate::CleanParams::default();
+        // Uniform grey has no page outline, so it's sent whole, scaled to the long-side limit.
+        let photo = RgbaImage::from_pixel(4000, 3000, Rgba([128, 128, 128, 255]));
+        let (w, h) = image_to_send(&photo, &params).dimensions();
+        assert!(w * h <= MAX_IMAGE_PIXELS, "{w}x{h}");
+        assert!(
+            w * h > MAX_IMAGE_PIXELS * 99 / 100,
+            "{w}x{h} shrunk more than needed"
+        );
+        assert_eq!(
+            (w as f32 / h as f32 * 100.0).round(),
+            133.0,
+            "aspect ratio kept"
+        );
+
+        let small = RgbaImage::from_pixel(1200, 900, Rgba([128, 128, 128, 255]));
+        assert_eq!(image_to_send(&small, &params).dimensions(), (1200, 900));
     }
 
     #[test]

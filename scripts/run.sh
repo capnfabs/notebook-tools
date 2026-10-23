@@ -4,11 +4,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# Fetched each run because access tokens expire.
-if ! token=$(ant auth print-credentials --access-token); then
-  echo "Couldn't get a token from ant; try \`ant auth login\`." >&2
-  exit 1
-fi
-
-ANTHROPIC_AUTH_TOKEN="$token" RUST_LOG="${RUST_LOG:-notebook_app=debug}" \
-  exec cargo run -p notebook_app "$@"
+RUST_LOG="${RUST_LOG:-notebook_app=debug}" \
+  exec scripts/with-claude-token.sh cargo run -p notebook_app "$@"
