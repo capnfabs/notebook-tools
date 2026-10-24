@@ -98,4 +98,6 @@ Transcript {
         output_tokens: 2210,
     },
     from_cache: false,
+    stored_at: None,
+    edited: false,
 }

@@ -1,11 +1,12 @@
 //! Transcribes a page with Claude through the Messages API. Building the request and parsing the
-//! response are plain functions, testable without the network; only [`send`] and
-//! [`transcribe_page`] make requests.
+//! response are plain functions, testable without the network; only [`send`] and [`fetch_page`]
+//! make requests.
 //!
 //! Response shape: `decisions/2026-10-23-ocr-response-shape.md`.
 
 use std::fmt;
 use std::ops::Range;
+use std::time::SystemTime;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -69,6 +70,10 @@ pub struct Transcript {
     pub usage: Usage,
     /// Loaded from the [`crate::cache`] rather than just transcribed.
     pub from_cache: bool,
+    /// When the [`crate::cache`] stored it. `None` if it wasn't stored.
+    pub stored_at: Option<SystemTime>,
+    /// The user edited a line by hand. Never part of Claude's answer.
+    pub edited: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -184,9 +189,18 @@ impl Transcript {
 
     /// Replaces line `index`'s markdown. Uncertain words no longer in it stop being found.
     pub fn set_line(&mut self, index: usize, text_md: String) {
-        if let Some(line) = self.lines.get_mut(index) {
+        if let Some(line) = self.lines.get_mut(index)
+            && line.text_md != text_md
+        {
             line.text_md = text_md;
+            self.edited = true;
         }
+    }
+
+    /// The user has corrected or kept an uncertain word, or edited a line: work that
+    /// transcribing the page again would lose.
+    pub fn corrected(&self) -> bool {
+        self.edited || self.uncertain.iter().any(|u| u.resolved)
     }
 }
 
@@ -486,6 +500,8 @@ pub fn parse_response(
         model: response.model,
         usage: response.usage,
         from_cache: false,
+        stored_at: None,
+        edited: false,
     })
 }
 
@@ -523,27 +539,17 @@ pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImag
     crate::shrink_to_fit(page, (f64::from(w.max(h)) * scale) as u32)
 }
 
-/// Transcribes a page from its file's bytes; see [`image_to_send`]. With a `cache`, a photo
-/// transcribed before isn't sent again.
-pub fn transcribe_page(
+/// Sends a page to Claude from its file's bytes (see [`image_to_send`]), returning the response
+/// for [`parse_response`] or the [`crate::cache`].
+pub fn fetch_page(
     credentials: &Credentials,
-    cache: Option<&crate::cache::Cache>,
     page_bytes: &[u8],
     params: &crate::CleanParams,
-) -> Result<Transcript, OcrError> {
-    let fetch = || {
-        let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
-        let page = image_to_send(&img, params);
-        let (status, body) = send(credentials, &request_body(&encode_jpeg(&page), EFFORT))?;
-        Ok((status, body, page.dimensions()))
-    };
-    match cache {
-        Some(cache) => cache.transcript_or(page_bytes, fetch),
-        None => {
-            let (status, body, size) = fetch()?;
-            parse_response(status, &body, size)
-        }
-    }
+) -> Result<crate::cache::Fetched, OcrError> {
+    let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
+    let page = image_to_send(&img, params);
+    let (status, body) = send(credentials, &request_body(&encode_jpeg(&page), EFFORT))?;
+    Ok((status, body, page.dimensions()))
 }
 
 #[cfg(test)]
@@ -591,6 +597,8 @@ mod tests {
             model: MODEL.to_owned(),
             usage: Usage::default(),
             from_cache: false,
+            stored_at: None,
+            edited: false,
         }
     }
 
@@ -734,6 +742,20 @@ mod tests {
         assert_eq!(t.uncertain_spans(), [None]);
         t.set_line(9, "ignored".into());
         assert_eq!(t.markdown(), "buy milk\ncall Sam");
+    }
+
+    #[test]
+    fn corrections_are_noticed() {
+        let mut t = transcript(&["buy eggs", "call Sam"], vec![uncertain(0, "eggs")]);
+        assert!(!t.corrected());
+        t.set_line(1, "call Sam".into());
+        assert!(!t.corrected(), "unchanged line");
+        t.set_line(1, "call Sam!".into());
+        assert!(t.corrected());
+
+        let mut t = transcript(&["buy eggs"], vec![uncertain(0, "eggs")]);
+        t.resolve(0, "eggs");
+        assert!(t.corrected(), "kept a reading");
     }
 
     #[test]

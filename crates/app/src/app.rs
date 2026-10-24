@@ -1,10 +1,14 @@
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use eframe::egui;
 use egui::{
-    Align, Color32, Key, Layout, Margin, Modifiers, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
-    TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetInfo, accesskit::Role,
+    Align, Color32, Key, Label, Layout, Margin, Modifiers, Pos2, Rect, RichText, Sense, Shape,
+    Stroke, StrokeKind, TextStyle, TextWrapMode, TextureHandle, TextureOptions, UiBuilder, Vec2,
+    WidgetInfo, WidgetText, accesskit::Role,
 };
+use jiff::tz::TimeZone;
+use notebook_core::ocr::Transcript;
 use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
 };
@@ -12,6 +16,7 @@ use notebook_core::{
 use crate::dialog::{self, Action, Choice};
 use crate::export::{Export, SavePath};
 use crate::ingest::Ingest;
+use crate::split::{self, Split};
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions};
 use crate::transcript_view::{self, TranscriptView};
@@ -19,6 +24,12 @@ use crate::transcript_view::{self, TranscriptView};
 /// Why the Transcribed view is unavailable.
 const NO_TRANSCRIBER_HINT: &str =
     "Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app";
+
+/// The button that retranscribes a page, skipping the cache.
+const FORCE_LABEL: &str = "Force retranscription";
+
+/// Transcribe all asks first when it would send more pages than this.
+const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
@@ -50,8 +61,8 @@ enum View {
     #[default]
     Original,
     Cleaned,
-    /// Claude's transcription beside the cleaned page, for correcting. Selecting it transcribes
-    /// the page, once.
+    /// Claude's transcription beside the cleaned page, for correcting. Switching to it transcribes
+    /// the page shown, if it isn't already; selecting another page doesn't.
     Transcribed,
 }
 
@@ -101,9 +112,16 @@ pub struct NotebookApp {
     errors: Vec<String>,
     transcriptions: Transcriptions,
     transcript_view: TranscriptView,
+    /// Between the page and its transcript in the Transcribed view.
+    split: Split,
     export: Export,
     /// The transcribed page the user asked to delete, until they confirm.
     confirm_delete: Option<String>,
+    /// The user asked to transcribe more than [`TRANSCRIBE_ALL_CONFIRM_ABOVE`] pages, until they
+    /// confirm.
+    confirm_transcribe_all: bool,
+    /// The corrected page the user asked to retranscribe, until they confirm.
+    confirm_force: Option<String>,
 }
 
 impl NotebookApp {
@@ -130,11 +148,17 @@ impl NotebookApp {
             self.errors.clear();
         }
         self.add_next_page(&ctx);
-        while let Some((name, transcript)) = self.transcriptions.next() {
-            let index = self.pages.iter().position(|p| p.name == name);
-            // The page may have been deleted meanwhile.
-            if let Some(page) = index.and_then(|i| self.pages.get_mut(i)) {
-                page.transcript = Some(transcript);
+        while let Some(done) = self.transcriptions.next(&ctx) {
+            let index = self.pages.iter().position(|p| p.name == done.name);
+            // The page may have been deleted meanwhile. Only a forced retranscription replaces a
+            // transcript: a late cache hit mustn't undo the user's corrections.
+            if let Some(page) = index.and_then(|i| self.pages.get_mut(i))
+                && (done.forced || page.transcript.is_none())
+            {
+                page.transcript = Some(done.transcript);
+                if done.forced {
+                    self.transcript_view = TranscriptView::default();
+                }
             }
         }
 
@@ -166,7 +190,10 @@ impl NotebookApp {
             ctx.load_texture(&name, color_image(&page.thumbnail), TextureOptions::LINEAR)
         });
         // Duplicate names are skipped.
-        if self.pages.add(page).is_some() {
+        if let Some(index) = self.pages.add(page) {
+            let bytes = self.pages.get(index).map(|p| p.bytes.clone());
+            self.transcriptions
+                .look_up(&name, bytes.unwrap_or_default(), ctx);
             self.thumbs.insert(name, thumb);
         }
     }
@@ -219,6 +246,86 @@ impl NotebookApp {
         }
         if choice.is_some() {
             self.confirm_delete = None;
+        }
+    }
+
+    /// Pages without a transcript that aren't being transcribed, including any that failed.
+    fn untranscribed(&self) -> Vec<&Page> {
+        self.pages
+            .iter()
+            .filter(|p| p.transcript.is_none() && !self.transcriptions.queued_or_running(&p.name))
+            .collect()
+    }
+
+    /// Queues every page [`Self::untranscribed`]. Cached ones aren't sent.
+    fn transcribe_all(&mut self, ctx: &egui::Context) {
+        let pages: Vec<(String, Vec<u8>)> = self
+            .untranscribed()
+            .into_iter()
+            .map(|p| (p.name.clone(), p.bytes.clone()))
+            .collect();
+        for (name, bytes) in pages {
+            self.transcriptions
+                .start_later(&name, bytes, self.clean_params.clone(), ctx);
+        }
+    }
+
+    fn transcribe_all_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_transcribe_all {
+            return;
+        }
+        let count = self.untranscribed().len();
+        let choice = dialog::show(ctx, "confirm transcribe all", 320.0, |ui| {
+            ui.label(format!("Transcribe {count} pages?"));
+            dialog::buttons(ui, "Transcribe", Action::Default, count > 0)
+        });
+        if choice == Some(Choice::Affirmative) {
+            self.transcribe_all(ctx);
+        }
+        if choice.is_some() {
+            self.confirm_transcribe_all = false;
+        }
+    }
+
+    /// Retranscribes the page named `name`, skipping the cache.
+    fn force(&mut self, name: &str, ctx: &egui::Context) {
+        if let Some(page) = self.pages.iter().find(|p| p.name == name) {
+            self.transcriptions
+                .force(name, page.bytes.clone(), self.clean_params.clone(), ctx);
+        }
+    }
+
+    fn force_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.confirm_force.clone() else {
+            return;
+        };
+        let choice = dialog::show(ctx, "confirm force", 320.0, |ui| {
+            ui.label(format!(
+                "Retranscribe {name}? Your corrections will be lost."
+            ));
+            dialog::buttons(ui, "Retranscribe", Action::Dangerous, true)
+        });
+        if choice == Some(Choice::Affirmative) {
+            self.force(&name, ctx);
+        }
+        if choice.is_some() {
+            self.confirm_force = None;
+        }
+    }
+
+    /// Transcribes the selected page, unless it's transcribed, being transcribed, or failed
+    /// (which waits for Retry).
+    fn transcribe_selected(&mut self, ctx: &egui::Context) {
+        let Some(page) = self.pages.get(self.selected_index()) else {
+            return;
+        };
+        if page.transcript.is_none() && self.transcriptions.error(&page.name).is_none() {
+            self.transcriptions.start(
+                &page.name,
+                page.bytes.clone(),
+                self.clean_params.clone(),
+                ctx,
+            );
         }
     }
 
@@ -309,8 +416,9 @@ impl NotebookApp {
                         egui::Button::selectable(self.view == View::Transcribed, "Transcribed"),
                     )
                     .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
-                if transcribed.clicked() {
+                if transcribed.clicked() && self.view != View::Transcribed {
                     self.view = View::Transcribed;
+                    self.transcribe_selected(ui.ctx());
                 }
                 ui.separator();
                 let index = self.selected_index();
@@ -350,20 +458,38 @@ impl NotebookApp {
                 self.status(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Only transcribed pages can be exported.
-                    let can_export = self.transcriptions.available();
+                    let can_transcribe = self.transcriptions.available();
                     let export = ui
-                        .add_enabled(can_export, egui::Button::new("Export"))
+                        .add_enabled(can_transcribe, egui::Button::new("Export"))
                         .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
                     if export.clicked() {
                         self.export.open_dialog();
                     }
                     let reexport = ui.add_enabled(
-                        can_export && self.export.can_reexport(),
+                        can_transcribe && self.export.can_reexport(),
                         egui::Button::new("Re-export"),
                     );
                     if reexport.clicked() {
                         self.export
                             .reexport(ui.ctx(), &self.pages, self.selected_index());
+                    }
+                    let untranscribed = self.untranscribed().len();
+                    let transcribe_all = ui
+                        .add_enabled(
+                            can_transcribe && untranscribed > 0,
+                            egui::Button::new("Transcribe all"),
+                        )
+                        .on_disabled_hover_text(if can_transcribe {
+                            "Every page is transcribed"
+                        } else {
+                            NO_TRANSCRIBER_HINT
+                        });
+                    if transcribe_all.clicked() {
+                        if untranscribed > TRANSCRIBE_ALL_CONFIRM_ABOVE {
+                            self.confirm_transcribe_all = true;
+                        } else {
+                            self.transcribe_all(ui.ctx());
+                        }
                     }
                 });
             });
@@ -388,6 +514,8 @@ impl NotebookApp {
         });
 
         self.delete_dialog(ui.ctx());
+        self.transcribe_all_dialog(ui.ctx());
+        self.force_dialog(ui.ctx());
         self.export
             .dialog(ui.ctx(), &self.pages, self.selected_index());
 
@@ -531,15 +659,33 @@ impl NotebookApp {
         let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
             return;
         };
+        // A page being retranscribed shows progress, not the transcript it's replacing.
+        let transcribing = self.transcriptions.queued_or_running(&name);
+        let rect = ui.available_rect_before_wrap();
+        let texture = self.current_texture(ui.ctx());
+        let shown = self
+            .pages
+            .get(index)
+            .and_then(|p| p.transcript.as_ref())
+            .filter(|_| !transcribing);
+        let limits = split::Limits {
+            text_natural: shown.map(|t| transcript_view::natural_width(ui, t)),
+            image_cap: texture.as_ref().map(|t| {
+                let size = t.size_vec2();
+                rect.height() * size.x / size.y
+            }),
+        };
         let gap = ui.spacing().item_spacing.x * 2.0;
-        let (page_rect, text_rect) = transcript_view::split(ui.available_rect_before_wrap(), gap);
-        let image_rect = self
-            .current_texture(ui.ctx())
-            .map(|texture| self.show_page(ui, &name, &texture, page_rect));
+        let (mut page_rect, text_rect) = self.split.show(ui, rect, gap, limits);
+        if !transcribing && let Some(status) = self.transcript_status(ui, index, page_rect) {
+            page_rect.max.y = status.top() - ui.spacing().item_spacing.y;
+        }
+        let image_rect = texture.map(|texture| self.show_page(ui, &name, &texture, page_rect));
         let transcript = self
             .pages
             .get_mut(index)
-            .and_then(|p| p.transcript.as_mut());
+            .and_then(|p| p.transcript.as_mut())
+            .filter(|_| !transcribing);
         if let Some(transcript) = transcript {
             self.transcript_view
                 .show(ui, &name, transcript, image_rect, text_rect);
@@ -550,33 +696,83 @@ impl NotebookApp {
         }
     }
 
-    /// Page `index` being transcribed, or why it couldn't be, starting it if it hasn't been
-    /// tried yet.
+    /// Where page `index`'s transcript came from, or why retranscribing it failed, and a button to
+    /// retranscribe it, at the bottom of `rect`. Returns where it went, if the page has a
+    /// transcript.
+    fn transcript_status(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) -> Option<Rect> {
+        let page = self.pages.get(index)?;
+        let transcript = page.transcript.as_ref()?;
+        let name = page.name.clone();
+        let when = when_and_by(transcript, &TimeZone::system());
+        let corrected = transcript.corrected();
+        let error = self.transcriptions.error(&name);
+        let text = match error {
+            Some(err) => RichText::new(format!(
+                "Retranscription failed: {err}. Using the cached version, transcribed {when}."
+            ))
+            .color(ui.visuals().error_fg_color),
+            None if transcript.from_cache => {
+                RichText::new(format!("From cache: transcribed {when}"))
+            }
+            None => RichText::new(format!("Transcribed {when}")),
+        };
+        let layout = Layout::bottom_up(Align::Min);
+        // Bottom up, so the row sits at the bottom however many lines the text wraps to.
+        let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
+            ui.horizontal(|ui| {
+                // Long text wraps in the room left of the button.
+                let force = WidgetText::from(FORCE_LABEL).into_galley(
+                    ui,
+                    Some(TextWrapMode::Extend),
+                    f32::INFINITY,
+                    TextStyle::Button,
+                );
+                let button_width = force.size().x + 2.0 * ui.spacing().button_padding.x;
+                let text_width = ui.available_width() - button_width - ui.spacing().item_spacing.x;
+                ui.scope(|ui| {
+                    ui.set_max_width(text_width);
+                    ui.add(Label::new(text).wrap());
+                });
+                ui.button(FORCE_LABEL).clicked()
+            })
+            .inner
+        });
+        if scope.inner {
+            if corrected {
+                self.confirm_force = Some(name);
+            } else {
+                self.force(&name, ui.ctx());
+            }
+        }
+        Some(scope.response.rect)
+    }
+
+    /// Page `index` being transcribed, or why it couldn't be, or a button to transcribe it.
     fn transcription_progress(&mut self, ui: &mut egui::Ui, index: usize) {
         let Some(page) = self.pages.get(index) else {
             return;
         };
         let name = &page.name;
-        if let Some(err) = self.transcriptions.error(name) {
+        let start = if self.transcriptions.queued_or_running(name) {
+            spinner(ui, &format!("Transcribing {name}…"));
+            false
+        } else if let Some(err) = self.transcriptions.error(name) {
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 format!("Couldn't transcribe {name}: {err}"),
             );
-            if ui.button("Retry").clicked() {
-                let params = self.clean_params.clone();
-                self.transcriptions
-                    .start(name, page.bytes.clone(), params, ui.ctx());
-            }
+            ui.button("Retry").clicked()
+        } else if self.transcriptions.checking(name) {
+            spinner(ui, &format!("Looking for {name} in the cache…"));
+            false
         } else {
-            if !self.transcriptions.in_flight(name) {
-                let params = self.clean_params.clone();
-                self.transcriptions
-                    .start(name, page.bytes.clone(), params, ui.ctx());
-            }
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!("Transcribing {name}…"));
-            });
+            ui.label(format!("{name} isn't transcribed yet."));
+            ui.button("Transcribe").clicked()
+        };
+        if start {
+            let params = self.clean_params.clone();
+            self.transcriptions
+                .start(name, page.bytes.clone(), params, ui.ctx());
         }
     }
 
@@ -648,13 +844,16 @@ impl NotebookApp {
         self.reports.get(name)
     }
 
-    /// Loading progress and errors from the last drop, and what the last export did.
+    /// Loading and transcription progress, errors from the last drop, and what the last export
+    /// did.
     fn status(&self, ui: &mut egui::Ui) {
         if self.ingest.pending() > 0 {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(format!("Loading {}…", self.ingest.pending()));
-            });
+            spinner(ui, &format!("Loading {}…", self.ingest.pending()));
+        }
+        match self.transcriptions.pending() {
+            0 => {}
+            1 => spinner(ui, "Transcribing 1 page…"),
+            n => spinner(ui, &format!("Transcribing {n} pages…")),
         }
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -722,12 +921,38 @@ impl NotebookApp {
     }
 }
 
+/// When and by which model `transcript` was made: "2026-10-23 14:05 by claude-opus-5-5", in `tz`,
+/// or just "by …" if it wasn't cached.
+fn when_and_by(transcript: &Transcript, tz: &TimeZone) -> String {
+    match transcript.stored_at {
+        Some(at) => format!("{} by {}", format_time(at, tz), transcript.model),
+        None => format!("by {}", transcript.model),
+    }
+}
+
+fn format_time(time: SystemTime, tz: &TimeZone) -> String {
+    match jiff::Timestamp::try_from(time) {
+        Ok(at) => at
+            .to_zoned(tz.clone())
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string(),
+        Err(_) => "at an unknown time".to_owned(),
+    }
+}
+
 fn format_quad(quad: &[[f32; 2]; 4]) -> String {
     let corners: Vec<String> = quad
         .iter()
         .map(|[x, y]| format!("({x:.0}, {y:.0})"))
         .collect();
     corners.join(" ")
+}
+
+fn spinner(ui: &mut egui::Ui, label: &str) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(label);
+    });
 }
 
 fn is_hovering_files(ui: &egui::Ui) -> bool {
@@ -746,5 +971,20 @@ impl eframe::App for NotebookApp {
             log::debug!("slow frame: {:.0} ms", cpu * 1000.0);
         }
         NotebookApp::ui(self, ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn times_are_shown_to_the_minute() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_761_225_959);
+        assert_eq!(format_time(at, &TimeZone::UTC), "2025-10-23 13:25");
+        let sydney = TimeZone::get("Australia/Sydney").unwrap();
+        assert_eq!(format_time(at, &sydney), "2025-10-24 00:25");
     }
 }

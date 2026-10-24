@@ -12,11 +12,11 @@
 - [x] [Drop WASM](drop-wasm.md)
 - [x] [Flaky test: deleting a transcribed page](flaky-delete-test.md)
 - [x] [Reorder pages](reorder-pages.md)
+- [x] [Confirm before transcribing](confirm-transcribe.md)
+- [x] [Cache status + force retranscription](cache-status-ui.md)
+- [x] [Transcribe all](transcribe-all.md)
 
 ## features
-- [ ] [Confirm before transcribing](confirm-transcribe.md)
-- [ ] [Cache status + force retranscription](cache-status-ui.md)
-- [ ] [Transcribe all](transcribe-all.md)
 - [ ] [PDF export](pdf-export.md)
 - [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
 
@@ -26,6 +26,7 @@
 - [ ] [Background decoding](background-decoding.md)
 - [ ] [Downscale on load](downscale-on-load.md)
 - [ ] [Prune the transcription cache](prune-cache.md)
+- [ ] [Cached transcripts without credentials](cache-without-credentials.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)

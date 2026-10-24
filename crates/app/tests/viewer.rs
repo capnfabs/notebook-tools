@@ -10,8 +10,9 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{NotebookApp, SavePath, Transcriber};
-use notebook_core::ocr::{Transcript, parse_response};
+use notebook_app::{Fetch, NotebookApp, SavePath, Transcriber};
+use notebook_core::cache::{Cache, Fetched};
+use notebook_core::ocr::OcrError;
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -68,9 +69,33 @@ fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
     Harness::new_ui_state(|ui, app: &mut NotebookApp| app.ui(ui), app)
 }
 
-/// Every page transcribes to the recorded response.
+/// Every page transcribes to the recorded response, without a cache.
 fn transcriber() -> Transcriber {
-    Arc::new(|_, _| Ok(recorded_transcript()))
+    Transcriber::new(Arc::new(|_, _| Ok(recorded())), None)
+}
+
+/// Answers every request with the recorded response, counting them.
+fn counting_fetch() -> (Fetch, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let fetch: Fetch = Arc::new(move |_, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Ok(recorded())
+    });
+    (fetch, calls)
+}
+
+/// An empty cache directory of the test's own. Harnesses given the same one share a cache.
+fn cache_dir(test: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("viewer-cache")
+        .join(test);
+    std::fs::remove_dir_all(&dir).ok();
+    dir
+}
+
+fn cached_harness(fetch: Fetch, cache_dir: &Path) -> Harness<'static, NotebookApp> {
+    harness_with(Transcriber::new(fetch, Some(Cache::new(cache_dir))))
 }
 
 /// Opens the Transcribed view of the selected page and waits for its transcript.
@@ -99,10 +124,14 @@ fn correct_plumber(harness: &mut Harness<'_, NotebookApp>) {
 }
 
 /// The recorded response from core's OCR tests.
-fn recorded_transcript() -> Transcript {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fixtures/ocr/success.json");
-    parse_response(200, &std::fs::read(path).unwrap(), (1200, 900)).unwrap()
+fn recorded() -> Fetched {
+    recorded_fixture("success")
+}
+
+fn recorded_fixture(name: &str) -> Fetched {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../core/tests/fixtures/ocr/{name}.json"));
+    (200, std::fs::read(path).unwrap(), (1200, 900))
 }
 
 /// Steps frames until a label containing `text` appears. Transcription finishes on another
@@ -118,6 +147,19 @@ fn step_until(harness: &mut Harness<'_, NotebookApp>, text: &str) {
     panic!("{text:?} never appeared");
 }
 
+/// Steps frames until nothing is being transcribed. The first one acts on any click.
+fn step_until_transcribed(harness: &mut Harness<'_, NotebookApp>) {
+    harness.step();
+    for _ in 0..500 {
+        harness.step();
+        if harness.query_by_label_contains("Transcribing").is_none() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("still transcribing");
+}
+
 fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)]) {
     for (name, bytes) in files {
         harness.input_mut().dropped_files.push(Arc::new(TestFile {
@@ -125,6 +167,8 @@ fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)])
             bytes: bytes.clone(),
         }));
     }
+    // A page is added per frame.
+    harness.run_steps(files.len());
     harness.run();
 }
 
@@ -328,7 +372,7 @@ fn controls_without_a_transcriber() {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
-    for label in ["Transcribed", "Re-export", "Export"] {
+    for label in ["Transcribed", "Transcribe all", "Re-export", "Export"] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
@@ -376,19 +420,15 @@ fn deleting_a_transcribed_page_asks_first() {
     harness.get_by_label("Delete").click();
     harness.run();
     harness.get_by_label("Delete page").click();
-    // b.png starts transcribing once it's selected, so its spinner keeps the UI from settling.
-    step_until(&mut harness, "Current: b.png");
+    harness.run();
+    harness.get_by_label("b.png isn't transcribed yet.");
     assert_eq!(thumbnails(&harness), ["b.png"]);
 }
 
 #[test]
 fn transcribed_view_transcribes_once() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = calls.clone();
-    let mut harness = harness_with(Arc::new(move |_, _| {
-        counter.fetch_add(1, Ordering::SeqCst);
-        Ok(recorded_transcript())
-    }));
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch, None));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     harness.get_by_label("Transcribed").click();
@@ -408,12 +448,11 @@ fn transcribed_view_transcribes_once() {
 fn failed_transcription_can_be_retried() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let mut harness = harness_with(Arc::new(move |_, _| {
-        match counter.fetch_add(1, Ordering::SeqCst) {
-            0 => Err("Claude API error 529 (overloaded_error): Overloaded".into()),
-            _ => Ok(recorded_transcript()),
-        }
-    }));
+    let fetch: Fetch = Arc::new(move |_, _| match counter.fetch_add(1, Ordering::SeqCst) {
+        0 => Err(overloaded()),
+        _ => Ok(recorded()),
+    });
+    let mut harness = harness_with(Transcriber::new(fetch, None));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     harness.get_by_label("Transcribed").click();
@@ -431,6 +470,278 @@ fn failed_transcription_can_be_retried() {
         harness
             .query_by_label_contains("Couldn't transcribe")
             .is_none()
+    );
+}
+
+#[test]
+fn selecting_another_page_asks_before_transcribing() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch, None));
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("b.png").click();
+    harness.run();
+    harness.get_by_label("b.png isn't transcribed yet.");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    harness.get_by_label("Transcribe").click();
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn switching_to_transcribed_transcribes_the_shown_page() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch, None));
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    harness.get_by_label("b.png").click();
+    harness.get_by_label("Cleaned").click();
+    harness.run();
+
+    harness.get_by_label("Transcribed").click();
+    step_until(&mut harness, "# Thurs 23 Oct");
+    harness.get_by_label("Current: b.png (cleaned)");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cached_pages_show_straight_away() {
+    let dir = cache_dir("show_straight_away");
+    let (fetch, _) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    // Later, the same photo under another name, after an uncached one.
+    let (fetch, calls) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", png()), ("b.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    harness.get_by_label("b.png").click();
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert!(harness.query_by_label("Transcribe").is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "b.png not sent");
+    harness.get_by_label_contains("From cache: transcribed 20");
+    harness.get_by_label_contains(" by claude-opus-5-5");
+}
+
+/// Answers with the recorded responses in `answers`, in turn, sleeping for `delay` first.
+fn answering(
+    answers: Vec<Result<Fetched, OcrError>>,
+    delay: Duration,
+) -> (Fetch, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let answers = std::sync::Mutex::new(answers.into_iter());
+    let fetch: Fetch = Arc::new(move |_, _| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        std::thread::sleep(delay);
+        answers.lock().unwrap().next().expect("an answer left")
+    });
+    (fetch, calls)
+}
+
+/// Checks the status line containing `status` has the Force button on its row, to its right and
+/// within the page's half of the window.
+fn force_beside(harness: &Harness<'_, NotebookApp>, status: &str) {
+    let text = harness.get_by_label_contains(status);
+    let text = text.accesskit_node().bounding_box().unwrap();
+    let button = harness.get_by_label("Force retranscription");
+    let button = button.accesskit_node().bounding_box().unwrap();
+    assert!(
+        button.y0 < text.y1 && text.y0 < button.y1,
+        "{text:?}, {button:?}"
+    );
+    assert!(text.x1 <= button.x0, "{text:?}, {button:?}");
+    let half = harness.ctx.content_rect().center().x;
+    assert!(button.x1 <= f64::from(half), "{button:?}");
+}
+
+fn overloaded() -> OcrError {
+    OcrError::Api {
+        status: 529,
+        kind: "overloaded_error".into(),
+        message: "Overloaded".into(),
+    }
+}
+
+#[test]
+fn force_retranscribes_without_asking_if_uncorrected() {
+    let answers = vec![Ok(recorded()), Ok(recorded_fixture("fallback"))];
+    let (fetch, calls) = answering(answers, Duration::from_millis(100));
+    let mut harness = cached_harness(fetch, &cache_dir("force"));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    force_beside(&harness, "Transcribed 20");
+
+    harness.get_by_label("Force retranscription").click();
+    harness.step();
+    harness.step();
+    // Progress replaces the old transcript meanwhile.
+    harness.get_by_label("Transcribing a.png…");
+    assert!(harness.query_by_label("# Thurs 23 Oct").is_none());
+    assert!(harness.query_by_label("Force retranscription").is_none());
+
+    step_until(&mut harness, "by claude-opus-4-8");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
+    let dir = cache_dir("failed_force");
+    let answers = vec![Ok(recorded()), Err(overloaded())];
+    let (fetch, _) = answering(answers, Duration::ZERO);
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    correct_plumber(&mut harness);
+
+    harness.get_by_label("Force retranscription").click();
+    harness.run();
+    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
+    harness.get_by_label("Retranscribe").click();
+    step_until(&mut harness, "Retranscription failed: Claude API error 529");
+    harness.get_by_label_contains("Using the cached version, transcribed 20");
+    force_beside(&harness, "Retranscription failed");
+    harness.get_by_label("plumbers");
+
+    // The cached answer is still Claude's.
+    let (fetch, calls) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    harness.get_by_label("plumber");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn transcribe_all_starts_straight_away_for_a_few_pages() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch, None));
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+
+    harness.get_by_label("Transcribe all").click();
+    step_until_transcribed(&mut harness);
+    assert!(harness.query_by_label_contains("pages?").is_none());
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let all = harness.get_by_label("Transcribe all");
+    assert!(all.accesskit_node().is_disabled(), "nothing left");
+}
+
+#[test]
+fn transcribe_all_asks_first_and_sends_four_at_a_time() {
+    let (calls, running, most) = (
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let fetch: Fetch = {
+        let (calls, running, most) = (calls.clone(), running.clone(), most.clone());
+        Arc::new(move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(50));
+            running.fetch_sub(1, Ordering::SeqCst);
+            Ok(recorded())
+        })
+    };
+    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
+    let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
+    drop_files(&mut harness, &files);
+
+    harness.get_by_label("Transcribe all").click();
+    harness.run();
+    harness.get_by_label("Transcribe 6 pages?");
+    harness.get_by_label("Cancel").click();
+    harness.run();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    harness.get_by_label("Transcribe all").click();
+    harness.run();
+    harness.get_by_label("Transcribe").click();
+    step_until_transcribed(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 6);
+    assert_eq!(most.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn transcribe_all_uses_the_cache() {
+    let dir = cache_dir("transcribe_all");
+    let (fetch, _) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    let (fetch, calls) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    harness.get_by_label("Transcribe all").click();
+    step_until_transcribed(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "only b.png sent");
+}
+
+#[test]
+fn deleting_a_queued_page_means_it_isnt_sent() {
+    let (calls, slow) = (Arc::new(AtomicUsize::new(0)), Duration::from_millis(100));
+    let fetch: Fetch = {
+        let calls = calls.clone();
+        Arc::new(move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(slow);
+            Ok(recorded())
+        })
+    };
+    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
+    let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
+    drop_files(&mut harness, &files);
+    harness.get_by_label("Transcribe all").click();
+    harness.run();
+    harness.get_by_label("Transcribe").click();
+    harness.step();
+
+    harness.get_by_label("f.png").click();
+    harness.step();
+    harness.get_by_label("Delete").click();
+    harness.step();
+    step_until_transcribed(&mut harness);
+    assert_eq!(thumbnails(&harness).len(), 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
+}
+
+#[test]
+fn dragging_the_split_widens_the_page() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    let width = |harness: &Harness<'_, NotebookApp>| {
+        let image = harness.get_by_label("Current: a.png (cleaned)");
+        image.accesskit_node().bounding_box().unwrap().width()
+    };
+    let before = width(&harness);
+
+    let start = centre(&harness, "Resize the transcript");
+    harness.hover_at(start);
+    harness.run();
+    harness.drag_at(start);
+    harness.run();
+    for step in 1..=5 {
+        harness.hover_at(egui::pos2(start.x + 12.0 * step as f32, start.y));
+        harness.run();
+    }
+    harness.drop_at(egui::pos2(start.x + 60.0, start.y));
+    harness.run();
+    assert!(
+        width(&harness) > before + 50.0,
+        "{before} -> {}",
+        width(&harness)
     );
 }
 
@@ -862,6 +1173,8 @@ fn export_follows_page_order() {
     );
     show_transcript(&mut harness);
     harness.get_by_label("b.png").click();
+    harness.run();
+    harness.get_by_label("Transcribe").click();
     step_until(&mut harness, "Current: b.png");
     step_until(&mut harness, "# Thurs 23 Oct");
 

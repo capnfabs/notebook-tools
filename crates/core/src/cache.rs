@@ -4,6 +4,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +25,8 @@ pub struct Cache {
 struct Entry {
     image_size: (u32, u32),
     response: Value,
+    /// When it was stored, in seconds since the Unix epoch.
+    stored_at: u64,
 }
 
 impl Cache {
@@ -46,39 +49,70 @@ impl Cache {
             .join(format!("{}.json", key(page_bytes, CACHE_VERSION)))
     }
 
-    /// The photo's cached transcript, else `fetch`'s, which is cached if it parses: refusals,
-    /// truncated answers and errors aren't. A missing or unreadable entry is fetched again, and a
-    /// failure to write one only logs.
+    /// The photo's cached transcript, if there's a readable entry.
+    pub fn get(&self, page_bytes: &[u8]) -> Option<Transcript> {
+        load(&self.entry_path(page_bytes))
+    }
+
+    /// The photo's cached transcript, else [`Self::refresh`]'s.
     pub fn transcript_or(
         &self,
         page_bytes: &[u8],
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
-        let path = self.entry_path(page_bytes);
-        if let Some(transcript) = load(&path) {
-            return Ok(transcript);
+        match self.get(page_bytes) {
+            Some(transcript) => Ok(transcript),
+            None => self.refresh(page_bytes, fetch),
         }
+    }
+
+    /// `fetch`'s transcript, which replaces the photo's entry if it parses: refusals, truncated
+    /// answers and errors leave the entry as it was. A failure to write one only logs.
+    pub fn refresh(
+        &self,
+        page_bytes: &[u8],
+        fetch: impl FnOnce() -> Result<Fetched, OcrError>,
+    ) -> Result<Transcript, OcrError> {
+        let path = self.entry_path(page_bytes);
         let (status, body, image_size) = fetch()?;
         let transcript = parse_response(status, &body, image_size)?;
-        if let Err(err) = store(&path, image_size, &body) {
-            log::warn!("couldn't cache {}: {err}", path.display());
+        let stored_at = unix_secs(SystemTime::now());
+        let entry = serde_json::from_slice(&body).map(|response| Entry {
+            image_size,
+            response,
+            stored_at,
+        });
+        match entry
+            .map_err(io::Error::from)
+            .and_then(|e| write(&path, &e))
+        {
+            Ok(()) => Ok(Transcript {
+                stored_at: Some(from_unix_secs(stored_at)),
+                ..transcript
+            }),
+            Err(err) => {
+                log::warn!("couldn't cache {}: {err}", path.display());
+                Ok(transcript)
+            }
         }
-        Ok(transcript)
     }
 }
 
 fn load(path: &Path) -> Option<Transcript> {
     let bytes = std::fs::read(path).ok()?;
-    let transcript = serde_json::from_slice::<Entry>(&bytes)
+    let loaded = serde_json::from_slice::<Entry>(&bytes)
         .map_err(|e| OcrError::Parse(e.to_string()))
         .and_then(|entry| {
-            parse_response(200, entry.response.to_string().as_bytes(), entry.image_size)
+            let response = entry.response.to_string();
+            let transcript = parse_response(200, response.as_bytes(), entry.image_size)?;
+            Ok((entry, transcript))
         });
-    match transcript {
-        Ok(transcript) => {
+    match loaded {
+        Ok((entry, transcript)) => {
             log::debug!("using cached transcript {}", path.display());
             Some(Transcript {
                 from_cache: true,
+                stored_at: Some(from_unix_secs(entry.stored_at)),
                 ..transcript
             })
         }
@@ -89,15 +123,20 @@ fn load(path: &Path) -> Option<Transcript> {
     }
 }
 
-fn store(path: &Path, image_size: (u32, u32), body: &[u8]) -> io::Result<()> {
-    let entry = Entry {
-        image_size,
-        response: serde_json::from_slice(body)?,
-    };
+fn write(path: &Path, entry: &Entry) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, serde_json::to_vec(&entry)?)
+    std::fs::write(path, serde_json::to_vec(entry)?)
+}
+
+fn unix_secs(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn from_unix_secs(secs: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
 }
 
 /// Names the entry for `page_bytes` at cache version `version`.

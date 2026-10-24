@@ -23,6 +23,14 @@ scripts/check.sh
 
 ## Tools
 
+### cache
+
+```sh
+# does what it says
+scripts/clear-cache.sh
+```
+
+### bounding box investigation
 ```sh
 # bbox spike: send photos to Claude at each effort level and image size, then draw the returned
 # boxes over each photo into target/tmp/bbox-spike/. Costs money. `--only <variant>` (e.g.
@@ -33,4 +41,5 @@ scripts/with-claude-token.sh cargo run -p notebook_core --example bbox_spike -- 
 cargo run -p notebook_core --example bbox_spike -- \
   draw crates/core/tests/fixtures/ocr/bbox-spike --photos crates/core/tests/fixtures \
   --out target/tmp/bbox-spike-fixtures
+
 ```

@@ -13,25 +13,24 @@ use egui::{
 };
 use notebook_core::ocr::{Span, Transcript};
 
-/// Narrower than this, the transcript goes under the page instead of beside it.
-const SIDE_BY_SIDE_MIN_WIDTH: f32 = 600.0;
+/// Room for corrections to lengthen lines, as a multiple of the longest line.
+const EDIT_ROOM: f32 = 1.2;
 
-/// Where the page and the transcript go in `rect`: side by side, or the page above the
-/// transcript when `rect` is narrow.
-pub fn split(rect: Rect, gap: f32) -> (Rect, Rect) {
-    if rect.width() >= SIDE_BY_SIDE_MIN_WIDTH {
-        let (page, text) = rect.split_left_right_at_fraction(0.5);
-        (
-            page.shrink2(Vec2::new(gap / 2.0, 0.0)),
-            text.shrink2(Vec2::new(gap / 2.0, 0.0)),
-        )
-    } else {
-        let (page, text) = rect.split_top_bottom_at_fraction(0.5);
-        (
-            page.shrink2(Vec2::new(0.0, gap / 2.0)),
-            text.shrink2(Vec2::new(0.0, gap / 2.0)),
-        )
-    }
+/// Widest `transcript` needs to be not to wrap, with room for corrections and the scroll bar.
+pub fn natural_width(ui: &egui::Ui, transcript: &Transcript) -> f32 {
+    let font = TextStyle::Monospace.resolve(ui.style());
+    let widest = ui.ctx().fonts_mut(|fonts| {
+        transcript
+            .lines
+            .iter()
+            .map(|line| {
+                let galley =
+                    fonts.layout_no_wrap(line.text_md.clone(), font.clone(), Color32::PLACEHOLDER);
+                galley.size().x
+            })
+            .fold(0.0, f32::max)
+    });
+    widest * EDIT_ROOM + ui.spacing().scroll.allocated_width()
 }
 
 /// What the user is doing in the view. Starts afresh when another page is shown.
