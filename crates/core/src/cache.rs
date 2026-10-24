@@ -17,6 +17,7 @@ use crate::ocr::{CACHE_VERSION, Model, OcrError, Transcript, parse_response};
 pub type Fetched = (u16, Vec<u8>, (u32, u32));
 
 /// A directory of cached responses, one file per photo and model.
+#[derive(Clone)]
 pub struct Cache {
     dir: PathBuf,
 }

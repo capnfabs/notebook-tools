@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 use notebook_core::CleanParams;
 use notebook_core::cache::{Cache, Fetched};
-use notebook_core::ocr::{Comparison, Model, OcrError, Transcript, compare, parse_response};
+use notebook_core::ocr::{Model, OcrError, Transcript, parse_response};
 
 /// Most pages sent to Claude at once. More risks rate limits and overloaded errors.
 pub const MAX_CONCURRENT: usize = 4;
@@ -22,11 +22,16 @@ pub const MAX_CONCURRENT: usize = 4;
 /// Sends a page to a Claude model from its file's bytes.
 pub type Fetch = Arc<dyn Fn(&[u8], &CleanParams, Model) -> Result<Fetched, OcrError> + Send + Sync>;
 
+/// Told a page's name, its file's bytes and its transcript whenever a page is sent to Claude and
+/// comes back transcribed, but not for cached transcripts. Runs on the thread that sent it.
+pub type OnSent = Arc<dyn Fn(&str, &[u8], &Transcript) + Send + Sync>;
+
 /// Transcribes pages with Claude, caching what comes back.
 #[derive(Clone)]
 pub struct Transcriber {
     fetch: Fetch,
     cache: Option<Arc<Cache>>,
+    on_sent: Option<OnSent>,
 }
 
 impl Transcriber {
@@ -35,6 +40,15 @@ impl Transcriber {
         Self {
             fetch,
             cache: cache.map(Arc::new),
+            on_sent: None,
+        }
+    }
+
+    /// Calls `on_sent` for each page sent to Claude.
+    pub fn on_sent(self, on_sent: OnSent) -> Self {
+        Self {
+            on_sent: Some(on_sent),
+            ..self
         }
     }
 
@@ -54,7 +68,6 @@ impl Transcriber {
                 return Ok(found.map(|transcript| Ran {
                     transcript,
                     elapsed: None,
-                    comparisons: Vec::new(),
                 }));
             }
             (Kind::Transcribe, Some(cache)) => cache.transcript_or(bytes, model, fetch)?,
@@ -64,19 +77,14 @@ impl Transcriber {
                 parse_response(status, &body, size)?
             }
         };
-        // Sent, rather than found in the cache: compare with what other models made of the page.
-        let comparisons = match &self.cache {
-            Some(cache) if !transcript.from_cache => Model::ALL
-                .into_iter()
-                .filter(|&other| other != model)
-                .filter_map(|other| Some((other, compare(&transcript, &cache.get(bytes, other)?))))
-                .collect(),
-            _ => Vec::new(),
-        };
+        if let Some(on_sent) = &self.on_sent
+            && !transcript.from_cache
+        {
+            on_sent(&job.name, bytes, &transcript);
+        }
         Ok(Some(Ran {
             transcript,
             elapsed,
-            comparisons,
         }))
     }
 }
@@ -85,7 +93,6 @@ impl Transcriber {
 struct Ran {
     transcript: Transcript,
     elapsed: Option<Duration>,
-    comparisons: Vec<(Model, Comparison)>,
 }
 
 /// What a job does.
@@ -115,8 +122,6 @@ pub struct Done {
     pub forced: bool,
     /// How long Claude took, if the page was sent rather than found in the cache.
     pub elapsed: Option<Duration>,
-    /// How the transcript differs from other models' cached ones, if it was sent.
-    pub comparisons: Vec<(Model, Comparison)>,
 }
 
 type Finished = (String, Kind, Result<Option<Ran>, String>);
@@ -284,7 +289,6 @@ impl Transcriptions {
                         transcript: ran.transcript,
                         forced: kind == Kind::Force,
                         elapsed: ran.elapsed,
-                        comparisons: ran.comparisons,
                     });
                 }
                 Err(err) => {

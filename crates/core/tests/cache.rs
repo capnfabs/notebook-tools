@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use notebook_core::cache::{Cache, Fetched};
+use notebook_core::compare;
 use notebook_core::ocr::{Model, OcrError, Transcript};
 
 const PHOTO: &[u8] = b"photo bytes";
@@ -212,4 +213,25 @@ fn refresh_writes_only_its_models_entry() {
         "{}",
         name.display()
     );
+}
+
+#[test]
+fn compared_with_other_models_entries() {
+    let cache = cache("compare");
+    let fetches = Cell::new(0);
+    let opus = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+    let sonnet = Transcript {
+        model: Model::Sonnet.id().to_owned(),
+        ..opus.clone()
+    };
+    let comparisons = compare::with_cached(&cache, PHOTO, &sonnet);
+    assert_eq!(comparisons.len(), 1);
+    assert_eq!(comparisons[0].0, Model::Opus);
+    assert_eq!(comparisons[0].1.similarity, 1.0);
+
+    assert!(
+        compare::with_cached(&cache, PHOTO, &opus).is_empty(),
+        "not with its own model's entry"
+    );
+    assert!(compare::with_cached(&cache, b"another photo", &sonnet).is_empty());
 }

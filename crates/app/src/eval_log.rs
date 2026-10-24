@@ -1,12 +1,47 @@
 //! Loglines for judging how well each model transcribes, and what it costs: one per transcript,
 //! comparison with another model's, and correction. They're logged with target `eval`, so
-//! `grep ' eval]'` picks them out of `RUST_LOG=info` output.
+//! `RUST_LOG=eval=info` turns them on.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
-use notebook_core::ocr::{Comparison, Model, Transcript, Usage};
+use notebook_core::cache::Cache;
+use notebook_core::compare::{self, Comparison};
+use notebook_core::ocr::{Model, Transcript, Usage};
+
+use crate::transcribe::OnSent;
+
+/// Whether eval loglines are being logged.
+pub fn enabled() -> bool {
+    log::log_enabled!(target: "eval", log::Level::Info)
+}
+
+/// Logs how each page sent to Claude differs from other models' transcripts of it in `cache`, if
+/// there are any. Reads and compares on the transcription threads, off the UI's.
+pub fn log_comparisons(cache: Cache) -> OnSent {
+    Arc::new(move |page, page_bytes, transcript| {
+        for (old, comparison) in compare::with_cached(&cache, page_bytes, transcript) {
+            let line = comparison_line(page, &transcript.model, old, &comparison);
+            log::info!(target: "eval", "{line}");
+        }
+    })
+}
+
+fn comparison_line(page: &str, model: &str, old: Model, c: &Comparison) -> String {
+    format!(
+        "compare page={page:?} new={model} old={} lines={}/{} uncertain={}/{} similarity={:.3} \
+         changed_chars={}",
+        old.name(),
+        c.lines.0,
+        c.lines.1,
+        c.uncertain.0,
+        c.uncertain.1,
+        c.similarity,
+        c.changed_chars
+    )
+}
 
 /// Something worth knowing about a transcript. `model` is the API's name for the model that made
 /// it.
@@ -22,13 +57,6 @@ pub enum Event {
         elapsed: Option<Duration>,
         lines: usize,
         uncertain: usize,
-    },
-    /// How a page's new transcript differs from `old`'s cached one.
-    Compared {
-        page: String,
-        model: String,
-        old: Model,
-        comparison: Comparison,
     },
     /// The user picked a reading for uncertain word `word`.
     Corrected {
@@ -85,7 +113,6 @@ impl Event {
     fn page(&self) -> &str {
         match self {
             Self::Transcribed { page, .. }
-            | Self::Compared { page, .. }
             | Self::Corrected { page, .. }
             | Self::AllResolved { page, .. }
             | Self::LineEdited { page, .. } => page,
@@ -161,22 +188,6 @@ impl EvalLog {
                     usage.input_tokens, usage.output_tokens, usage.thinking_tokens
                 )
             }
-            Event::Compared {
-                page,
-                model,
-                old,
-                comparison: c,
-            } => format!(
-                "compare page={page:?} new={model} old={} lines={}/{} uncertain={}/{} \
-                 similarity={:.3} changed_chars={}",
-                old.name(),
-                c.lines.0,
-                c.lines.1,
-                c.uncertain.0,
-                c.uncertain.1,
-                c.similarity,
-                c.changed_chars
-            ),
             Event::Corrected {
                 page,
                 model,
@@ -321,19 +332,14 @@ mod tests {
             "transcribed page=\"p1\" model=claude-haiku-5-5 from_cache=true input=5000 \
              output=2000 thinking=800 cost=unknown secs=- lines=24 uncertain=7"
         );
-        let compared = Event::Compared {
-            page: "p1".to_owned(),
-            model: "claude-sonnet-5-5".to_owned(),
-            old: Model::Opus,
-            comparison: Comparison {
-                lines: (24, 25),
-                uncertain: (7, 9),
-                similarity: 0.96213,
-                changed_chars: 37,
-            },
+        let comparison = Comparison {
+            lines: (24, 25),
+            uncertain: (7, 9),
+            similarity: 0.96213,
+            changed_chars: 37,
         };
         assert_eq!(
-            log.line(&compared),
+            comparison_line("p1", "claude-sonnet-5-5", Model::Opus, &comparison),
             "compare page=\"p1\" new=claude-sonnet-5-5 old=opus lines=24/25 uncertain=7/9 \
              similarity=0.962 changed_chars=37"
         );

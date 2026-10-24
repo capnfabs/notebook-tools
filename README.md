@@ -3,7 +3,7 @@ Notebook-tools is a tool for OCR-ing a handwritten notebook.
 ## Run
 
 ```sh
-# run w/ logs and anthropic auth token
+# run w/ logs (debug + eval) and anthropic auth token
 scripts/run.sh
 
 # more manual steps below:
@@ -16,6 +16,10 @@ scripts/with-claude-token.sh cargo run -p notebook_app
 
 # with debug logs including timing info
 RUST_LOG=notebook_app=debug cargo run -p notebook_app
+
+# with eval logs for comparing models: per-page cost and timing, corrections, and how a page's
+# transcript differs from another model's cached one.
+RUST_LOG=eval=info cargo run -p notebook_app
 
 # lo-fi CI
 scripts/check.sh

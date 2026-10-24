@@ -166,17 +166,8 @@ impl NotebookApp {
             if let Some(page) = index.and_then(|i| self.pages.get_mut(i))
                 && (done.forced || page.transcript.is_none())
             {
-                let transcript = &done.transcript;
-                self.eval_log
-                    .record(Event::transcribed(&done.name, transcript, done.elapsed));
-                for (old, comparison) in done.comparisons {
-                    self.eval_log.record(Event::Compared {
-                        page: done.name.clone(),
-                        model: transcript.model.clone(),
-                        old,
-                        comparison,
-                    });
-                }
+                let event = Event::transcribed(&done.name, &done.transcript, done.elapsed);
+                self.eval_log.record(event);
                 page.transcript = Some(done.transcript);
                 if done.forced {
                     self.transcript_view = TranscriptView::default();

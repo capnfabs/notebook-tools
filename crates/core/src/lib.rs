@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod clean;
+pub mod compare;
 pub mod export;
 pub mod ocr;
 pub mod page;

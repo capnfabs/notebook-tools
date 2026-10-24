@@ -24,6 +24,7 @@ fn save_dialog() -> notebook_app::SavePath {
 
 /// Transcribes with Claude when credentials are in the environment, caching what comes back.
 fn transcriber() -> Option<notebook_app::Transcriber> {
+    use notebook_app::eval_log;
     use notebook_core::cache::Cache;
     use notebook_core::ocr::{Credentials, fetch_page};
 
@@ -38,8 +39,10 @@ fn transcriber() -> Option<notebook_app::Transcriber> {
     }
     let fetch =
         move |bytes: &[u8], params: &_, model| fetch_page(&credentials, bytes, params, model);
-    Some(notebook_app::Transcriber::new(
-        std::sync::Arc::new(fetch),
-        cache,
-    ))
+    let transcriber = notebook_app::Transcriber::new(std::sync::Arc::new(fetch), cache.clone());
+    // Comparing reads other models' cache entries: only worth it if someone's reading the log.
+    Some(match cache {
+        Some(cache) if eval_log::enabled() => transcriber.on_sent(eval_log::log_comparisons(cache)),
+        _ => transcriber,
+    })
 }

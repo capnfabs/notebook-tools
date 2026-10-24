@@ -10,8 +10,9 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Event, Fetch, NotebookApp, SavePath, Transcriber};
+use notebook_app::{Event, Fetch, NotebookApp, OnSent, SavePath, Transcriber};
 use notebook_core::cache::{Cache, Fetched};
+use notebook_core::compare;
 use notebook_core::ocr::{Model, OcrError};
 
 /// Stands in for a file dragged from the desktop.
@@ -179,11 +180,6 @@ fn events(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
         .iter()
         .map(|event| match event {
             Event::Transcribed { from_cache, .. } => format!("transcribed from_cache={from_cache}"),
-            Event::Compared {
-                old, comparison, ..
-            } => {
-                format!("compared old={old:?} similarity={}", comparison.similarity)
-            }
             Event::Corrected {
                 word,
                 from,
@@ -627,14 +623,32 @@ fn force_retranscribes_without_asking_if_uncorrected() {
 
 #[test]
 fn the_selected_model_transcribes_and_is_compared_with_the_other() {
-    let models = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sent = models.clone();
-    let fetch: Fetch = Arc::new(move |_, _, model| {
-        sent.lock().unwrap().push(model);
-        Ok(recorded())
+    // Answers as the model asked.
+    let fetch: Fetch = Arc::new(|_, _, model| {
+        let (status, body, size) = recorded();
+        let body = String::from_utf8(body).unwrap().replace(
+            "\"model\": \"claude-opus-5-5\"",
+            &format!("\"model\": \"{}\"", model.id()),
+        );
+        Ok((status, body.into_bytes(), size))
     });
+    // Each page sent, by whom, and how it compares with other models' cached transcripts.
     let dir = cache_dir("select_model");
-    let mut harness = cached_harness(fetch, &dir);
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let on_sent: OnSent = {
+        let (sent, cache) = (sent.clone(), Cache::new(&dir));
+        Arc::new(
+            move |page: &str, bytes: &[u8], t: &notebook_core::ocr::Transcript| {
+                let compared = compare::with_cached(&cache, bytes, t);
+                let compared: Vec<_> = compared.iter().map(|(m, c)| (*m, c.similarity)).collect();
+                sent.lock()
+                    .unwrap()
+                    .push((page.to_owned(), t.model.clone(), compared));
+            },
+        )
+    };
+    let transcriber = Transcriber::new(fetch, Some(Cache::new(&dir))).on_sent(on_sent.clone());
+    let mut harness = harness_with(transcriber);
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     // Its label, then the dropdown (named by the label), then Debug, in a row.
@@ -664,20 +678,18 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     harness.get_by_label("Sonnet").click();
     harness.run();
     harness.get_by_label("Force retranscription").click();
-    for _ in 0..500 {
-        harness.step();
-        if events(&harness).len() == 3 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(*models.lock().unwrap(), [Model::Opus, Model::Sonnet]);
+    step_until(&mut harness, "by claude-sonnet-5-5");
+    let sent_so_far = std::mem::take(&mut *sent.lock().unwrap());
+    let a = || "a.png".to_owned();
     assert_eq!(
-        events(&harness),
+        sent_so_far,
         [
-            "transcribed from_cache=false",
-            "transcribed from_cache=false",
-            "compared old=Opus similarity=1",
+            (a(), "claude-opus-5-5".to_owned(), vec![]),
+            (
+                a(),
+                "claude-sonnet-5-5".to_owned(),
+                vec![(Model::Opus, 1.0)]
+            ),
         ]
     );
     let cache = Cache::new(&dir);
@@ -685,12 +697,14 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     assert!(cache.get(&photo, Model::Opus).is_some());
     assert!(cache.get(&photo, Model::Sonnet).is_some());
 
-    // Either entry will do for a new page.
+    // Either entry will do for a new page, which isn't sent.
     let (fetch, calls) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let transcriber = Transcriber::new(fetch, Some(Cache::new(&dir))).on_sent(on_sent);
+    let mut harness = harness_with(transcriber);
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(sent.lock().unwrap().is_empty());
     assert_eq!(events(&harness), ["transcribed from_cache=true"]);
 }
 
