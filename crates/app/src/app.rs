@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use eframe::egui;
 use egui::{
-    Align, Color32, Layout, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureHandle,
-    TextureOptions, UiBuilder, Vec2,
+    Align, Color32, Key, Layout, Margin, Modifiers, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
+    TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetInfo, accesskit::Role,
 };
 use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
@@ -23,6 +23,26 @@ const NO_TRANSCRIBER_HINT: &str =
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
 const THUMB_SIZE_PT: f32 = 96.0;
+
+/// Corner radius of the thumbnails, in points. The selected page's frame follows the same curve.
+const THUMB_CORNER_PT: f32 = 6.0;
+
+/// Width of the frame around the selected page's thumbnail, and of the drop marker when dragging
+/// one, in points.
+const ACTIVE_FRAME_PT: f32 = 3.0;
+
+/// Space between thumbnails, in points. The drop marker goes in the middle, so it needs room to
+/// stay clear of the selected page's frame.
+const THUMB_GAP_PT: f32 = 16.0;
+
+/// Space at either end of the strip, in points, so the frame and the drop marker aren't clipped
+/// there. Must fit half a gap plus the marker.
+const STRIP_END_PT: i8 = 12;
+
+/// How close to the strip's edge, in points, a dragged thumbnail starts scrolling it, and how far
+/// it scrolls per frame.
+const DRAG_SCROLL_EDGE_PT: f32 = 32.0;
+const DRAG_SCROLL_STEP_PT: f32 = 8.0;
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -44,6 +64,9 @@ impl View {
     }
 }
 
+/// Drag-and-drop payload: the index of the page whose thumbnail is being dragged.
+struct DraggedPage(usize);
+
 /// The texture on screen, and what it shows.
 struct Shown {
     name: String,
@@ -55,10 +78,16 @@ struct Shown {
 pub struct NotebookApp {
     ingest: Ingest,
     pages: Pages,
-    /// One per page, in the same order.
-    thumbs: Vec<TextureHandle>,
+    /// One per page, by name.
+    thumbs: HashMap<String, TextureHandle>,
     /// Name of the page the user picked. The first page is shown until they pick one.
     selected: Option<String>,
+    /// The page whose thumbnail the strip last scrolled into view, and where it was. Scrolls
+    /// again only when either changes, so it doesn't fight the user scrolling the strip.
+    scrolled_to: Option<(String, usize)>,
+    /// Where a dragged thumbnail would go if dropped now: the index of the gap before it, with
+    /// `pages.len()` meaning the end.
+    drop_slot: Option<usize>,
     /// Stays the same when another page is selected.
     view: View,
     /// Full-size texture for the selected page and view. Only one is kept: see
@@ -137,8 +166,8 @@ impl NotebookApp {
             ctx.load_texture(&name, color_image(&page.thumbnail), TextureOptions::LINEAR)
         });
         // Duplicate names are skipped.
-        if let Some(index) = self.pages.add(page) {
-            self.thumbs.insert(index, thumb);
+        if self.pages.add(page).is_some() {
+            self.thumbs.insert(name, thumb);
         }
     }
 
@@ -147,7 +176,7 @@ impl NotebookApp {
         let Some(page) = self.pages.remove(index) else {
             return;
         };
-        drop(self.thumbs.remove(index));
+        self.thumbs.remove(&page.name);
         self.reports.remove(&page.name);
         self.transcriptions.forget(&page.name);
         if self.current.as_ref().is_some_and(|c| c.name == page.name) {
@@ -193,6 +222,48 @@ impl NotebookApp {
         }
     }
 
+    /// Moves page `from` to index `to`, keeping the shown page shown.
+    fn move_page(&mut self, from: usize, to: usize) {
+        self.pin_selection();
+        self.pages.move_page(from, to);
+    }
+
+    /// Puts the pages back in filename order, keeping the shown page shown.
+    fn sort_pages(&mut self) {
+        self.pin_selection();
+        self.pages.sort_by_name();
+    }
+
+    /// Selects the shown page by name, so it stays shown when the pages move. Until the user picks
+    /// one, the shown page is whichever is first.
+    fn pin_selection(&mut self) {
+        self.selected = self
+            .pages
+            .get(self.selected_index())
+            .map(|p| p.name.clone());
+    }
+
+    /// Cmd+Left and Cmd+Right move the selected page one place, unless a text field has the
+    /// keyboard.
+    fn move_keys(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let (left, right) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::COMMAND, Key::ArrowLeft),
+                i.consume_key(Modifiers::COMMAND, Key::ArrowRight),
+            )
+        });
+        let index = self.selected_index();
+        if left && index > 0 {
+            self.move_page(index, index - 1);
+        }
+        if right && index + 1 < self.pages.len() {
+            self.move_page(index, index + 1);
+        }
+    }
+
     fn selected_index(&self) -> usize {
         let name = self.selected.as_ref();
         name.and_then(|name| self.pages.iter().position(|p| p.name == *name))
@@ -227,6 +298,7 @@ impl NotebookApp {
     }
 
     fn viewer(&mut self, ui: &mut egui::Ui) {
+        self.move_keys(ui.ctx());
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.view, View::Original, "Original");
@@ -240,9 +312,24 @@ impl NotebookApp {
                 if transcribed.clicked() {
                     self.view = View::Transcribed;
                 }
+                ui.separator();
+                let index = self.selected_index();
+                if let Some(page) = self.pages.get(index) {
+                    ui.label(format!(
+                        "{} · {} of {}",
+                        page.name,
+                        index + 1,
+                        self.pages.len()
+                    ));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Delete").clicked() {
                         self.request_delete();
+                    }
+                    let sort =
+                        ui.add_enabled(!self.pages.is_sorted(), egui::Button::new("Sort by name"));
+                    if sort.clicked() {
+                        self.sort_pages();
                     }
                     ui.checkbox(&mut self.debug, "Debug");
                 });
@@ -252,7 +339,12 @@ impl NotebookApp {
         egui::Panel::bottom("pages").show(ui, |ui| {
             ui.add_space(4.0);
             egui::ScrollArea::horizontal().show(ui, |ui| {
-                ui.horizontal(|ui| self.thumbnails(ui));
+                egui::Frame::NONE
+                    .inner_margin(Margin::symmetric(STRIP_END_PT, 0))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = THUMB_GAP_PT;
+                        ui.horizontal(|ui| self.thumbnails(ui));
+                    });
             });
             ui.horizontal(|ui| {
                 self.status(ui);
@@ -316,28 +408,99 @@ impl NotebookApp {
         }
     }
 
+    /// The strip of thumbnails, which select a page when clicked and rearrange pages when dragged.
     fn thumbnails(&mut self, ui: &mut egui::Ui) {
         let selected = self.selected_index();
-        for (i, (page, thumb)) in self.pages.iter().zip(&self.thumbs).enumerate() {
+        let dragged = egui::DragAndDrop::payload::<DraggedPage>(ui.ctx()).map(|p| p.0);
+        let selection = ui.visuals().selection.stroke.color;
+        let mut rects = Vec::with_capacity(self.pages.len());
+        for (i, page) in self.pages.iter().enumerate() {
+            let tint = if dragged == Some(i) {
+                Color32::from_white_alpha(96)
+            } else {
+                Color32::WHITE
+            };
             let response = ui
                 .add(
-                    egui::Image::new(thumb)
+                    egui::Image::new(&self.thumbs[&page.name])
                         .max_size(Vec2::splat(THUMB_SIZE_PT))
+                        .tint(tint)
+                        .corner_radius(THUMB_CORNER_PT)
                         .alt_text(&page.name)
-                        .sense(Sense::click()),
+                        .sense(Sense::click_and_drag()),
                 )
                 .on_hover_text(&page.name);
-            if i == selected {
+            let active = i == selected;
+            response.widget_info(|| WidgetInfo::selected(Role::Image, true, active, &page.name));
+            response.dnd_set_drag_payload(DraggedPage(i));
+            if active {
+                // An outside stroke adds its width to the radius, so this stays concentric.
                 ui.painter().rect_stroke(
                     response.rect,
-                    2.0,
-                    ui.visuals().selection.stroke,
+                    THUMB_CORNER_PT,
+                    Stroke::new(ACTIVE_FRAME_PT, selection),
                     StrokeKind::Outside,
                 );
+                if self
+                    .scrolled_to
+                    .as_ref()
+                    .is_none_or(|(name, at)| *name != page.name || *at != i)
+                {
+                    response.scroll_to_me(None);
+                    self.scrolled_to = Some((page.name.clone(), i));
+                }
             }
             if response.clicked() {
                 self.selected = Some(page.name.clone());
             }
+            rects.push(response.rect);
+        }
+
+        let Some(from) = dragged else {
+            self.drop_slot = None;
+            return;
+        };
+        if let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|pos| pos.x) {
+            self.drop_slot = Some(rects.iter().filter(|r| r.center().x < x).count());
+            // Near an edge, scroll towards it while there's more strip beyond it.
+            let visible = ui.clip_rect();
+            let (first, last) = (rects[0], rects[rects.len() - 1]);
+            let scroll = if x < visible.left() + DRAG_SCROLL_EDGE_PT
+                && first.left() < visible.left()
+            {
+                DRAG_SCROLL_STEP_PT
+            } else if x > visible.right() - DRAG_SCROLL_EDGE_PT && last.right() > visible.right() {
+                -DRAG_SCROLL_STEP_PT
+            } else {
+                0.0
+            };
+            if scroll != 0.0 {
+                ui.scroll_with_delta(Vec2::X * scroll);
+                ui.ctx().request_repaint();
+            }
+        }
+        let Some(slot) = self.drop_slot else {
+            return;
+        };
+        // Dropping either side of the dragged page leaves it where it is.
+        let to = if slot > from { slot - 1 } else { slot };
+        if to != from {
+            let gap = ui.spacing().item_spacing.x / 2.0;
+            let x = match slot.checked_sub(1).and_then(|i| rects.get(i)) {
+                Some(before) => before.right() + gap,
+                None => rects[0].left() - gap,
+            };
+            let ys = rects
+                .iter()
+                .fold(rects[0].y_range(), |ys, r| ys.union(r.y_range()));
+            ui.painter()
+                .vline(x, ys, Stroke::new(ACTIVE_FRAME_PT, selection));
+        }
+        if ui.input(|i| i.pointer.any_released())
+            && egui::DragAndDrop::take_payload::<DraggedPage>(ui.ctx()).is_some()
+        {
+            self.drop_slot = None;
+            self.move_page(from, to);
         }
     }
 
@@ -546,7 +709,7 @@ impl NotebookApp {
                 // Already decoded once when the page was added, so this shouldn't happen.
                 Err(err) => {
                     log::error!("Couldn't decode {}: {err}", page.name);
-                    self.thumbs[index].clone()
+                    self.thumbs[&page.name].clone()
                 }
             };
             self.current = Some(Shown {

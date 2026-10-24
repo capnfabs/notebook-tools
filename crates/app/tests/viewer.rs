@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use eframe::egui::{self, accesskit::Role};
+use eframe::egui::{
+    self,
+    accesskit::{Role, Toggled},
+};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use notebook_app::{NotebookApp, SavePath, Transcriber};
@@ -131,6 +134,78 @@ fn thumbnails(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
         .query_all_by_role(Role::Image)
         .filter_map(|node| node.accesskit_node().label())
         .filter(|label| !label.starts_with("Current: "))
+        .collect()
+}
+
+/// The centre of the node labelled `label`.
+fn centre(harness: &Harness<'_, NotebookApp>, label: &str) -> egui::Pos2 {
+    let bounds = harness
+        .get_by_label(label)
+        .accesskit_node()
+        .bounding_box()
+        .unwrap();
+    egui::pos2(
+        ((bounds.x0 + bounds.x1) / 2.0) as f32,
+        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+    )
+}
+
+/// Drags the thumbnail labelled `label` to `x`, at the same height, and drops it there.
+fn drag_thumbnail(harness: &mut Harness<'_, NotebookApp>, label: &str, x: f32) {
+    let end = hold_thumbnail(harness, label, x);
+    harness.drop_at(end);
+    harness.run();
+}
+
+/// Drags the thumbnail labelled `label` to `x`, at the same height, without dropping it, and
+/// returns where the pointer is.
+fn hold_thumbnail(harness: &mut Harness<'_, NotebookApp>, label: &str, x: f32) -> egui::Pos2 {
+    let start = centre(harness, label);
+    harness.hover_at(start);
+    harness.run();
+    harness.drag_at(start);
+    harness.run();
+    for step in 1..=5 {
+        let t = step as f32 / 5.0;
+        harness.hover_at(egui::pos2(start.x + (x - start.x) * t, start.y));
+        harness.run();
+    }
+    egui::pos2(x, start.y)
+}
+
+/// The left and right edges of what's painted as 3pt lines: the selected page's frame (a rect)
+/// and the drop marker (a line segment), each cut to its clip rect.
+fn painted_3pt(harness: &Harness<'_, NotebookApp>) -> (Vec<egui::Rangef>, Vec<egui::Rangef>) {
+    let (mut frames, mut markers) = (Vec::new(), Vec::new());
+    for clipped in &harness.output().shapes {
+        let clip = clipped.clip_rect.x_range();
+        let visible = |xs: egui::Rangef| xs.intersection(clip);
+        match &clipped.shape {
+            egui::Shape::Rect(rect) if rect.stroke.width == 3.0 => {
+                // Drawn outside the thumbnail.
+                frames.push(visible(rect.rect.expand(3.0).x_range()));
+            }
+            egui::Shape::LineSegment { points, stroke } if stroke.width == 3.0 => {
+                let x = points[0].x;
+                markers.push(visible(egui::Rangef::new(x - 1.5, x + 1.5)));
+            }
+            _ => {}
+        }
+    }
+    (frames, markers)
+}
+
+fn press_command(harness: &mut Harness<'_, NotebookApp>, key: egui::Key) {
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, key);
+    harness.run();
+}
+
+/// The labels of the thumbnails marked selected.
+fn selected_thumbnails(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
+    harness
+        .query_all_by_role(Role::Image)
+        .filter(|node| node.accesskit_node().toggled() == Some(Toggled::True))
+        .filter_map(|node| node.accesskit_node().label())
         .collect()
 }
 
@@ -583,4 +658,228 @@ fn dialogs_put_the_affirmative_button_last() {
     harness.get_by_label("Delete").click();
     harness.run();
     assert!(left(&harness, "Cancel") < left(&harness, "Delete page"));
+}
+
+#[test]
+fn dragging_a_thumbnail_moves_the_page() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+
+    let past_c = centre(&harness, "c.png").x + 30.0;
+    drag_thumbnail(&mut harness, "a.png", past_c);
+    assert_eq!(thumbnails(&harness), ["b.png", "c.png", "a.png"]);
+
+    let before_b = centre(&harness, "b.png").x - 30.0;
+    drag_thumbnail(&mut harness, "c.png", before_b);
+    assert_eq!(thumbnails(&harness), ["c.png", "b.png", "a.png"]);
+    // The page shown before rearranging stays shown.
+    harness.get_by_label("Current: a.png");
+}
+
+/// The drop marker shows wherever the page would go, even at the very start, and stays clear of
+/// the selected page's frame.
+#[test]
+fn drop_marker_is_visible_beside_the_selected_page() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+    let a = centre(&harness, "a.png").x;
+    // Before a, which is selected and first, then between a and b.
+    for x in [a - 30.0, a + 25.0] {
+        let end = hold_thumbnail(&mut harness, "c.png", x);
+        let (frames, markers) = painted_3pt(&harness);
+        let [frame] = frames[..] else {
+            panic!("frames: {frames:?}");
+        };
+        let [marker] = markers[..] else {
+            panic!("markers at {x}: {markers:?}");
+        };
+        assert_eq!(marker.span(), 3.0, "marker at {x} is clipped: {marker:?}");
+        let clear = (marker.min - frame.max).max(frame.min - marker.max);
+        assert!(clear >= 2.0, "marker {marker:?} touches frame {frame:?}");
+        harness.drop_at(end);
+        harness.run();
+        assert_eq!(
+            thumbnails(&harness).first().map(String::as_str),
+            Some(if x < a { "c.png" } else { "a.png" })
+        );
+        harness.get_by_label("Sort by name").click();
+        harness.run();
+    }
+}
+
+#[test]
+fn thumbnails_have_rounded_corners() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", png()), ("b.png", png())]);
+    let strip_y = centre(&harness, "a.png").y;
+
+    let in_strip = |rect: &&egui::epaint::RectShape| rect.rect.y_range().contains(strip_y);
+    let rects: Vec<&egui::epaint::RectShape> = harness
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect) => Some(rect),
+            _ => None,
+        })
+        .filter(in_strip)
+        .collect();
+    let thumbs: Vec<_> = rects.iter().filter(|r| r.brush.is_some()).collect();
+    assert_eq!(thumbs.len(), 2);
+    let radius = thumbs[0].corner_radius;
+    assert_ne!(radius, egui::CornerRadius::ZERO);
+    assert!(thumbs.iter().all(|r| r.corner_radius == radius));
+    // The selected page's frame follows the same curve.
+    let frame = rects.iter().find(|r| r.stroke.width == 3.0).unwrap();
+    assert_eq!(frame.corner_radius, radius);
+}
+
+#[test]
+fn dropping_a_thumbnail_beside_itself_leaves_it() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", png()), ("b.png", png())]);
+
+    let x = centre(&harness, "a.png").x + 10.0;
+    drag_thumbnail(&mut harness, "a.png", x);
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+}
+
+#[test]
+fn new_drops_go_last_after_reordering() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("d.png", png())],
+    );
+    press_command(&mut harness, egui::Key::ArrowRight);
+    assert_eq!(thumbnails(&harness), ["b.png", "a.png", "d.png"]);
+
+    drop_files(&mut harness, &[("e.png", png()), ("c.png", png())]);
+    assert_eq!(
+        thumbnails(&harness),
+        ["b.png", "a.png", "d.png", "c.png", "e.png"]
+    );
+}
+
+#[test]
+fn sort_by_name_restores_filename_order() {
+    let mut harness = harness();
+    drop_files(&mut harness, &[("a.png", png()), ("b.png", png())]);
+    let sort = |harness: &Harness<'_, NotebookApp>| {
+        !harness
+            .get_by_label("Sort by name")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!sort(&harness), "already sorted");
+
+    press_command(&mut harness, egui::Key::ArrowRight);
+    assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
+    assert!(sort(&harness));
+
+    harness.get_by_label("Sort by name").click();
+    harness.run();
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+    assert!(!sort(&harness));
+    harness.get_by_label("Current: a.png");
+}
+
+#[test]
+fn command_arrows_move_the_selected_page() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+    harness.get_by_label("b.png").click();
+    harness.run();
+
+    press_command(&mut harness, egui::Key::ArrowRight);
+    assert_eq!(thumbnails(&harness), ["a.png", "c.png", "b.png"]);
+    // Already last.
+    press_command(&mut harness, egui::Key::ArrowRight);
+    assert_eq!(thumbnails(&harness), ["a.png", "c.png", "b.png"]);
+
+    press_command(&mut harness, egui::Key::ArrowLeft);
+    press_command(&mut harness, egui::Key::ArrowLeft);
+    assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
+    press_command(&mut harness, egui::Key::ArrowLeft);
+    assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
+    harness.get_by_label("Current: b.png");
+}
+
+#[test]
+fn active_page_is_marked_and_named() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+    assert_eq!(selected_thumbnails(&harness), ["a.png"]);
+    harness.get_by_label("a.png · 1 of 3");
+
+    harness.get_by_label("c.png").click();
+    harness.run();
+    assert_eq!(selected_thumbnails(&harness), ["c.png"]);
+    harness.get_by_label("c.png · 3 of 3");
+}
+
+#[test]
+fn active_page_scrolls_into_view() {
+    // Scrolling is animated, which takes more frames than `run` allows by default.
+    let mut harness = Harness::builder().with_max_steps(64).build_ui_state(
+        |ui, app: &mut NotebookApp| app.ui(ui),
+        NotebookApp::default(),
+    );
+    let names: Vec<String> = (0..20).map(|i| format!("{i:02}.png")).collect();
+    let files: Vec<(&str, Vec<u8>)> = names.iter().map(|n| (n.as_str(), png())).collect();
+    drop_files(&mut harness, &files);
+
+    for _ in 1..names.len() {
+        press_command(&mut harness, egui::Key::ArrowRight);
+    }
+    assert_eq!(
+        thumbnails(&harness).last().map(String::as_str),
+        Some("00.png")
+    );
+    let screen = harness.ctx.content_rect();
+    let x = centre(&harness, "00.png").x;
+    assert!(x < screen.right(), "00.png at {x}, screen {screen:?}");
+}
+
+#[test]
+fn export_follows_page_order() {
+    let mut harness = harness_with(transcriber());
+    drop_files(
+        &mut harness,
+        &[("a.png", page_photo()), ("b.png", page_photo())],
+    );
+    show_transcript(&mut harness);
+    harness.get_by_label("b.png").click();
+    step_until(&mut harness, "Current: b.png");
+    step_until(&mut harness, "# Thurs 23 Oct");
+
+    press_command(&mut harness, egui::Key::ArrowLeft);
+    assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
+    export(&mut harness, &["Everything", "Markdown to clipboard"]);
+    harness.step();
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let b = copied.find("<!-- b.png -->").unwrap();
+    let a = copied.find("<!-- a.png -->").unwrap();
+    assert!(b < a, "{copied}");
 }

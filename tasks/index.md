@@ -11,13 +11,13 @@
 - [x] [Cache transcriptions](transcription-cache.md)
 - [x] [Drop WASM](drop-wasm.md)
 - [x] [Flaky test: deleting a transcribed page](flaky-delete-test.md)
+- [x] [Reorder pages](reorder-pages.md)
 
 ## features
-- [ ] [Reorder pages](reorder-pages.md)
-- [ ] [PDF export](pdf-export.md)
 - [ ] [Confirm before transcribing](confirm-transcribe.md)
 - [ ] [Cache status + force retranscription](cache-status-ui.md)
 - [ ] [Transcribe all](transcribe-all.md)
+- [ ] [PDF export](pdf-export.md)
 - [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
 
 ## polish
@@ -29,6 +29,7 @@
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
+- [ ] [Mac menu bar](mac-menu.md)
 
 ## polish (difficult)
 - [ ] [Claude auth approach](claude-auth.md)

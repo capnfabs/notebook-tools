@@ -86,20 +86,44 @@ pub(crate) fn fitted_size(w: u32, h: u32, max_side: u32) -> (u32, u32) {
     (scaled(w), scaled(h))
 }
 
-/// Pages in filename order, with no duplicate names.
+/// Pages with no duplicate names, in filename order until the user rearranges them.
 #[derive(Default)]
 pub struct Pages(Vec<Page>);
 
 impl Pages {
-    /// Inserts `page` in filename order and returns its index, or `None` if a page with that name
-    /// is already present.
+    /// Inserts `page` in filename order, or at the end once the pages have been rearranged, and
+    /// returns its index. Returns `None` if a page with that name is already present.
     pub fn add(&mut self, page: Page) -> Option<usize> {
-        let index = self
-            .0
-            .binary_search_by(|p| p.name.as_str().cmp(&page.name))
-            .err()?;
+        let index = if self.is_sorted() {
+            self.0
+                .binary_search_by(|p| p.name.as_str().cmp(&page.name))
+                .err()?
+        } else if self.0.iter().any(|p| p.name == page.name) {
+            return None;
+        } else {
+            self.0.len()
+        };
         self.0.insert(index, page);
         Some(index)
+    }
+
+    /// Whether the pages are in filename order.
+    pub fn is_sorted(&self) -> bool {
+        self.0.is_sorted_by(|a, b| a.name <= b.name)
+    }
+
+    /// Moves page `from` so it ends up at index `to`. Returns false if either is out of range.
+    pub fn move_page(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.0.len() || to >= self.0.len() {
+            return false;
+        }
+        let page = self.0.remove(from);
+        self.0.insert(to, page);
+        true
+    }
+
+    pub fn sort_by_name(&mut self) {
+        self.0.sort_by(|a, b| a.name.cmp(&b.name));
     }
 
     pub fn remove(&mut self, index: usize) -> Option<Page> {
@@ -227,5 +251,46 @@ mod tests {
         assert_eq!(names(&pages), ["b.png"]);
         // The name can be added again.
         assert_eq!(pages.add(page("a.png")), Some(0));
+    }
+
+    fn pages(names: &[&str]) -> Pages {
+        let mut pages = Pages::default();
+        for name in names {
+            pages.add(page(name));
+        }
+        pages
+    }
+
+    #[test]
+    fn moves_pages() {
+        let mut pages = pages(&["a.png", "b.png", "c.png"]);
+        assert!(pages.move_page(0, 2));
+        assert_eq!(names(&pages), ["b.png", "c.png", "a.png"]);
+        assert!(pages.move_page(2, 0));
+        assert_eq!(names(&pages), ["a.png", "b.png", "c.png"]);
+        assert!(!pages.move_page(3, 0));
+        assert!(!pages.move_page(0, 3));
+        assert_eq!(names(&pages), ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn adds_to_the_end_once_rearranged() {
+        let mut pages = pages(&["b.png", "d.png"]);
+        assert!(pages.is_sorted());
+        pages.move_page(1, 0);
+        assert!(!pages.is_sorted());
+
+        assert_eq!(pages.add(page("a.png")), Some(2));
+        assert_eq!(pages.add(page("b.png")), None);
+        assert_eq!(names(&pages), ["d.png", "b.png", "a.png"]);
+    }
+
+    #[test]
+    fn sorts_by_name() {
+        let mut pages = pages(&["a.png", "b.png", "c.png"]);
+        pages.move_page(0, 2);
+        pages.sort_by_name();
+        assert!(pages.is_sorted());
+        assert_eq!(names(&pages), ["a.png", "b.png", "c.png"]);
     }
 }

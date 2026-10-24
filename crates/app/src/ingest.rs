@@ -17,11 +17,14 @@ impl Ingest {
     /// Reads any files dropped this frame, returning how many there were.
     pub fn read_drops(&mut self, ctx: &egui::Context) -> usize {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        self.queue.extend(
-            dropped
-                .iter()
-                .map(|file| (file_name(&**file), file.bytes())),
-        );
+        let mut received: Vec<Received> = dropped
+            .iter()
+            .map(|file| (file_name(&**file), file.bytes()))
+            .collect();
+        // Once the pages have been rearranged, new ones go at the end in the order they're queued,
+        // so queue each drop in filename order.
+        received.sort_by(|a, b| a.0.cmp(&b.0));
+        self.queue.extend(received);
         dropped.len()
     }
 
