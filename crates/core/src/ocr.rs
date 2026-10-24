@@ -45,6 +45,11 @@ Transcribe this photo of a handwritten notebook page.
 - Add an `uncertain` entry for each word or phrase you're unsure of: line index (0-based), the text exactly as it appears in that line, its box, and 1–3 other likely readings.
 - Boxes are [x0, y0, x1, y1] in pixels of this image.";
 
+/// Version of cached responses ([`crate::cache`]). Bump it when the schema changes, since old
+/// responses won't parse; a test checks for that. After a prompt, model or send-image change, bump
+/// it only if the cached transcriptions should be redone.
+pub const CACHE_VERSION: u32 = 1;
+
 /// How many lines either side of its claimed line an uncertain word is looked for in.
 pub const LINE_SEARCH_RADIUS: usize = 2;
 
@@ -60,7 +65,10 @@ pub struct Transcript {
     pub image_size: (u32, u32),
     /// The model that answered; differs from [`MODEL`] if a fallback ran.
     pub model: String,
+    /// What the request cost; for a cached transcript, what it cost when it was made.
     pub usage: Usage,
+    /// Loaded from the [`crate::cache`] rather than just transcribed.
+    pub from_cache: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -477,6 +485,7 @@ pub fn parse_response(
         image_size,
         model: response.model,
         usage: response.usage,
+        from_cache: false,
     })
 }
 
@@ -515,21 +524,28 @@ pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImag
     crate::shrink_to_fit(page, (f64::from(w.max(h)) * scale) as u32)
 }
 
-/// Transcribes a page from its file's bytes; see [`image_to_send`].
+/// Transcribes a page from its file's bytes; see [`image_to_send`]. With a `cache`, a photo
+/// transcribed before isn't sent again.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn transcribe_page(
     credentials: &Credentials,
+    cache: Option<&crate::cache::Cache>,
     page_bytes: &[u8],
     params: &crate::CleanParams,
 ) -> Result<Transcript, OcrError> {
-    let jpeg_and_size = |bytes| {
-        let img = crate::decode(bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
+    let fetch = || {
+        let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
         let page = image_to_send(&img, params);
-        Ok((encode_jpeg(&page), page.dimensions()))
+        let (status, body) = send(credentials, &request_body(&encode_jpeg(&page), EFFORT))?;
+        Ok((status, body, page.dimensions()))
     };
-    let (jpeg, size) = jpeg_and_size(page_bytes)?;
-    let (status, body) = send(credentials, &request_body(&jpeg, EFFORT))?;
-    parse_response(status, &body, size)
+    match cache {
+        Some(cache) => cache.transcript_or(page_bytes, fetch),
+        None => {
+            let (status, body, size) = fetch()?;
+            parse_response(status, &body, size)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -576,6 +592,7 @@ mod tests {
             image_size: (100, 100),
             model: MODEL.to_owned(),
             usage: Usage::default(),
+            from_cache: false,
         }
     }
 
@@ -817,6 +834,21 @@ mod tests {
 
         let small = RgbaImage::from_pixel(1200, 900, Rgba([128, 128, 128, 255]));
         assert_eq!(image_to_send(&small, &params).dimensions(), (1200, 900));
+    }
+
+    /// Cached responses in the old shape wouldn't parse, so a schema change needs a new version.
+    #[test]
+    fn schema_change_bumps_cache_version() {
+        const SCHEMA_HASH: &str =
+            "3d79ef41f0f5e1d8a5bc5c4c162e9fc3010795e16a2d0bfe0461680963474f35";
+        assert_eq!(
+            (
+                CACHE_VERSION,
+                crate::cache::sha256_hex(schema().to_string().as_bytes()).as_str()
+            ),
+            (1, SCHEMA_HASH),
+            "schema changed: bump CACHE_VERSION, then update this test"
+        );
     }
 
     #[test]

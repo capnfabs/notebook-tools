@@ -9,3 +9,4 @@
 # impl
 
 - build dialogs with `crates/app/src/dialog.rs` (macOS button order: affirmative rightmost); see `decisions/2026-10-23-dialog-buttons.md`.
+- transcriptions are cached by photo hash + `CACHE_VERSION` (`crates/core/src/ocr.rs`). A schema change must bump it (a test enforces this). After changing the prompt, model or the image sent (crop/straighten), ask whether to keep the cached transcriptions; bump only if not. `scripts/clear-cache.sh` empties the cache.

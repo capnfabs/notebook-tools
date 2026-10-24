@@ -73,6 +73,10 @@ impl Transcriptions {
         while let Ok((name, result)) = self.rx.try_recv() {
             self.in_flight.remove(&name);
             match result {
+                Ok(transcript) if transcript.from_cache => {
+                    log::info!("{name}: from cache, transcribed by {}", transcript.model);
+                    return Some((name, transcript));
+                }
                 Ok(transcript) => {
                     let usage = transcript.usage;
                     log::info!(

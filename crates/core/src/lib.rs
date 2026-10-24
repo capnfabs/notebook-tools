@@ -1,5 +1,7 @@
 //! UI-agnostic logic for notebook-tools. Keep the public API to plain data types.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cache;
 pub mod clean;
 pub mod export;
 pub mod ocr;

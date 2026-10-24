@@ -97,4 +97,5 @@ Transcript {
         input_tokens: 3412,
         output_tokens: 2210,
     },
+    from_cache: false,
 }

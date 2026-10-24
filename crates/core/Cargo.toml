@@ -17,6 +17,10 @@ imageproc = { workspace = true, features = ["rayon"] }
 rayon.workspace = true
 # Only native sends requests; Transcribe is disabled on the web.
 reqwest = { version = "0.13", features = ["blocking"] }
+# Transcriptions are cached on disk, by the photo's hash.
+dirs = "7"
+log = "0.4"
+sha2 = "0.11"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

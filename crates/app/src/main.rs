@@ -24,17 +24,23 @@ fn save_dialog() -> notebook_app::SavePath {
     })
 }
 
-/// Transcribes with Claude when credentials are in the environment.
+/// Transcribes with Claude when credentials are in the environment, caching what comes back.
 #[cfg(not(target_arch = "wasm32"))]
 fn transcriber() -> Option<notebook_app::Transcriber> {
+    use notebook_core::cache::Cache;
     use notebook_core::ocr::{Credentials, transcribe_page};
 
     let Some(credentials) = Credentials::from_env() else {
         log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
         return None;
     };
+    let cache = Cache::default_dir().map(Cache::new);
+    match &cache {
+        Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
+        None => log::warn!("No cache directory: transcriptions won't be cached"),
+    }
     Some(std::sync::Arc::new(move |bytes, params| {
-        transcribe_page(&credentials, bytes, params).map_err(|e| e.to_string())
+        transcribe_page(&credentials, cache.as_ref(), bytes, params).map_err(|e| e.to_string())
     }))
 }
 
