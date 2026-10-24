@@ -13,6 +13,8 @@ use egui::{
 };
 use notebook_core::ocr::{Span, Transcript};
 
+use crate::eval_log::{Event, Via};
+
 /// Room for corrections to lengthen lines, as a multiple of the longest line.
 const EDIT_ROOM: f32 = 1.2;
 
@@ -43,6 +45,8 @@ pub struct TranscriptView {
     correcting: Option<Correcting>,
     /// The line being edited, and its text so far.
     editing_line: Option<(usize, String)>,
+    /// Corrections made this frame, for the [`crate::eval_log::EvalLog`].
+    events: Vec<Event>,
 }
 
 /// The popup for correcting an uncertain word.
@@ -67,7 +71,8 @@ enum Mark {
 
 impl TranscriptView {
     /// Shows `transcript`'s uncertain words over the page drawn at `image_rect`, and the
-    /// transcript itself in `text_rect`, applying the user's corrections to it.
+    /// transcript itself in `text_rect`, applying the user's corrections to it. Returns what the
+    /// user corrected.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -75,13 +80,14 @@ impl TranscriptView {
         transcript: &mut Transcript,
         image_rect: Option<Rect>,
         text_rect: Rect,
-    ) {
+    ) -> Vec<Event> {
         if self.page != page {
             *self = Self {
                 page: page.to_owned(),
                 ..Self::default()
             };
         }
+        let open = transcript.open_uncertain();
         let spans = transcript.uncertain_spans();
         let marks: Vec<Mark> = transcript
             .uncertain
@@ -107,6 +113,18 @@ impl TranscriptView {
         });
         self.popup(ui, transcript);
         self.hovered = hovered;
+
+        // By correcting the last open word, or editing it out of its line.
+        if open > 0 && transcript.open_uncertain() == 0 {
+            let spans = transcript.uncertain_spans();
+            self.events.push(Event::AllResolved {
+                page: page.to_owned(),
+                model: transcript.model.clone(),
+                uncertain: spans.len(),
+                unfound: spans.iter().filter(|s| s.is_none()).count(),
+            });
+        }
+        std::mem::take(&mut self.events)
     }
 
     /// Whether uncertain word `index` is highlighted: under the pointer, or being corrected.
@@ -215,7 +233,15 @@ impl TranscriptView {
                 );
                 if response.lost_focus() {
                     // Enter or a click elsewhere keeps the edit; Escape drops it.
-                    if !ui.input(|i| i.key_pressed(Key::Escape)) {
+                    let from = &transcript.lines[line].text_md;
+                    if !ui.input(|i| i.key_pressed(Key::Escape)) && *from != *text {
+                        self.events.push(Event::LineEdited {
+                            page: self.page.clone(),
+                            model: transcript.model.clone(),
+                            line,
+                            from: from.clone(),
+                            to: text.clone(),
+                        });
                         transcript.set_line(line, std::mem::take(text));
                     }
                     self.editing_line = None;
@@ -295,13 +321,13 @@ impl TranscriptView {
         .open_bool(&mut open)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
-            for alternative in &u.alternatives {
+            for (i, alternative) in u.alternatives.iter().enumerate() {
                 if ui.button(alternative).clicked() {
-                    choice = Some(alternative.clone());
+                    choice = Some((alternative.clone(), Via::Alternative(i)));
                 }
             }
             if ui.button(format!("Keep \"{}\"", u.text)).clicked() {
-                choice = Some(u.text.clone());
+                choice = Some((u.text.clone(), Via::Keep));
             }
             ui.horizontal(|ui| {
                 let edit = ui.add(
@@ -313,15 +339,25 @@ impl TranscriptView {
                 let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 let ok = ui.add_enabled(!custom.is_empty(), egui::Button::new("OK"));
                 if !custom.is_empty() && (ok.clicked() || entered) {
-                    choice = Some(custom.to_owned());
+                    choice = Some((custom.to_owned(), Via::Custom));
                 }
             });
         });
         if ui.input(|i| i.key_pressed(Key::Escape)) {
             open = false;
         }
-        if let Some(choice) = choice {
-            transcript.resolve(c.index, &choice);
+        if let Some((choice, via)) = choice {
+            let from = u.text.clone();
+            if transcript.resolve(c.index, &choice) {
+                self.events.push(Event::Corrected {
+                    page: self.page.clone(),
+                    model: transcript.model.clone(),
+                    word: c.index,
+                    from,
+                    to: choice,
+                    via,
+                });
+            }
             open = false;
         }
         if !open {

@@ -2,21 +2,25 @@
 //! takes. Pages are looked up in the cache as they arrive; at most [`MAX_CONCURRENT`] are sent to
 //! Claude at once, the rest wait in a queue. Finished transcripts come out of
 //! [`Transcriptions::next`]; failures are kept by page name until retried.
+//!
+//! Pages are sent to the [`Model`] selected at the time. A page cached by any model isn't sent
+//! unless forced.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use notebook_core::CleanParams;
 use notebook_core::cache::{Cache, Fetched};
-use notebook_core::ocr::{OcrError, Transcript, parse_response};
+use notebook_core::ocr::{Comparison, Model, OcrError, Transcript, compare, parse_response};
 
 /// Most pages sent to Claude at once. More risks rate limits and overloaded errors.
 pub const MAX_CONCURRENT: usize = 4;
 
-/// Sends a page to Claude from its file's bytes.
-pub type Fetch = Arc<dyn Fn(&[u8], &CleanParams) -> Result<Fetched, OcrError> + Send + Sync>;
+/// Sends a page to a Claude model from its file's bytes.
+pub type Fetch = Arc<dyn Fn(&[u8], &CleanParams, Model) -> Result<Fetched, OcrError> + Send + Sync>;
 
 /// Transcribes pages with Claude, caching what comes back.
 #[derive(Clone)]
@@ -34,25 +38,54 @@ impl Transcriber {
         }
     }
 
-    /// The page's transcript for `kind`. `None` only for a [`Kind::Lookup`] that missed.
-    fn run(
-        &self,
-        kind: Kind,
-        bytes: &[u8],
-        params: &CleanParams,
-    ) -> Result<Option<Transcript>, OcrError> {
-        let fetch = || (self.fetch)(bytes, params);
-        let transcript = match (kind, &self.cache) {
-            (Kind::Lookup, cache) => return Ok(cache.as_ref().and_then(|c| c.get(bytes))),
-            (Kind::Transcribe, Some(cache)) => cache.transcript_or(bytes, fetch)?,
-            (Kind::Force, Some(cache)) => cache.refresh(bytes, fetch)?,
+    /// The page's transcript for `job`. `None` only for a [`Kind::Lookup`] that missed.
+    fn run(&self, job: &Job) -> Result<Option<Ran>, OcrError> {
+        let (bytes, model) = (job.bytes.as_slice(), job.model);
+        let mut elapsed = None;
+        let mut fetch = || {
+            let started = Instant::now();
+            let fetched = (self.fetch)(bytes, &job.params, model);
+            elapsed = Some(started.elapsed());
+            fetched
+        };
+        let transcript = match (job.kind, &self.cache) {
+            (Kind::Lookup, cache) => {
+                let found = cache.as_ref().and_then(|c| c.find(bytes, model));
+                return Ok(found.map(|transcript| Ran {
+                    transcript,
+                    elapsed: None,
+                    comparisons: Vec::new(),
+                }));
+            }
+            (Kind::Transcribe, Some(cache)) => cache.transcript_or(bytes, model, fetch)?,
+            (Kind::Force, Some(cache)) => cache.refresh(bytes, model, fetch)?,
             (_, None) => {
                 let (status, body, size) = fetch()?;
                 parse_response(status, &body, size)?
             }
         };
-        Ok(Some(transcript))
+        // Sent, rather than found in the cache: compare with what other models made of the page.
+        let comparisons = match &self.cache {
+            Some(cache) if !transcript.from_cache => Model::ALL
+                .into_iter()
+                .filter(|&other| other != model)
+                .filter_map(|other| Some((other, compare(&transcript, &cache.get(bytes, other)?))))
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok(Some(Ran {
+            transcript,
+            elapsed,
+            comparisons,
+        }))
     }
+}
+
+/// What [`Transcriber::run`] made of a page.
+struct Ran {
+    transcript: Transcript,
+    elapsed: Option<Duration>,
+    comparisons: Vec<(Model, Comparison)>,
 }
 
 /// What a job does.
@@ -71,6 +104,7 @@ struct Job {
     bytes: Vec<u8>,
     params: CleanParams,
     kind: Kind,
+    model: Model,
 }
 
 /// A page that finished transcribing.
@@ -79,9 +113,13 @@ pub struct Done {
     pub transcript: Transcript,
     /// Retranscribed on request, so it replaces the page's transcript, corrections and all.
     pub forced: bool,
+    /// How long Claude took, if the page was sent rather than found in the cache.
+    pub elapsed: Option<Duration>,
+    /// How the transcript differs from other models' cached ones, if it was sent.
+    pub comparisons: Vec<(Model, Comparison)>,
 }
 
-type Finished = (String, Kind, Result<Option<Transcript>, String>);
+type Finished = (String, Kind, Result<Option<Ran>, String>);
 
 pub struct Transcriptions {
     transcriber: Option<Transcriber>,
@@ -95,6 +133,8 @@ pub struct Transcriptions {
     checking: HashSet<String>,
     /// Why the last attempt failed, by page name.
     errors: HashMap<String, String>,
+    /// Pages are sent to it from now on.
+    model: Model,
 }
 
 impl Default for Transcriptions {
@@ -114,7 +154,18 @@ impl Transcriptions {
             running: HashSet::new(),
             checking: HashSet::new(),
             errors: HashMap::new(),
+            model: Model::default(),
         }
+    }
+
+    /// Which model pages are sent to, and preferred in the cache.
+    pub fn model(&self) -> Model {
+        self.model
+    }
+
+    /// Sends pages to `model` from now on. Pages already queued or transcribed are unaffected.
+    pub fn set_model(&mut self, model: Model) {
+        self.model = model;
     }
 
     pub fn available(&self) -> bool {
@@ -134,6 +185,7 @@ impl Transcriptions {
                 bytes,
                 params: CleanParams::default(),
                 kind: Kind::Lookup,
+                model: self.model,
             },
             ctx,
         );
@@ -180,6 +232,7 @@ impl Transcriptions {
             bytes,
             params,
             kind,
+            model: self.model,
         };
         if first {
             self.queue.push_front(job);
@@ -194,7 +247,7 @@ impl Transcriptions {
         while self.running.len() < MAX_CONCURRENT
             && let Some(job) = self.queue.pop_front()
         {
-            log::info!("{}: transcribing", job.name);
+            log::info!("{}: transcribing with {}", job.name, job.model.id());
             self.running.insert(job.name.clone());
             self.spawn(job, ctx);
         }
@@ -206,9 +259,7 @@ impl Transcriptions {
         };
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let result = transcriber
-                .run(job.kind, &job.bytes, &job.params)
-                .map_err(|e| e.to_string());
+            let result = transcriber.run(&job).map_err(|e| e.to_string());
             // The receiver lives as long as the app, so a failed send only happens during shutdown.
             tx.send((job.name, job.kind, result)).ok();
             ctx.request_repaint();
@@ -227,12 +278,13 @@ impl Transcriptions {
             }
             match result {
                 Ok(None) => {}
-                Ok(Some(transcript)) => {
-                    log_done(&name, &transcript);
+                Ok(Some(ran)) => {
                     return Some(Done {
                         name,
-                        transcript,
+                        transcript: ran.transcript,
                         forced: kind == Kind::Force,
+                        elapsed: ran.elapsed,
+                        comparisons: ran.comparisons,
                     });
                 }
                 Err(err) => {
@@ -268,19 +320,5 @@ impl Transcriptions {
 
     pub fn error(&self, name: &str) -> Option<&str> {
         self.errors.get(name).map(String::as_str)
-    }
-}
-
-fn log_done(name: &str, transcript: &Transcript) {
-    if transcript.from_cache {
-        log::info!("{name}: from cache, transcribed by {}", transcript.model);
-    } else {
-        let usage = transcript.usage;
-        log::info!(
-            "{name}: transcribed by {}, {} input + {} output tokens",
-            transcript.model,
-            usage.input_tokens,
-            usage.output_tokens
-        );
     }
 }

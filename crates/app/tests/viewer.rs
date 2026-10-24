@@ -10,9 +10,9 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Fetch, NotebookApp, SavePath, Transcriber};
+use notebook_app::{Event, Fetch, NotebookApp, SavePath, Transcriber};
 use notebook_core::cache::{Cache, Fetched};
-use notebook_core::ocr::OcrError;
+use notebook_core::ocr::{Model, OcrError};
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -71,14 +71,14 @@ fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
 
 /// Every page transcribes to the recorded response, without a cache.
 fn transcriber() -> Transcriber {
-    Transcriber::new(Arc::new(|_, _| Ok(recorded())), None)
+    Transcriber::new(Arc::new(|_, _, _| Ok(recorded())), None)
 }
 
 /// Answers every request with the recorded response, counting them.
 fn counting_fetch() -> (Fetch, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let fetch: Fetch = Arc::new(move |_, _| {
+    let fetch: Fetch = Arc::new(move |_, _, _| {
         counter.fetch_add(1, Ordering::SeqCst);
         Ok(recorded())
     });
@@ -170,6 +170,35 @@ fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)])
     // A page is added per frame.
     harness.run_steps(files.len());
     harness.run();
+}
+
+/// The eval log's events, less each one's page and model, as `(kind, detail)`.
+fn events(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
+    let events = harness.state().eval_log().events();
+    events
+        .iter()
+        .map(|event| match event {
+            Event::Transcribed { from_cache, .. } => format!("transcribed from_cache={from_cache}"),
+            Event::Compared {
+                old, comparison, ..
+            } => {
+                format!("compared old={old:?} similarity={}", comparison.similarity)
+            }
+            Event::Corrected {
+                word,
+                from,
+                to,
+                via,
+                ..
+            } => {
+                format!("corrected {word} {from}->{to} {via:?}")
+            }
+            Event::AllResolved {
+                uncertain, unfound, ..
+            } => format!("all resolved {uncertain} unfound={unfound}"),
+            Event::LineEdited { line, from, to, .. } => format!("line {line} {from}->{to}"),
+        })
+        .collect()
 }
 
 /// Thumbnail labels, left to right.
@@ -372,7 +401,13 @@ fn controls_without_a_transcriber() {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
-    for label in ["Transcribed", "Transcribe all", "Re-export", "Export"] {
+    for label in [
+        "Transcribed",
+        "Transcription model",
+        "Transcribe all",
+        "Re-export",
+        "Export",
+    ] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
@@ -448,10 +483,12 @@ fn transcribed_view_transcribes_once() {
 fn failed_transcription_can_be_retried() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let fetch: Fetch = Arc::new(move |_, _| match counter.fetch_add(1, Ordering::SeqCst) {
-        0 => Err(overloaded()),
-        _ => Ok(recorded()),
-    });
+    let fetch: Fetch = Arc::new(
+        move |_, _, _| match counter.fetch_add(1, Ordering::SeqCst) {
+            0 => Err(overloaded()),
+            _ => Ok(recorded()),
+        },
+    );
     let mut harness = harness_with(Transcriber::new(fetch, None));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
@@ -535,7 +572,7 @@ fn answering(
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let answers = std::sync::Mutex::new(answers.into_iter());
-    let fetch: Fetch = Arc::new(move |_, _| {
+    let fetch: Fetch = Arc::new(move |_, _, _| {
         counter.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(delay);
         answers.lock().unwrap().next().expect("an answer left")
@@ -586,6 +623,75 @@ fn force_retranscribes_without_asking_if_uncorrected() {
 
     step_until(&mut harness, "by claude-opus-4-8");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn the_selected_model_transcribes_and_is_compared_with_the_other() {
+    let models = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sent = models.clone();
+    let fetch: Fetch = Arc::new(move |_, _, model| {
+        sent.lock().unwrap().push(model);
+        Ok(recorded())
+    });
+    let dir = cache_dir("select_model");
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    // Its label, then the dropdown (named by the label), then Debug, in a row.
+    let label = harness
+        .query_all_by_role(Role::Label)
+        .find(|n| n.value().as_deref() == Some("Transcription model"))
+        .expect("label")
+        .accesskit_node()
+        .bounding_box()
+        .unwrap();
+    let bounds = |label| {
+        let node = harness.get_by_label(label);
+        node.accesskit_node().bounding_box().unwrap()
+    };
+    let (combo, debug) = (bounds("Transcription model"), bounds("Debug"));
+    assert!(
+        label.x1 <= combo.x0 && combo.x1 <= debug.x0,
+        "{label:?} {combo:?} {debug:?}"
+    );
+    assert!(
+        label.y0 < combo.y1 && combo.y0 < label.y1,
+        "{label:?} {combo:?}"
+    );
+
+    harness.get_by_label("Transcription model").click();
+    harness.run();
+    harness.get_by_label("Sonnet").click();
+    harness.run();
+    harness.get_by_label("Force retranscription").click();
+    for _ in 0..500 {
+        harness.step();
+        if events(&harness).len() == 3 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*models.lock().unwrap(), [Model::Opus, Model::Sonnet]);
+    assert_eq!(
+        events(&harness),
+        [
+            "transcribed from_cache=false",
+            "transcribed from_cache=false",
+            "compared old=Opus similarity=1",
+        ]
+    );
+    let cache = Cache::new(&dir);
+    let photo = page_photo();
+    assert!(cache.get(&photo, Model::Opus).is_some());
+    assert!(cache.get(&photo, Model::Sonnet).is_some());
+
+    // Either entry will do for a new page.
+    let (fetch, calls) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(events(&harness), ["transcribed from_cache=true"]);
 }
 
 #[test]
@@ -642,7 +748,7 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
     );
     let fetch: Fetch = {
         let (calls, running, most) = (calls.clone(), running.clone(), most.clone());
-        Arc::new(move |_, _| {
+        Arc::new(move |_, _, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             let now = running.fetch_add(1, Ordering::SeqCst) + 1;
             most.fetch_max(now, Ordering::SeqCst);
@@ -692,7 +798,7 @@ fn deleting_a_queued_page_means_it_isnt_sent() {
     let (calls, slow) = (Arc::new(AtomicUsize::new(0)), Duration::from_millis(100));
     let fetch: Fetch = {
         let calls = calls.clone();
-        Arc::new(move |_, _| {
+        Arc::new(move |_, _, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(slow);
             Ok(recorded())
@@ -756,6 +862,46 @@ fn transcribed_view_shows_the_page_with_uncertain_words() {
         harness.get_by_label(word);
         harness.get_by_label(&format!("Box: {word}"));
     }
+}
+
+#[test]
+fn corrections_are_logged() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    correct_plumber(&mut harness);
+    harness.get_by_label("w/").click();
+    harness.run();
+    harness.get_by_label("Keep \"w/\"").click();
+    harness.run();
+    // A word corrected again doesn't finish the page again.
+    harness.get_by_label("Box: plumbers").click();
+    harness.run();
+    let field = harness.get_by_role(Role::TextInput);
+    field.focus();
+    field.type_text("Plumbing Co");
+    harness.run_ok();
+    harness.key_press(egui::Key::Enter);
+    harness.run();
+
+    assert_eq!(
+        events(&harness),
+        [
+            "transcribed from_cache=false",
+            "corrected 0 plumber->plumbers Alternative(0)",
+            "corrected 1 w/->w/ Keep",
+            "all resolved 2 unfound=0",
+            "corrected 0 plumbers->Plumbing Co Custom",
+        ]
+    );
+    let Event::Corrected { page, model, .. } = &harness.state().eval_log().events()[1] else {
+        panic!("not a correction");
+    };
+    assert_eq!(
+        (page.as_str(), model.as_str()),
+        ("a.png", "claude-opus-5-5")
+    );
 }
 
 #[test]
@@ -842,6 +988,10 @@ fn double_clicking_a_line_edits_it() {
 
     harness.get_by_label("# Thurs 23 Oct 2026");
     assert!(harness.query_by_role(Role::TextInput).is_none());
+    assert_eq!(
+        events(&harness)[1..],
+        ["line 0 # Thurs 23 Oct-># Thurs 23 Oct 2026"]
+    );
 
     // Escape drops the edit.
     harness.run_steps(30);
@@ -854,6 +1004,7 @@ fn double_clicking_a_line_edits_it() {
     harness.key_press(egui::Key::Escape);
     harness.run();
     harness.get_by_label("# Thurs 23 Oct 2026");
+    assert_eq!(events(&harness).len(), 2, "escaped edit not logged");
 }
 
 #[test]

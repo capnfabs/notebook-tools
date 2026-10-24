@@ -36,7 +36,8 @@ fn transcriber() -> Option<notebook_app::Transcriber> {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
         None => log::warn!("No cache directory: transcriptions won't be cached"),
     }
-    let fetch = move |bytes: &[u8], params: &_| fetch_page(&credentials, bytes, params);
+    let fetch =
+        move |bytes: &[u8], params: &_, model| fetch_page(&credentials, bytes, params, model);
     Some(notebook_app::Transcriber::new(
         std::sync::Arc::new(fetch),
         cache,

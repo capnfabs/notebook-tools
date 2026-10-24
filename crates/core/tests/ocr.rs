@@ -5,14 +5,14 @@
 //! scripts/with-claude-token.sh cargo test -p notebook_core --test ocr -- --ignored live
 //! ```
 //!
-//! It saves the raw response to `target/tmp/ocr-live/`; copy one into `tests/fixtures/ocr/` to
-//! record it.
+//! `OCR_LIVE_MODEL=sonnet` sends it to Sonnet instead of Opus. It saves the raw response to
+//! `target/tmp/ocr-live/`; copy one into `tests/fixtures/ocr/` to record it.
 
 use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
 use notebook_core::ocr::{
-    Credentials, EFFORT, MODEL, OcrError, Span, Transcript, encode_jpeg, parse_response,
+    Credentials, EFFORT, Model, OcrError, Span, Transcript, encode_jpeg, parse_response,
     request_body,
 };
 use serde::Deserialize;
@@ -56,19 +56,27 @@ fn assert_boxes_in_bounds(transcript: &Transcript) {
 #[test]
 fn request_body_snapshot() {
     let img = RgbaImage::from_pixel(2, 2, Rgba([255, 255, 255, 255]));
-    insta::assert_json_snapshot!(request_body(&encode_jpeg(&img), EFFORT));
+    insta::assert_json_snapshot!(request_body(&encode_jpeg(&img), Model::Opus, EFFORT));
 }
 
 #[test]
 fn request_body_sets_effort() {
-    let body = request_body(&[], "low");
+    let body = request_body(&[], Model::Opus, "low");
     assert_eq!(body["output_config"]["effort"], "low");
+}
+
+#[test]
+fn request_body_sets_model() {
+    for model in Model::ALL {
+        assert_eq!(request_body(&[], model, EFFORT)["model"], model.id());
+    }
+    assert_eq!(Model::Sonnet.id(), "claude-sonnet-5-5");
 }
 
 #[test]
 fn parses_success() {
     let transcript = parse("success").unwrap();
-    assert_eq!(transcript.model, MODEL);
+    assert_eq!(transcript.model, Model::Opus.id());
     assert_eq!(transcript.image_size, (1200, 900));
     insta::assert_debug_snapshot!("success_transcript", transcript);
     insta::assert_snapshot!("success_markdown", transcript.markdown());
@@ -78,8 +86,9 @@ fn parses_success() {
 #[test]
 fn parses_recorded_response() {
     let transcript = parse("spread-wood-1").unwrap();
-    assert_eq!(transcript.model, MODEL);
+    assert_eq!(transcript.model, Model::Opus.id());
     assert!(transcript.usage.output_tokens > 0);
+    assert_eq!(transcript.usage.thinking_tokens, 1393);
     // Two of these claim a line one off from where their text is.
     let spans = transcript.uncertain_spans();
     assert_eq!(spans.len(), 5);
@@ -204,11 +213,18 @@ fn live_transcribes_fixture_photo() {
         return;
     };
     let name = std::env::var("OCR_LIVE_PHOTO").unwrap_or_else(|_| "spread-wood-1".into());
+    let model = match std::env::var("OCR_LIVE_MODEL").as_deref() {
+        Ok("sonnet") => Model::Sonnet,
+        _ => Model::Opus,
+    };
     let bytes = std::fs::read(fixtures_dir().join(format!("{name}.jpg"))).unwrap();
     let img = notebook_core::decode(&bytes).unwrap();
     let page = notebook_core::ocr::image_to_send(&img, &notebook_core::CleanParams::default());
-    let (status, body) =
-        notebook_core::ocr::send(&credentials, &request_body(&encode_jpeg(&page), EFFORT)).unwrap();
+    let (status, body) = notebook_core::ocr::send(
+        &credentials,
+        &request_body(&encode_jpeg(&page), model, EFFORT),
+    )
+    .unwrap();
 
     let out_dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ocr-live");
     std::fs::create_dir_all(&out_dir).unwrap();

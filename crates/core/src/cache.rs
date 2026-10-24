@@ -1,6 +1,7 @@
 //! Caches Claude's responses on disk, so a page is only transcribed again when its photo changes
 //! or [`CACHE_VERSION`] is bumped. An entry is the raw response, parsed on every load just like a
-//! live one. See `decisions/2026-10-24-transcription-cache.md`.
+//! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. See
+//! `decisions/2026-10-24-transcription-cache.md` and `decisions/2026-10-24-model-selector.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::ocr::{CACHE_VERSION, OcrError, Transcript, parse_response};
+use crate::ocr::{CACHE_VERSION, Model, OcrError, Transcript, parse_response};
 
 /// A response as it came back: status, body, and the size of the image sent.
 pub type Fetched = (u16, Vec<u8>, (u32, u32));
 
-/// A directory of cached responses, one file per photo.
+/// A directory of cached responses, one file per photo and model.
 pub struct Cache {
     dir: PathBuf,
 }
@@ -43,37 +44,48 @@ impl Cache {
         &self.dir
     }
 
-    /// Where the entry for the photo `page_bytes` is kept.
-    pub fn entry_path(&self, page_bytes: &[u8]) -> PathBuf {
+    /// Where `model`'s entry for the photo `page_bytes` is kept.
+    pub fn entry_path(&self, page_bytes: &[u8], model: Model) -> PathBuf {
         self.dir
-            .join(format!("{}.json", key(page_bytes, CACHE_VERSION)))
+            .join(format!("{}.json", key(page_bytes, CACHE_VERSION, model)))
     }
 
-    /// The photo's cached transcript, if there's a readable entry.
-    pub fn get(&self, page_bytes: &[u8]) -> Option<Transcript> {
-        load(&self.entry_path(page_bytes))
+    /// The photo's transcript by `model`, if there's a readable entry.
+    pub fn get(&self, page_bytes: &[u8], model: Model) -> Option<Transcript> {
+        load(&self.entry_path(page_bytes, model))
     }
 
-    /// The photo's cached transcript, else [`Self::refresh`]'s.
+    /// The photo's transcript by `preferred`, else by any other model.
+    pub fn find(&self, page_bytes: &[u8], preferred: Model) -> Option<Transcript> {
+        let others = Model::ALL.into_iter().filter(|&m| m != preferred);
+        std::iter::once(preferred)
+            .chain(others)
+            .find_map(|model| self.get(page_bytes, model))
+    }
+
+    /// The photo's cached transcript by any model, preferring `model`, else [`Self::refresh`]'s.
     pub fn transcript_or(
         &self,
         page_bytes: &[u8],
+        model: Model,
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
-        match self.get(page_bytes) {
+        match self.find(page_bytes, model) {
             Some(transcript) => Ok(transcript),
-            None => self.refresh(page_bytes, fetch),
+            None => self.refresh(page_bytes, model, fetch),
         }
     }
 
-    /// `fetch`'s transcript, which replaces the photo's entry if it parses: refusals, truncated
-    /// answers and errors leave the entry as it was. A failure to write one only logs.
+    /// `fetch`'s transcript by `model`, which replaces the photo's entry for `model` if it parses:
+    /// refusals, truncated answers and errors leave the entry as it was. A failure to write one
+    /// only logs.
     pub fn refresh(
         &self,
         page_bytes: &[u8],
+        model: Model,
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
-        let path = self.entry_path(page_bytes);
+        let path = self.entry_path(page_bytes, model);
         let (status, body, image_size) = fetch()?;
         let transcript = parse_response(status, &body, image_size)?;
         let stored_at = unix_secs(SystemTime::now());
@@ -139,9 +151,9 @@ fn from_unix_secs(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
 }
 
-/// Names the entry for `page_bytes` at cache version `version`.
-fn key(page_bytes: &[u8], version: u32) -> String {
-    format!("{}-v{version}", sha256_hex(page_bytes))
+/// Names `model`'s entry for `page_bytes` at cache version `version`.
+fn key(page_bytes: &[u8], version: u32, model: Model) -> String {
+    format!("{}-v{version}-{}", sha256_hex(page_bytes), model.name())
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
@@ -156,13 +168,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_depends_on_bytes_and_version() {
+    fn key_depends_on_bytes_version_and_model() {
+        let key = |bytes, version| key(bytes, version, Model::Opus);
         assert_eq!(key(b"page", 1), key(b"page", 1));
         assert_ne!(key(b"page", 1), key(b"other page", 1));
         assert_ne!(key(b"page", 1), key(b"page", 2));
+        assert_ne!(key(b"page", 1), super::key(b"page", 1, Model::Sonnet));
         assert_eq!(
-            key(b"abc", 3),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad-v3",
+            super::key(b"abc", 3, Model::Sonnet),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad-v3-sonnet",
             "sha256, so `shasum -a 256` finds a photo's entry"
         );
     }

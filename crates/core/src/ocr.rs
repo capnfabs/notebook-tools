@@ -16,7 +16,57 @@ use image::{ExtendedColorType, ImageEncoder as _, RgbImage, RgbaImage};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
-pub const MODEL: &str = "claude-opus-5-5";
+/// Which Claude transcribes. Both see images at the same resolution, so [`MAX_IMAGE_PIXELS`] suits
+/// either.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Model {
+    #[default]
+    Opus,
+    Sonnet,
+}
+
+impl Model {
+    pub const ALL: [Self; 2] = [Self::Opus, Self::Sonnet];
+
+    /// The API's name for it.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Opus => "claude-opus-5-5",
+            Self::Sonnet => "claude-sonnet-5-5",
+        }
+    }
+
+    /// Its family, without version or effort: names its [`crate::cache`] entries.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Opus => "opus",
+            Self::Sonnet => "sonnet",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Opus => "Opus",
+            Self::Sonnet => "Sonnet",
+        }
+    }
+
+    /// The family of the model the API names `id`, which may be a fallback's.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|m| id.starts_with(&format!("claude-{}", m.name())))
+    }
+
+    /// Dollars per million input and output tokens.
+    pub fn prices(self) -> (f64, f64) {
+        match self {
+            Self::Opus => (4.0, 20.0),
+            Self::Sonnet => (2.0, 10.0),
+        }
+    }
+}
+
 /// How hard Claude thinks: `low`, `medium`, `high`, `xhigh` or `max`.
 pub const EFFORT: &str = "high";
 pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -46,9 +96,9 @@ Transcribe this photo of a handwritten notebook page.
 - Add an `uncertain` entry for each word or phrase you're unsure of: line index (0-based), the text exactly as it appears in that line, its box, and 1–3 other likely readings.
 - Boxes are [x0, y0, x1, y1] in pixels of this image.";
 
-/// Version of cached responses ([`crate::cache`]). Bump it when the schema changes, since old
-/// responses won't parse; a test checks for that. After a prompt, model or send-image change, bump
-/// it only if the cached transcriptions should be redone.
+/// Version of cached responses ([`crate::cache`]), which are also kept per [`Model`]. Bump it when
+/// the schema changes, since old responses won't parse; a test checks for that. After a prompt,
+/// model version or send-image change, bump it only if the cached transcriptions should be redone.
 pub const CACHE_VERSION: u32 = 1;
 
 /// How many lines either side of its claimed line an uncertain word is looked for in.
@@ -64,7 +114,7 @@ pub struct Transcript {
     pub uncertain: Vec<Uncertain>,
     /// Size of the image sent, which the boxes are measured in.
     pub image_size: (u32, u32),
-    /// The model that answered; differs from [`MODEL`] if a fallback ran.
+    /// The model that answered; differs from the one asked for if a fallback ran.
     pub model: String,
     /// What the request cost; for a cached transcript, what it cost when it was made.
     pub usage: Usage,
@@ -107,9 +157,74 @@ pub struct Span {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(from = "RawUsage")]
 pub struct Usage {
     pub input_tokens: u64,
+    /// Including thinking.
     pub output_tokens: u64,
+    pub thinking_tokens: u64,
+}
+
+impl Usage {
+    /// What it cost in dollars, at `model`'s prices.
+    pub fn cost(&self, model: Model) -> f64 {
+        let (input, output) = model.prices();
+        (self.input_tokens as f64 * input + self.output_tokens as f64 * output) / 1e6
+    }
+}
+
+#[derive(Deserialize)]
+struct RawUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    #[serde(default)]
+    output_tokens_details: Option<OutputTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct OutputTokensDetails {
+    #[serde(default)]
+    thinking_tokens: u64,
+}
+
+impl From<RawUsage> for Usage {
+    fn from(raw: RawUsage) -> Self {
+        Self {
+            input_tokens: raw.input_tokens,
+            output_tokens: raw.output_tokens,
+            thinking_tokens: raw.output_tokens_details.map_or(0, |d| d.thinking_tokens),
+        }
+    }
+}
+
+/// How a new transcript of a page differs from an older one, e.g. by another model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comparison {
+    /// Lines, new then old.
+    pub lines: (usize, usize),
+    /// Uncertain words, new then old.
+    pub uncertain: (usize, usize),
+    /// Of the two markdowns' characters, the share in common: 1 if they're the same.
+    pub similarity: f32,
+    /// Characters inserted or deleted to get from the old markdown to the new.
+    pub changed_chars: usize,
+}
+
+/// Compares `new` with `old`, character by character.
+pub fn compare(new: &Transcript, old: &Transcript) -> Comparison {
+    let (new_md, old_md) = (new.markdown(), old.markdown());
+    let diff = similar::TextDiff::from_chars(old_md.as_str(), new_md.as_str());
+    let changed_chars = diff
+        .iter_all_changes()
+        .filter(|c| c.tag() != similar::ChangeTag::Equal)
+        .map(|c| c.value().chars().count())
+        .sum();
+    Comparison {
+        lines: (new.lines.len(), old.lines.len()),
+        uncertain: (new.uncertain.len(), old.uncertain.len()),
+        similarity: diff.ratio(),
+        changed_chars,
+    }
 }
 
 impl Transcript {
@@ -195,6 +310,14 @@ impl Transcript {
             line.text_md = text_md;
             self.edited = true;
         }
+    }
+
+    /// Uncertain words still to correct or keep: found in the text and not yet resolved.
+    pub fn open_uncertain(&self) -> usize {
+        self.uncertain
+            .iter()
+            .filter(|u| !u.resolved && self.locate(u).is_some())
+            .count()
     }
 
     /// The user has corrected or kept an uncertain word, or edited a line: work that
@@ -343,10 +466,11 @@ fn encode_jpeg_within(img: &RgbaImage, limit: usize) -> Vec<u8> {
     }
 }
 
-/// The Messages API request for transcribing `jpeg`, thinking at `effort` (see [`EFFORT`]).
-pub fn request_body(jpeg: &[u8], effort: &str) -> Value {
+/// The Messages API request for transcribing `jpeg` with `model`, thinking at `effort` (see
+/// [`EFFORT`]).
+pub fn request_body(jpeg: &[u8], model: Model, effort: &str) -> Value {
     json!({
-        "model": MODEL,
+        "model": model.id(),
         "max_tokens": MAX_TOKENS,
         // Thinking is always on for this model; effort sets how much.
         "output_config": {
@@ -539,16 +663,18 @@ pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImag
     crate::shrink_to_fit(page, (f64::from(w.max(h)) * scale) as u32)
 }
 
-/// Sends a page to Claude from its file's bytes (see [`image_to_send`]), returning the response
+/// Sends a page to `model` from its file's bytes (see [`image_to_send`]), returning the response
 /// for [`parse_response`] or the [`crate::cache`].
 pub fn fetch_page(
     credentials: &Credentials,
     page_bytes: &[u8],
     params: &crate::CleanParams,
+    model: Model,
 ) -> Result<crate::cache::Fetched, OcrError> {
     let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
     let page = image_to_send(&img, params);
-    let (status, body) = send(credentials, &request_body(&encode_jpeg(&page), EFFORT))?;
+    let body = request_body(&encode_jpeg(&page), model, EFFORT);
+    let (status, body) = send(credentials, &body)?;
     Ok((status, body, page.dimensions()))
 }
 
@@ -594,7 +720,7 @@ mod tests {
             lines: lines.iter().copied().map(line).collect(),
             uncertain,
             image_size: (100, 100),
-            model: MODEL.to_owned(),
+            model: Model::Opus.id().to_owned(),
             usage: Usage::default(),
             from_cache: false,
             stored_at: None,
@@ -756,6 +882,57 @@ mod tests {
         let mut t = transcript(&["buy eggs"], vec![uncertain(0, "eggs")]);
         t.resolve(0, "eggs");
         assert!(t.corrected(), "kept a reading");
+    }
+
+    #[test]
+    fn open_uncertain_counts_found_unresolved_words() {
+        let mut t = transcript(
+            &["buy eggs and milk"],
+            vec![
+                uncertain(0, "eggs"),
+                uncertain(0, "milk"),
+                uncertain(0, "cheese"),
+            ],
+        );
+        assert_eq!(t.open_uncertain(), 2, "cheese isn't in the text");
+        t.resolve(0, "eggs");
+        assert_eq!(t.open_uncertain(), 1);
+        t.resolve(1, "mint");
+        assert_eq!(t.open_uncertain(), 0);
+    }
+
+    #[test]
+    fn comparing_transcripts() {
+        let old = transcript(&["buy eggs", "call Sam"], vec![uncertain(0, "eggs")]);
+        let same = compare(&old, &old);
+        assert_eq!(same.similarity, 1.0);
+        assert_eq!(same.changed_chars, 0);
+        assert_eq!((same.lines, same.uncertain), ((2, 2), (1, 1)));
+
+        let new = transcript(&["buy eggs", "call Sal", ""], vec![]);
+        let diff = compare(&new, &old);
+        assert_eq!((diff.lines, diff.uncertain), ((3, 2), (0, 1)));
+        // "m" out, "l" and the paragraph break's newline in.
+        assert_eq!(diff.changed_chars, 3);
+        assert!((0.8..1.0).contains(&diff.similarity), "{}", diff.similarity);
+    }
+
+    #[test]
+    fn models_by_id_and_cost() {
+        assert_eq!(Model::from_id("claude-opus-5-5"), Some(Model::Opus));
+        assert_eq!(
+            Model::from_id("claude-sonnet-5"),
+            Some(Model::Sonnet),
+            "a fallback"
+        );
+        assert_eq!(Model::from_id("claude-haiku-5-5"), None);
+        let usage = Usage {
+            input_tokens: 5_000,
+            output_tokens: 2_000,
+            thinking_tokens: 800,
+        };
+        assert!((usage.cost(Model::Opus) - 0.06).abs() < 1e-9);
+        assert!((usage.cost(Model::Sonnet) - 0.03).abs() < 1e-9);
     }
 
     #[test]

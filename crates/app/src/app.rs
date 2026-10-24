@@ -8,12 +8,13 @@ use egui::{
     WidgetInfo, WidgetText, accesskit::Role,
 };
 use jiff::tz::TimeZone;
-use notebook_core::ocr::Transcript;
+use notebook_core::ocr::{Model, Transcript};
 use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
 };
 
 use crate::dialog::{self, Action, Choice};
+use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
 use crate::ingest::Ingest;
 use crate::split::{self, Split};
@@ -24,6 +25,10 @@ use crate::transcript_view::{self, TranscriptView};
 /// Why the Transcribed view is unavailable.
 const NO_TRANSCRIBER_HINT: &str =
     "Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app";
+
+/// What the model selector changes.
+const MODEL_HINT: &str = "Model for new and forced transcriptions. Cached transcripts by either \
+model are used; this one's is preferred.";
 
 /// The button that retranscribes a page, skipping the cache.
 const FORCE_LABEL: &str = "Force retranscription";
@@ -122,6 +127,7 @@ pub struct NotebookApp {
     confirm_transcribe_all: bool,
     /// The corrected page the user asked to retranscribe, until they confirm.
     confirm_force: Option<String>,
+    eval_log: EvalLog,
 }
 
 impl NotebookApp {
@@ -141,6 +147,11 @@ impl NotebookApp {
         }
     }
 
+    /// What's been transcribed and corrected this session, for judging the models.
+    pub fn eval_log(&self) -> &EvalLog {
+        &self.eval_log
+    }
+
     /// The app's UI, separate from [`eframe::App`] so tests can drive it directly.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -155,6 +166,17 @@ impl NotebookApp {
             if let Some(page) = index.and_then(|i| self.pages.get_mut(i))
                 && (done.forced || page.transcript.is_none())
             {
+                let transcript = &done.transcript;
+                self.eval_log
+                    .record(Event::transcribed(&done.name, transcript, done.elapsed));
+                for (old, comparison) in done.comparisons {
+                    self.eval_log.record(Event::Compared {
+                        page: done.name.clone(),
+                        model: transcript.model.clone(),
+                        old,
+                        comparison,
+                    });
+                }
                 page.transcript = Some(done.transcript);
                 if done.forced {
                     self.transcript_view = TranscriptView::default();
@@ -440,6 +462,7 @@ impl NotebookApp {
                         self.sort_pages();
                     }
                     ui.checkbox(&mut self.debug, "Debug");
+                    self.model_selector(ui);
                 });
             });
         });
@@ -534,6 +557,29 @@ impl NotebookApp {
                 egui::Color32::WHITE,
             );
         }
+    }
+
+    /// Which model new and forced transcriptions use.
+    fn model_selector(&mut self, ui: &mut egui::Ui) {
+        let available = self.transcriptions.available();
+        let mut model = self.transcriptions.model();
+        ui.add_enabled_ui(available, |ui| {
+            // In the toolbar's right-to-left layout, so the label comes out on the left.
+            let combo = egui::ComboBox::from_id_salt("transcription model")
+                .selected_text(model.label())
+                .show_ui(ui, |ui| {
+                    for m in Model::ALL {
+                        ui.selectable_value(&mut model, m, m.label());
+                    }
+                })
+                .response;
+            let label = ui.label("Transcription model");
+            combo
+                .labelled_by(label.id)
+                .on_hover_text(MODEL_HINT)
+                .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+        });
+        self.transcriptions.set_model(model);
     }
 
     /// The strip of thumbnails, which select a page when clicked and rearrange pages when dragged.
@@ -687,8 +733,12 @@ impl NotebookApp {
             .and_then(|p| p.transcript.as_mut())
             .filter(|_| !transcribing);
         if let Some(transcript) = transcript {
-            self.transcript_view
+            let events = self
+                .transcript_view
                 .show(ui, &name, transcript, image_rect, text_rect);
+            for event in events {
+                self.eval_log.record(event);
+            }
         } else {
             ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
                 self.transcription_progress(ui, index);

@@ -1,3 +1,3 @@
 # Try Sonnet to save cost
 
-Run the bbox spike with Sonnet 5.5 and compare transcription and boxes against the Opus fixtures (`tests/fixtures/ocr/bbox-spike/`). Check Sonnet's image resolution tier first: on a lower tier, `MAX_IMAGE_PIXELS` is too big and the API rejects the image.
+Done as a model selector plus `eval` loglines rather than the bbox spike: see `decisions/2026-10-24-model-selector.md`. Sonnet is in the same image tier as Opus. Whether its quality holds up is judged from the logs while correcting sample pages.

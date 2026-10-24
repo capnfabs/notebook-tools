@@ -96,6 +96,7 @@ Transcript {
     usage: Usage {
         input_tokens: 3412,
         output_tokens: 2210,
+        thinking_tokens: 0,
     },
     from_cache: false,
     stored_at: None,

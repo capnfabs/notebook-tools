@@ -15,10 +15,11 @@
 - [x] [Confirm before transcribing](confirm-transcribe.md)
 - [x] [Cache status + force retranscription](cache-status-ui.md)
 - [x] [Transcribe all](transcribe-all.md)
+- [x] [Try Sonnet to save cost](sonnet-accuracy.md)
 
 ## features
 - [ ] [PDF export](pdf-export.md)
-- [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
+- [ ] [Multi-model handling](multi-model.md)
 
 ## polish
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)

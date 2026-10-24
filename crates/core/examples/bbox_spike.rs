@@ -176,7 +176,10 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                         .map(|(photo, variant, effort, max_side, page)| {
                             let jpeg = ocr::encode_jpeg(page);
                             let started = Instant::now();
-                            let sent = ocr::send(credentials, &ocr::request_body(&jpeg, effort));
+                            let sent = ocr::send(
+                                credentials,
+                                &ocr::request_body(&jpeg, ocr::Model::Opus, effort),
+                            );
                             let mut run = Run {
                                 photo: photo.clone(),
                                 variant: variant.clone(),

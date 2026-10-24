@@ -16,6 +16,7 @@ reqwest = { version = "0.13", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
+similar = "2"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
