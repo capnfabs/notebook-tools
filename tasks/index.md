@@ -11,7 +11,7 @@ In priority order.
 - [x] [Find uncertain words' line by box](uncertain-line-by-box.md)
 - [x] [Cache transcriptions](transcription-cache.md)
 - [ ] [Drop WASM](drop-wasm.md)
-- [ ] [Flaky test: deleting a transcribed page](flaky-delete-test.md)
+- [x] [Flaky test: deleting a transcribed page](flaky-delete-test.md)
 - [ ] [Confirm before transcribing](confirm-transcribe.md)
 - [ ] [Transcribe all](transcribe-all.md)
 - [ ] [Cache status + force retranscription](cache-status-ui.md)

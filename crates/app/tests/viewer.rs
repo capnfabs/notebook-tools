@@ -301,7 +301,8 @@ fn deleting_a_transcribed_page_asks_first() {
     harness.get_by_label("Delete").click();
     harness.run();
     harness.get_by_label("Delete page").click();
-    harness.run();
+    // b.png starts transcribing once it's selected, so its spinner keeps the UI from settling.
+    step_until(&mut harness, "Current: b.png");
     assert_eq!(thumbnails(&harness), ["b.png"]);
 }
 
