@@ -1,7 +1,6 @@
 # Tasks
 
-In priority order.
-
+## completed
 - [x] [Bootstrap the UI](bootstrap-ui.md)
 - [x] [Image viewer](image-viewer.md)
 - [x] [Clean images](clean-images.md)
@@ -12,20 +11,26 @@ In priority order.
 - [x] [Cache transcriptions](transcription-cache.md)
 - [x] [Drop WASM](drop-wasm.md)
 - [x] [Flaky test: deleting a transcribed page](flaky-delete-test.md)
-- [ ] [Confirm before transcribing](confirm-transcribe.md)
-- [ ] [Transcribe all](transcribe-all.md)
-- [ ] [Cache status + force retranscription](cache-status-ui.md)
-- [ ] ["Show me" untranscribed pages](show-untranscribed.md)
-- [ ] [Correction UI improvements](correction-ui.md)
-- [ ] [Markdown conversion improvements](markdown-cleanup.md)
+
+## features
 - [ ] [Reorder pages](reorder-pages.md)
+- [ ] [PDF export](pdf-export.md)
+- [ ] [Confirm before transcribing](confirm-transcribe.md)
+- [ ] [Cache status + force retranscription](cache-status-ui.md)
+- [ ] [Transcribe all](transcribe-all.md)
+- [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
+
+## polish
+- [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [HEIC decoding](heic-decoding.md)
 - [ ] [Background decoding](background-decoding.md)
 - [ ] [Downscale on load](downscale-on-load.md)
-- [ ] [PDF export](pdf-export.md)
+- [ ] [Prune the transcription cache](prune-cache.md)
+- [ ] [Markdown conversion improvements](markdown-cleanup.md)
+- [ ] [Correction UI improvements](correction-ui.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
+
+## polish (difficult)
 - [ ] [Claude auth approach](claude-auth.md)
 - [ ] [Decide: spread detection approach](spread-detection.md)
 - [ ] [Outline detection: hard photos](outline-detection.md)
-- [ ] [Try Sonnet to save cost](sonnet-accuracy.md)
-- [ ] [Prune the transcription cache](prune-cache.md)
