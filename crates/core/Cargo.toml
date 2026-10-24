@@ -6,20 +6,15 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.22"
-image.workspace = true
-imageproc.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-
-# Multithreaded on native; wasm has no threads, so rayon must never reach the web build.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-imageproc = { workspace = true, features = ["rayon"] }
-rayon.workspace = true
-# Only native sends requests; Transcribe is disabled on the web.
-reqwest = { version = "0.13", features = ["blocking"] }
 # Transcriptions are cached on disk, by the photo's hash.
 dirs = "7"
+image.workspace = true
+imageproc = { workspace = true, features = ["rayon"] }
 log = "0.4"
+rayon.workspace = true
+reqwest = { version = "0.13", features = ["blocking"] }
+serde.workspace = true
+serde_json.workspace = true
 sha2 = "0.11"
 
 [dev-dependencies]

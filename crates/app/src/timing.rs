@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 
-use web_time::Instant;
+use std::time::Instant;
 
 pub fn timed<T>(label: impl Display, f: impl FnOnce() -> T) -> T {
     let start = Instant::now();

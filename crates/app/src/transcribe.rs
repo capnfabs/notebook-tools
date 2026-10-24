@@ -1,8 +1,6 @@
 //! Transcribes pages in the background, a thread per page, so the UI keeps running during the
 //! minute or so Claude takes. Finished transcripts come out of [`Transcriptions::next`]; failures
 //! are kept by page name until retried.
-//!
-//! Only native builds have a [`Transcriber`]: there are no threads on the web.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

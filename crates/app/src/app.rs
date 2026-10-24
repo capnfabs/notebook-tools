@@ -97,7 +97,7 @@ impl NotebookApp {
     /// The app's UI, separate from [`eframe::App`] so tests can drive it directly.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if self.ingest.start_reading_drops(&ctx) > 0 {
+        if self.ingest.read_drops(&ctx) > 0 {
             self.errors.clear();
         }
         self.add_next_page(&ctx);

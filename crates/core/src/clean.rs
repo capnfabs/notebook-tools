@@ -11,6 +11,7 @@ use imageproc::geometric_transformations::{Border, Interpolation, Projection, wa
 use imageproc::geometry::{approximate_polygon_dp, arc_length, contour_area, convex_hull};
 use imageproc::morphology::{Mask, grayscale_close, grayscale_dilate, open};
 use imageproc::point::Point;
+use rayon::prelude::*;
 
 use crate::page::fitted_size;
 
@@ -503,21 +504,13 @@ fn scaled_copy(img: &RgbaImage, max_side: u32) -> RgbaImage {
     }
 }
 
-/// Runs `f(y, row)` on each row of pixels: in parallel natively, serially on wasm (no threads).
+/// Runs `f(y, row)` on each row of pixels, in parallel.
 fn for_each_row(img: &mut RgbaImage, f: impl Fn(u32, &mut [u8]) + Send + Sync) {
     let stride = img.width() as usize * 4;
     if stride == 0 {
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use rayon::prelude::*;
-        img.par_chunks_mut(stride)
-            .enumerate()
-            .for_each(|(y, row)| f(y as u32, row));
-    }
-    #[cfg(target_arch = "wasm32")]
-    img.chunks_mut(stride)
+    img.par_chunks_mut(stride)
         .enumerate()
         .for_each(|(y, row)| f(y as u32, row));
 }

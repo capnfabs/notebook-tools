@@ -1,6 +1,6 @@
 //! Transcribes a page with Claude through the Messages API. Building the request and parsing the
 //! response are plain functions, testable without the network; only [`send`] and
-//! [`transcribe_page`] make requests, and only natively.
+//! [`transcribe_page`] make requests.
 //!
 //! Response shape: `decisions/2026-10-23-ocr-response-shape.md`.
 
@@ -490,7 +490,6 @@ pub fn parse_response(
 }
 
 /// Posts `body` to the Messages API, returning the status and response body.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), OcrError> {
     let network = |e: reqwest::Error| OcrError::Network(e.to_string());
     let client = reqwest::blocking::Client::builder()
@@ -526,7 +525,6 @@ pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImag
 
 /// Transcribes a page from its file's bytes; see [`image_to_send`]. With a `cache`, a photo
 /// transcribed before isn't sent again.
-#[cfg(not(target_arch = "wasm32"))]
 pub fn transcribe_page(
     credentials: &Credentials,
     cache: Option<&crate::cache::Cache>,
