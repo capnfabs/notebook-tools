@@ -11,10 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::ocr::{CACHE_VERSION, Model, OcrError, Transcript, parse_response};
-
-/// A response as it came back: status, body, and the size of the image sent.
-pub type Fetched = (u16, Vec<u8>, (u32, u32));
+use crate::llm_model::Model;
+use crate::ocr::{CACHE_VERSION, Fetched, OcrError, parse_response};
+use crate::transcript::Transcript;
 
 /// A directory of cached responses, one file per photo and model.
 #[derive(Clone)]
@@ -87,7 +86,11 @@ impl Cache {
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
         let path = self.entry_path(page_bytes, model);
-        let (status, body, image_size) = fetch()?;
+        let Fetched {
+            status,
+            body,
+            image_size,
+        } = fetch()?;
         let transcript = parse_response(status, &body, image_size)?;
         let stored_at = unix_secs(SystemTime::now());
         let entry = serde_json::from_slice(&body).map(|response| Entry {

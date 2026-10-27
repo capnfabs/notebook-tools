@@ -10,3 +10,5 @@ You draw the four-sided-shape / annotate the corners on the _original_ view. Pro
 - 'Transcribe': as-is today.
 
 Have an 'auto' mode but with corrections.
+
+User-placed corners change the crop sent to Claude per page: revisit `decisions/2026-10-28-cache-key-ignores-clean-params.md`.

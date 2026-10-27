@@ -1,4 +1,5 @@
 use notebook_app::NotebookApp;
+use notebook_core::cache::Cache;
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -6,7 +7,9 @@ fn main() -> eframe::Result {
         "notebook-tools",
         eframe::NativeOptions::default(),
         Box::new(|_cc| {
-            let app = NotebookApp::with_transcriber(transcriber()).with_save_path(save_dialog());
+            let (transcriber, cache) = transcription();
+            let app =
+                NotebookApp::with_transcription(transcriber, cache).with_save_path(save_dialog());
             Ok(Box::new(app))
         }),
     )
@@ -23,14 +26,14 @@ fn save_dialog() -> notebook_app::SavePath {
 }
 
 /// Transcribes with Claude when credentials are in the environment, caching what comes back.
-fn transcriber() -> Option<notebook_app::Transcriber> {
+/// Without credentials there's no cache either, for now: see `tasks/cache-without-credentials.md`.
+fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
     use notebook_app::eval_log;
-    use notebook_core::cache::Cache;
     use notebook_core::ocr::{Credentials, fetch_page};
 
     let Some(credentials) = Credentials::from_env() else {
         log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
-        return None;
+        return (None, None);
     };
     let cache = Cache::default_dir().map(Cache::new);
     match &cache {
@@ -39,10 +42,13 @@ fn transcriber() -> Option<notebook_app::Transcriber> {
     }
     let fetch =
         move |bytes: &[u8], params: &_, model| fetch_page(&credentials, bytes, params, model);
-    let transcriber = notebook_app::Transcriber::new(std::sync::Arc::new(fetch), cache.clone());
+    let transcriber = notebook_app::Transcriber::new(std::sync::Arc::new(fetch));
     // Comparing reads other models' cache entries: only worth it if someone's reading the log.
-    Some(match cache {
-        Some(cache) if eval_log::enabled() => transcriber.on_sent(eval_log::log_comparisons(cache)),
+    let transcriber = match &cache {
+        Some(cache) if eval_log::enabled() => {
+            transcriber.on_transcribe_completed(eval_log::log_comparisons(cache.clone()))
+        }
         _ => transcriber,
-    })
+    };
+    (Some(transcriber), cache)
 }

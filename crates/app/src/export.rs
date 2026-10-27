@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use eframe::egui;
 use notebook_core::Pages;
-use notebook_core::ocr::Transcript;
+use notebook_core::transcript::Transcript;
 
-use crate::dialog::{self, Action, Choice};
+use crate::ui::dialog::{self, Action, Choice};
 
 /// Asks where to save a file, given a suggested file name. `None` if the user cancelled.
 pub type SavePath = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;

@@ -1,0 +1,183 @@
+//! The strip of page thumbnails along the bottom of the window: clicking one selects its page,
+//! dragging one moves its page.
+
+use std::collections::HashMap;
+
+use eframe::egui;
+use egui::accesskit::Role;
+use egui::{Color32, Margin, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
+use notebook_core::Pages;
+
+/// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
+/// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
+const THUMB_SIZE_PT: f32 = 96.0;
+
+/// Corner radius of the thumbnails, in points. The selected page's frame follows the same curve.
+const THUMB_CORNER_PT: f32 = 6.0;
+
+/// Width of the frame around the selected page's thumbnail, and of the drop marker when dragging
+/// one, in points.
+const ACTIVE_FRAME_PT: f32 = 3.0;
+
+/// Space between thumbnails, in points. The drop marker goes in the middle, so it needs room to
+/// stay clear of the selected page's frame.
+const THUMB_GAP_PT: f32 = 16.0;
+
+/// Space at either end of the strip, in points, so the frame and the drop marker aren't clipped
+/// there. Must fit half a gap plus the marker.
+const STRIP_END_PT: i8 = 12;
+
+/// How close to the strip's edge, in points, a dragged thumbnail starts scrolling it, and how far
+/// it scrolls per frame.
+const DRAG_SCROLL_EDGE_PT: f32 = 32.0;
+const DRAG_SCROLL_STEP_PT: f32 = 8.0;
+
+/// What the user did in the strip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Clicked the thumbnail of the page with this name.
+    Select(String),
+    /// Dropped page `from`'s thumbnail so the page should end up at index `to`.
+    Move { from: usize, to: usize },
+}
+
+/// Drag-and-drop payload: the index of the page whose thumbnail is being dragged.
+struct DraggedPage(usize);
+
+/// The strip's state between frames.
+#[derive(Default)]
+pub struct Thumbnails {
+    /// The page whose thumbnail the strip last scrolled into view, and where it was. Scrolls
+    /// again only when either changes, so it doesn't fight the user scrolling the strip.
+    scrolled_to: Option<(String, usize)>,
+    /// Where a dragged thumbnail would go if dropped now: the index of the gap before it, with
+    /// `pages.len()` meaning the end.
+    drop_slot: Option<usize>,
+}
+
+impl Thumbnails {
+    /// The strip, scrolling sideways, of `pages` with their `textures` by name, page `selected`
+    /// framed. Returns what the user did, if anything.
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        pages: &Pages,
+        textures: &HashMap<String, TextureHandle>,
+        selected: usize,
+    ) -> Option<Action> {
+        egui::ScrollArea::horizontal()
+            .show(ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(Margin::symmetric(STRIP_END_PT, 0))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = THUMB_GAP_PT;
+                        ui.horizontal(|ui| self.thumbnails(ui, pages, textures, selected))
+                            .inner
+                    })
+                    .inner
+            })
+            .inner
+    }
+
+    fn thumbnails(
+        &mut self,
+        ui: &mut egui::Ui,
+        pages: &Pages,
+        textures: &HashMap<String, TextureHandle>,
+        selected: usize,
+    ) -> Option<Action> {
+        let mut action = None;
+        let dragged = egui::DragAndDrop::payload::<DraggedPage>(ui.ctx()).map(|p| p.0);
+        let selection = ui.visuals().selection.stroke.color;
+        let mut rects = Vec::with_capacity(pages.len());
+        for (i, page) in pages.iter().enumerate() {
+            let tint = if dragged == Some(i) {
+                Color32::from_white_alpha(96)
+            } else {
+                Color32::WHITE
+            };
+            let response = ui
+                .add(
+                    egui::Image::new(&textures[&page.name])
+                        .max_size(Vec2::splat(THUMB_SIZE_PT))
+                        .tint(tint)
+                        .corner_radius(THUMB_CORNER_PT)
+                        .alt_text(&page.name)
+                        .sense(Sense::click_and_drag()),
+                )
+                .on_hover_text(&page.name);
+            let active = i == selected;
+            response.widget_info(|| WidgetInfo::selected(Role::Image, true, active, &page.name));
+            response.dnd_set_drag_payload(DraggedPage(i));
+            if active {
+                // An outside stroke adds its width to the radius, so this stays concentric.
+                ui.painter().rect_stroke(
+                    response.rect,
+                    THUMB_CORNER_PT,
+                    Stroke::new(ACTIVE_FRAME_PT, selection),
+                    StrokeKind::Outside,
+                );
+                if self
+                    .scrolled_to
+                    .as_ref()
+                    .is_none_or(|(name, at)| *name != page.name || *at != i)
+                {
+                    response.scroll_to_me(None);
+                    self.scrolled_to = Some((page.name.clone(), i));
+                }
+            }
+            if response.clicked() {
+                action = Some(Action::Select(page.name.clone()));
+            }
+            rects.push(response.rect);
+        }
+
+        let Some(from) = dragged else {
+            self.drop_slot = None;
+            return action;
+        };
+        if let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|pos| pos.x) {
+            self.drop_slot = Some(rects.iter().filter(|r| r.center().x < x).count());
+            // Near an edge, scroll towards it while there's more strip beyond it.
+            let visible = ui.clip_rect();
+            let (first, last) = (rects[0], rects[rects.len() - 1]);
+            let scroll = if x < visible.left() + DRAG_SCROLL_EDGE_PT
+                && first.left() < visible.left()
+            {
+                DRAG_SCROLL_STEP_PT
+            } else if x > visible.right() - DRAG_SCROLL_EDGE_PT && last.right() > visible.right() {
+                -DRAG_SCROLL_STEP_PT
+            } else {
+                0.0
+            };
+            if scroll != 0.0 {
+                ui.scroll_with_delta(Vec2::X * scroll);
+                ui.ctx().request_repaint();
+            }
+        }
+        let Some(slot) = self.drop_slot else {
+            return action;
+        };
+        // Dropping either side of the dragged page leaves it where it is.
+        let to = if slot > from { slot - 1 } else { slot };
+        if to != from {
+            let gap = ui.spacing().item_spacing.x / 2.0;
+            let x = match slot.checked_sub(1).and_then(|i| rects.get(i)) {
+                Some(before) => before.right() + gap,
+                None => rects[0].left() - gap,
+            };
+            let ys = rects
+                .iter()
+                .fold(rects[0].y_range(), |ys, r| ys.union(r.y_range()));
+            ui.painter()
+                .vline(x, ys, Stroke::new(ACTIVE_FRAME_PT, selection));
+        }
+        if ui.input(|i| i.pointer.any_released())
+            && egui::DragAndDrop::take_payload::<DraggedPage>(ui.ctx()).is_some()
+        {
+            self.drop_slot = None;
+            action = Some(Action::Move { from, to });
+        }
+        action
+    }
+}

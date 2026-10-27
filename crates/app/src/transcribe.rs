@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use eframe::egui;
 use notebook_core::CleanParams;
-use notebook_core::cache::{Cache, Fetched};
-use notebook_core::ocr::{Model, OcrError, Transcript, parse_response};
+use notebook_core::cache::Cache;
+use notebook_core::llm_model::Model;
+use notebook_core::ocr::{Fetched, OcrError, parse_response};
+use notebook_core::transcript::Transcript;
 
 /// Most pages sent to Claude at once. More risks rate limits and overloaded errors.
 pub const MAX_CONCURRENT: usize = 4;
@@ -24,37 +25,38 @@ pub type Fetch = Arc<dyn Fn(&[u8], &CleanParams, Model) -> Result<Fetched, OcrEr
 
 /// Told a page's name, its file's bytes and its transcript whenever a page is sent to Claude and
 /// comes back transcribed, but not for cached transcripts. Runs on the thread that sent it.
-pub type OnSent = Arc<dyn Fn(&str, &[u8], &Transcript) + Send + Sync>;
+pub type OnTranscribeCompleted = Arc<dyn Fn(&str, &[u8], &Transcript) + Send + Sync>;
 
-/// Transcribes pages with Claude, caching what comes back.
+/// Wakes the UI, from the thread a page finished on, so it picks the result up.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
+
+/// Transcribes pages with Claude.
 #[derive(Clone)]
 pub struct Transcriber {
     fetch: Fetch,
-    cache: Option<Arc<Cache>>,
-    on_sent: Option<OnSent>,
+    on_transcribe_completed: Option<OnTranscribeCompleted>,
 }
 
 impl Transcriber {
-    /// Without a `cache`, every page is sent to Claude.
-    pub fn new(fetch: Fetch, cache: Option<Cache>) -> Self {
+    pub fn new(fetch: Fetch) -> Self {
         Self {
             fetch,
-            cache: cache.map(Arc::new),
-            on_sent: None,
+            on_transcribe_completed: None,
         }
     }
 
-    /// Calls `on_sent` for each page sent to Claude.
-    pub fn on_sent(self, on_sent: OnSent) -> Self {
+    /// Calls `on_transcribe_completed` for each page Claude transcribes, but not for cache hits.
+    pub fn on_transcribe_completed(self, on_transcribe_completed: OnTranscribeCompleted) -> Self {
         Self {
-            on_sent: Some(on_sent),
+            on_transcribe_completed: Some(on_transcribe_completed),
             ..self
         }
     }
 
-    /// The page's transcript for `job`. `None` only for a [`Kind::Lookup`] that missed.
-    fn run(&self, job: &Job) -> Result<Option<Ran>, OcrError> {
-        let (bytes, model) = (job.bytes.as_slice(), job.model);
+    /// The page's transcript for `job`, through `cache` if there is one. Without a cache, every
+    /// page is sent to Claude.
+    fn run(&self, job: &Job, cache: Option<&Cache>) -> Result<Ran, OcrError> {
+        let (bytes, model) = (&*job.bytes, job.model);
         let mut elapsed = None;
         let mut fetch = || {
             let started = Instant::now();
@@ -62,34 +64,31 @@ impl Transcriber {
             elapsed = Some(started.elapsed());
             fetched
         };
-        let transcript = match (job.kind, &self.cache) {
-            (Kind::Lookup, cache) => {
-                let found = cache.as_ref().and_then(|c| c.find(bytes, model));
-                return Ok(found.map(|transcript| Ran {
-                    transcript,
-                    elapsed: None,
-                }));
-            }
-            (Kind::Transcribe, Some(cache)) => cache.transcript_or(bytes, model, fetch)?,
-            (Kind::Force, Some(cache)) => cache.refresh(bytes, model, fetch)?,
-            (_, None) => {
-                let (status, body, size) = fetch()?;
-                parse_response(status, &body, size)?
+        let transcript = match cache {
+            Some(cache) if job.kind == Kind::Force => cache.refresh(bytes, model, fetch)?,
+            Some(cache) => cache.transcript_or(bytes, model, fetch)?,
+            None => {
+                let Fetched {
+                    status,
+                    body,
+                    image_size,
+                } = fetch()?;
+                parse_response(status, &body, image_size)?
             }
         };
-        if let Some(on_sent) = &self.on_sent
+        if let Some(on_transcribe_completed) = &self.on_transcribe_completed
             && !transcript.from_cache
         {
-            on_sent(&job.name, bytes, &transcript);
+            on_transcribe_completed(&job.name, bytes, &transcript);
         }
-        Ok(Some(Ran {
+        Ok(Ran {
             transcript,
             elapsed,
-        }))
+        })
     }
 }
 
-/// What [`Transcriber::run`] made of a page.
+/// What a page's job made of it.
 struct Ran {
     transcript: Transcript,
     elapsed: Option<Duration>,
@@ -106,9 +105,10 @@ enum Kind {
     Force,
 }
 
+/// A page waiting to be, or being, sent to Claude.
 struct Job {
     name: String,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     params: CleanParams,
     kind: Kind,
     model: Model,
@@ -124,10 +124,14 @@ pub struct Done {
     pub elapsed: Option<Duration>,
 }
 
+/// A job's page name, kind, and its transcript: `None` for a [`Kind::Lookup`] that missed.
 type Finished = (String, Kind, Result<Option<Ran>, String>);
 
 pub struct Transcriptions {
+    /// Sends pages to Claude. Without one, nothing is sent.
     transcriber: Option<Transcriber>,
+    /// Without one, nothing is looked up.
+    cache: Option<Cache>,
     tx: Sender<Finished>,
     rx: Receiver<Finished>,
     /// Pages waiting to be sent, next first.
@@ -140,19 +144,21 @@ pub struct Transcriptions {
     errors: HashMap<String, String>,
     /// Pages are sent to it from now on.
     model: Model,
+    waker: Option<Waker>,
 }
 
 impl Default for Transcriptions {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, None)
     }
 }
 
 impl Transcriptions {
-    pub fn new(transcriber: Option<Transcriber>) -> Self {
+    pub fn new(transcriber: Option<Transcriber>, cache: Option<Cache>) -> Self {
         let (tx, rx) = channel();
         Self {
             transcriber,
+            cache,
             tx,
             rx,
             queue: VecDeque::new(),
@@ -160,7 +166,18 @@ impl Transcriptions {
             checking: HashSet::new(),
             errors: HashMap::new(),
             model: Model::default(),
+            waker: None,
         }
+    }
+
+    /// Whether [`Self::set_waker`] has been called.
+    pub fn has_waker(&self) -> bool {
+        self.waker.is_some()
+    }
+
+    /// Calls `waker` whenever a page finishes, from the thread it ran on.
+    pub fn set_waker(&mut self, waker: Waker) {
+        self.waker = Some(waker);
     }
 
     /// Which model pages are sent to, and preferred in the cache.
@@ -173,60 +190,51 @@ impl Transcriptions {
         self.model = model;
     }
 
+    /// Whether pages can be sent to Claude.
     pub fn available(&self) -> bool {
         self.transcriber.is_some()
     }
 
     /// Looks the page named `name` up in the cache, which can be done straight away: nothing is
     /// sent. A hit comes out of [`Self::next`].
-    pub fn look_up(&mut self, name: &str, bytes: Vec<u8>, ctx: &egui::Context) {
-        if self.transcriber.as_ref().is_none_or(|t| t.cache.is_none()) {
+    pub fn look_up(&mut self, name: &str, bytes: Arc<[u8]>) {
+        let Some(cache) = self.cache.clone() else {
             return;
-        }
+        };
         self.checking.insert(name.to_owned());
-        self.spawn(
-            Job {
-                name: name.to_owned(),
-                bytes,
-                params: CleanParams::default(),
-                kind: Kind::Lookup,
-                model: self.model,
-            },
-            ctx,
-        );
+        let model = self.model;
+        self.spawn(name.to_owned(), Kind::Lookup, move || {
+            Ok(cache.find(&bytes, model).map(|transcript| Ran {
+                transcript,
+                elapsed: None,
+            }))
+        });
     }
 
     /// Transcribes the page named `name` before any others waiting, forgetting any earlier
     /// failure.
-    pub fn start(&mut self, name: &str, bytes: Vec<u8>, params: CleanParams, ctx: &egui::Context) {
-        self.enqueue(name, bytes, params, Kind::Transcribe, true, ctx);
+    pub fn start(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
+        self.enqueue(name, bytes, params, Kind::Transcribe, true);
     }
 
     /// Transcribes the page named `name` after any others waiting.
-    pub fn start_later(
-        &mut self,
-        name: &str,
-        bytes: Vec<u8>,
-        params: CleanParams,
-        ctx: &egui::Context,
-    ) {
-        self.enqueue(name, bytes, params, Kind::Transcribe, false, ctx);
+    pub fn start_later(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
+        self.enqueue(name, bytes, params, Kind::Transcribe, false);
     }
 
     /// Sends the page named `name` to Claude even if it's cached, before any others waiting. The
     /// cached entry is replaced only if this succeeds.
-    pub fn force(&mut self, name: &str, bytes: Vec<u8>, params: CleanParams, ctx: &egui::Context) {
-        self.enqueue(name, bytes, params, Kind::Force, true, ctx);
+    pub fn force(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
+        self.enqueue(name, bytes, params, Kind::Force, true);
     }
 
     fn enqueue(
         &mut self,
         name: &str,
-        bytes: Vec<u8>,
+        bytes: Arc<[u8]>,
         params: CleanParams,
         kind: Kind,
         first: bool,
-        ctx: &egui::Context,
     ) {
         if self.transcriber.is_none() || self.queued_or_running(name) {
             return;
@@ -244,42 +252,53 @@ impl Transcriptions {
         } else {
             self.queue.push_back(job);
         }
-        self.send_queued(ctx);
+        self.send_queued();
     }
 
     /// Starts queued pages while fewer than [`MAX_CONCURRENT`] are being sent.
-    fn send_queued(&mut self, ctx: &egui::Context) {
+    fn send_queued(&mut self) {
+        let Some(transcriber) = self.transcriber.clone() else {
+            return;
+        };
         while self.running.len() < MAX_CONCURRENT
             && let Some(job) = self.queue.pop_front()
         {
             log::info!("{}: transcribing with {}", job.name, job.model.id());
             self.running.insert(job.name.clone());
-            self.spawn(job, ctx);
+            let (transcriber, cache) = (transcriber.clone(), self.cache.clone());
+            self.spawn(job.name.clone(), job.kind, move || {
+                transcriber.run(&job, cache.as_ref()).map(Some)
+            });
         }
     }
 
-    fn spawn(&self, job: Job, ctx: &egui::Context) {
-        let Some(transcriber) = self.transcriber.clone() else {
-            return;
-        };
-        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+    /// Runs `work` for the page named `name` on a thread of its own, for [`Self::next`] to collect.
+    fn spawn(
+        &self,
+        name: String,
+        kind: Kind,
+        work: impl FnOnce() -> Result<Option<Ran>, OcrError> + Send + 'static,
+    ) {
+        let (tx, waker) = (self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
-            let result = transcriber.run(&job).map_err(|e| e.to_string());
+            let result = work().map_err(|e| e.to_string());
             // The receiver lives as long as the app, so a failed send only happens during shutdown.
-            tx.send((job.name, job.kind, result)).ok();
-            ctx.request_repaint();
+            tx.send((name, kind, result)).ok();
+            if let Some(waker) = waker {
+                waker();
+            }
         });
     }
 
     /// The next page that finished transcribing, if any, sending the next queued page in its
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
-    pub fn next(&mut self, ctx: &egui::Context) -> Option<Done> {
+    pub fn next(&mut self) -> Option<Done> {
         while let Ok((name, kind, result)) = self.rx.try_recv() {
             if kind == Kind::Lookup {
                 self.checking.remove(&name);
             } else {
                 self.running.remove(&name);
-                self.send_queued(ctx);
+                self.send_queued();
             }
             match result {
                 Ok(None) => {}

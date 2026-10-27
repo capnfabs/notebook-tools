@@ -11,7 +11,7 @@ use egui::{
     Color32, CursorIcon, Id, Key, Label, Popup, PopupCloseBehavior, Rect, RichText, Sense, Stroke,
     StrokeKind, TextEdit, TextStyle, UiBuilder, Vec2, WidgetInfo,
 };
-use notebook_core::ocr::{Span, Transcript};
+use notebook_core::transcript::{Span, Transcript};
 
 use crate::eval_log::{Event, Via};
 

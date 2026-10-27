@@ -10,10 +10,11 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Event, Fetch, NotebookApp, OnSent, SavePath, Transcriber};
-use notebook_core::cache::{Cache, Fetched};
+use notebook_app::{Event, Fetch, NotebookApp, OnTranscribeCompleted, SavePath, Transcriber};
+use notebook_core::cache::Cache;
 use notebook_core::compare;
-use notebook_core::ocr::{Model, OcrError};
+use notebook_core::llm_model::Model;
+use notebook_core::ocr::{Fetched, OcrError};
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -63,7 +64,15 @@ fn harness() -> Harness<'static, NotebookApp> {
 }
 
 fn harness_with(transcriber: Transcriber) -> Harness<'static, NotebookApp> {
-    harness_for(NotebookApp::with_transcriber(Some(transcriber)))
+    harness_for(NotebookApp::with_transcription(Some(transcriber), None))
+}
+
+/// Transcribes with `transcriber`, caching in `cache_dir`.
+fn harness_with_cache(transcriber: Transcriber, cache_dir: &Path) -> Harness<'static, NotebookApp> {
+    harness_for(NotebookApp::with_transcription(
+        Some(transcriber),
+        Some(Cache::new(cache_dir)),
+    ))
 }
 
 fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
@@ -72,7 +81,7 @@ fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
 
 /// Every page transcribes to the recorded response, without a cache.
 fn transcriber() -> Transcriber {
-    Transcriber::new(Arc::new(|_, _, _| Ok(recorded())), None)
+    Transcriber::new(Arc::new(|_, _, _| Ok(recorded())))
 }
 
 /// Answers every request with the recorded response, counting them.
@@ -96,7 +105,7 @@ fn cache_dir(test: &str) -> PathBuf {
 }
 
 fn cached_harness(fetch: Fetch, cache_dir: &Path) -> Harness<'static, NotebookApp> {
-    harness_with(Transcriber::new(fetch, Some(Cache::new(cache_dir))))
+    harness_with_cache(Transcriber::new(fetch), cache_dir)
 }
 
 /// Opens the Transcribed view of the selected page and waits for its transcript.
@@ -132,7 +141,11 @@ fn recorded() -> Fetched {
 fn recorded_fixture(name: &str) -> Fetched {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(format!("../core/tests/fixtures/ocr/{name}.json"));
-    (200, std::fs::read(path).unwrap(), (1200, 900))
+    Fetched {
+        status: 200,
+        body: std::fs::read(path).unwrap(),
+        image_size: (1200, 900),
+    }
 }
 
 /// Steps frames until a label containing `text` appears. Transcription finishes on another
@@ -459,7 +472,7 @@ fn deleting_a_transcribed_page_asks_first() {
 #[test]
 fn transcribed_view_transcribes_once() {
     let (fetch, calls) = counting_fetch();
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     harness.get_by_label("Transcribed").click();
@@ -485,7 +498,7 @@ fn failed_transcription_can_be_retried() {
             _ => Ok(recorded()),
         },
     );
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     harness.get_by_label("Transcribed").click();
@@ -509,7 +522,7 @@ fn failed_transcription_can_be_retried() {
 #[test]
 fn selecting_another_page_asks_before_transcribing() {
     let (fetch, calls) = counting_fetch();
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     show_transcript(&mut harness);
 
@@ -526,7 +539,7 @@ fn selecting_another_page_asks_before_transcribing() {
 #[test]
 fn switching_to_transcribed_transcribes_the_shown_page() {
     let (fetch, calls) = counting_fetch();
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     harness.get_by_label("b.png").click();
     harness.get_by_label("Cleaned").click();
@@ -558,6 +571,33 @@ fn cached_pages_show_straight_away() {
     assert_eq!(calls.load(Ordering::SeqCst), 1, "b.png not sent");
     harness.get_by_label_contains("From cache: transcribed 20");
     harness.get_by_label_contains(" by claude-opus-5-5");
+}
+
+#[test]
+fn cached_pages_load_without_a_transcriber() {
+    let dir = cache_dir("without_transcriber");
+    let (fetch, _) = counting_fetch();
+    let mut harness = cached_harness(fetch, &dir);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    let app = NotebookApp::with_transcription(None, Some(Cache::new(&dir)));
+    let mut harness = harness_for(app);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    for _ in 0..500 {
+        harness.step();
+        if !harness.state().eval_log().events().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(
+        harness.state().eval_log().events(),
+        [Event::Transcribed {
+            from_cache: true,
+            ..
+        }]
+    ));
 }
 
 /// Answers with the recorded responses in `answers`, in turn, sleeping for `delay` first.
@@ -625,20 +665,23 @@ fn force_retranscribes_without_asking_if_uncorrected() {
 fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     // Answers as the model asked.
     let fetch: Fetch = Arc::new(|_, _, model| {
-        let (status, body, size) = recorded();
-        let body = String::from_utf8(body).unwrap().replace(
+        let recorded = recorded();
+        let body = String::from_utf8(recorded.body).unwrap().replace(
             "\"model\": \"claude-opus-5-5\"",
             &format!("\"model\": \"{}\"", model.id()),
         );
-        Ok((status, body.into_bytes(), size))
+        Ok(Fetched {
+            body: body.into_bytes(),
+            ..recorded
+        })
     });
     // Each page sent, by whom, and how it compares with other models' cached transcripts.
     let dir = cache_dir("select_model");
     let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let on_sent: OnSent = {
+    let on_transcribe_completed: OnTranscribeCompleted = {
         let (sent, cache) = (sent.clone(), Cache::new(&dir));
         Arc::new(
-            move |page: &str, bytes: &[u8], t: &notebook_core::ocr::Transcript| {
+            move |page: &str, bytes: &[u8], t: &notebook_core::transcript::Transcript| {
                 let compared = compare::with_cached(&cache, bytes, t);
                 let compared: Vec<_> = compared.iter().map(|(m, c)| (*m, c.similarity)).collect();
                 sent.lock()
@@ -647,8 +690,9 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
             },
         )
     };
-    let transcriber = Transcriber::new(fetch, Some(Cache::new(&dir))).on_sent(on_sent.clone());
-    let mut harness = harness_with(transcriber);
+    let transcriber =
+        Transcriber::new(fetch).on_transcribe_completed(on_transcribe_completed.clone());
+    let mut harness = harness_with_cache(transcriber, &dir);
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     // Its label, then the dropdown (named by the label), then Debug, in a row.
@@ -699,8 +743,8 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
 
     // Either entry will do for a new page, which isn't sent.
     let (fetch, calls) = counting_fetch();
-    let transcriber = Transcriber::new(fetch, Some(Cache::new(&dir))).on_sent(on_sent);
-    let mut harness = harness_with(transcriber);
+    let transcriber = Transcriber::new(fetch).on_transcribe_completed(on_transcribe_completed);
+    let mut harness = harness_with_cache(transcriber, &dir);
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -739,7 +783,7 @@ fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
 #[test]
 fn transcribe_all_starts_straight_away_for_a_few_pages() {
     let (fetch, calls) = counting_fetch();
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(
         &mut harness,
         &[("a.png", png()), ("b.png", png()), ("c.png", png())],
@@ -771,7 +815,7 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
             Ok(recorded())
         })
     };
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
     let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
     drop_files(&mut harness, &files);
@@ -818,7 +862,7 @@ fn deleting_a_queued_page_means_it_isnt_sent() {
             Ok(recorded())
         })
     };
-    let mut harness = harness_with(Transcriber::new(fetch, None));
+    let mut harness = harness_with(Transcriber::new(fetch));
     let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
     let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
     drop_files(&mut harness, &files);
@@ -981,7 +1025,7 @@ fn double_clicking_a_line_edits_it() {
     // double-click.
     let mut harness = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
         |ui, app: &mut NotebookApp| app.ui(ui),
-        NotebookApp::with_transcriber(Some(transcriber())),
+        NotebookApp::with_transcription(Some(transcriber()), None),
     );
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
@@ -1089,8 +1133,9 @@ fn reexport_overwrites_the_same_file() {
             Some(path.clone())
         })
     };
-    let mut harness =
-        harness_for(NotebookApp::with_transcriber(Some(transcriber())).with_save_path(save_path));
+    let mut harness = harness_for(
+        NotebookApp::with_transcription(Some(transcriber()), None).with_save_path(save_path),
+    );
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     assert!(

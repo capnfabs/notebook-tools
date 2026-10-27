@@ -22,7 +22,9 @@ use std::time::Instant;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
-use notebook_core::ocr::{self, Bbox, Credentials, Span, Transcript};
+use notebook_core::llm_model::Model;
+use notebook_core::ocr::{self, Credentials};
+use notebook_core::transcript::{Bbox, Span, Transcript};
 use notebook_core::{CleanParams, crop_to_page, decode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -178,7 +180,7 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                             let started = Instant::now();
                             let sent = ocr::send(
                                 credentials,
-                                &ocr::request_body(&jpeg, ocr::Model::Opus, effort),
+                                &ocr::request_body(&jpeg, Model::Opus, effort),
                             );
                             let mut run = Run {
                                 photo: photo.clone(),

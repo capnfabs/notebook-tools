@@ -4,8 +4,10 @@ pub mod cache;
 pub mod clean;
 pub mod compare;
 pub mod export;
+pub mod llm_model;
 pub mod ocr;
 pub mod page;
+pub mod transcript;
 
 pub use clean::{
     CleanParams, CleanReport, Cleaned, LightingReport, NoOutline, Quad, clean, crop_to_page,

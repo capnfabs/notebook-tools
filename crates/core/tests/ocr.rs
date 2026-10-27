@@ -11,10 +11,11 @@
 use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
+use notebook_core::llm_model::Model;
 use notebook_core::ocr::{
-    Credentials, EFFORT, Model, OcrError, Span, Transcript, encode_jpeg, parse_response,
-    request_body,
+    Credentials, EFFORT, OcrError, encode_jpeg, parse_response, request_body,
 };
+use notebook_core::transcript::{Span, Transcript};
 use serde::Deserialize;
 
 fn fixtures_dir() -> PathBuf {

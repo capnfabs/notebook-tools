@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use notebook_core::export;
-use notebook_core::ocr::{Transcript, parse_response};
+use notebook_core::ocr::parse_response;
+use notebook_core::transcript::Transcript;
 
 fn recorded(name: &str) -> Transcript {
     let path =

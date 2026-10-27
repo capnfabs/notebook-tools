@@ -1,6 +1,6 @@
 //! Transcribed pages as files to save.
 
-use crate::ocr::Transcript;
+use crate::transcript::Transcript;
 
 /// `pages` as one markdown document, in order. Each page starts with an HTML comment naming its
 /// file, which doesn't show when rendered.

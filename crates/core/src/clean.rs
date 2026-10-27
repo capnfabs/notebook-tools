@@ -13,7 +13,7 @@ use imageproc::morphology::{Mask, grayscale_close, grayscale_dilate, open};
 use imageproc::point::Point;
 use rayon::prelude::*;
 
-use crate::page::fitted_size;
+use crate::page::{fitted_size, shrunk_copy};
 
 /// Corners of a page outline in source pixels: top-left, top-right, bottom-right, bottom-left.
 pub type Quad = [[f32; 2]; 4];
@@ -155,13 +155,13 @@ pub fn crop_to_page(img: &RgbaImage, params: &CleanParams) -> (RgbaImage, Result
         .as_ref()
         .ok()
         .and_then(|quad| straighten(img, quad, params.max_output_side));
-    let image = straightened.unwrap_or_else(|| scaled_copy(img, params.max_output_side));
+    let image = straightened.unwrap_or_else(|| shrunk_copy(img, params.max_output_side));
     (image, outline)
 }
 
 /// Finds the page (or open notebook) as the largest region of paper, simplified to four corners.
 pub fn detect_outline(img: &RgbaImage, params: &CleanParams) -> Result<Quad, NoOutline> {
-    let small = scaled_copy(img, params.detect_side_px);
+    let small = shrunk_copy(img, params.detect_side_px);
     let (w, h) = small.dimensions();
     let mask = paper_mask(&small, params);
 
@@ -358,7 +358,7 @@ fn straighten(img: &RgbaImage, quad: &Quad, max_side: u32) -> Option<RgbaImage> 
     // Shrink the source first so the warp samples at about 1:1; bilinear sampling alone aliases
     // when shrinking.
     let src_side = (img.width().max(img.height()) as f32 * scale).ceil() as u32;
-    let src = scaled_copy(img, src_side);
+    let src = shrunk_copy(img, src_side);
     let s = src.width() as f32 / img.width() as f32;
 
     let (out_w, out_h) = ((w * scale).round().max(1.0), (h * scale).round().max(1.0));
@@ -428,7 +428,7 @@ fn local_brightness(img: &GrayImage, side_px: u32, radius: u8) -> Background<1> 
 
 impl Background<3> {
     fn estimate(img: &RgbaImage, params: &CleanParams) -> Self {
-        let small = scaled_copy(img, params.background_side_px);
+        let small = shrunk_copy(img, params.background_side_px);
         let (w, h) = small.dimensions();
         let channels = std::array::from_fn(|c| {
             GrayImage::from_fn(w, h, |x, y| Luma([small.get_pixel(x, y)[c]]))
@@ -493,15 +493,6 @@ fn percentile(histogram: &[u64; 256], fraction: f32) -> u8 {
         }
     }
     255
-}
-
-/// A copy of `img` scaled down to fit `max_side`, without scaling the full image twice.
-fn scaled_copy(img: &RgbaImage, max_side: u32) -> RgbaImage {
-    let (w, h) = img.dimensions();
-    match fitted_size(w, h, max_side) {
-        (fw, fh) if (fw, fh) == (w, h) => img.clone(),
-        (fw, fh) => imageops::thumbnail(img, fw, fh),
-    }
 }
 
 /// Runs `f(y, row)` on each row of pixels, in parallel.

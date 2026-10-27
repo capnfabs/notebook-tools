@@ -2,7 +2,8 @@
 //! each other.
 
 use crate::cache::Cache;
-use crate::ocr::{Model, Transcript};
+use crate::llm_model::Model;
+use crate::transcript::Transcript;
 
 /// How a new transcript of a page differs from an older one, e.g. by another model.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,34 +53,24 @@ pub fn with_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ocr::{Line, Uncertain, Usage};
+    use crate::transcript::{Line, Uncertain};
 
     fn transcript(lines: &[&str], uncertain: &[&str]) -> Transcript {
-        Transcript {
-            lines: lines
-                .iter()
-                .map(|text| Line {
-                    text_md: (*text).to_owned(),
-                    bbox: None,
-                })
-                .collect(),
-            uncertain: uncertain
-                .iter()
-                .map(|text| Uncertain {
-                    line: 0,
-                    text: (*text).to_owned(),
-                    bbox: None,
-                    alternatives: Vec::new(),
-                    resolved: false,
-                })
-                .collect(),
-            image_size: (100, 100),
-            model: Model::Opus.id().to_owned(),
-            usage: Usage::default(),
-            from_cache: false,
-            stored_at: None,
-            edited: false,
-        }
+        let line = |text: &&str| Line {
+            text_md: (*text).to_owned(),
+            bbox: None,
+        };
+        let word = |text: &&str| Uncertain {
+            line: 0,
+            text: (*text).to_owned(),
+            bbox: None,
+            alternatives: Vec::new(),
+            resolved: false,
+        };
+        Transcript::for_test(
+            lines.iter().map(line).collect(),
+            uncertain.iter().map(word).collect(),
+        )
     }
 
     #[test]

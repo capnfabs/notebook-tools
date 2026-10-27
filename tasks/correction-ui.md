@@ -1,6 +1,6 @@
 # Correction UI improvements
 
-In the Transcribed view (`crates/app/src/transcript_view.rs`):
+In the Transcribed view (`crates/app/src/ui/transcript_view.rs`):
 
 - (a) Struck-through text (`~~…~~`): an option to delete it entirely (sometimes it's just a typo).
 - (b) Hovering a box whose word was edited out of its line, or can't be found at all, explains why.

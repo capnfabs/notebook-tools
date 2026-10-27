@@ -2,10 +2,11 @@
 
 use std::fmt;
 use std::io::Cursor;
+use std::sync::Arc;
 
 use image::{DynamicImage, ImageDecoder as _, ImageReader, RgbaImage, imageops};
 
-use crate::ocr::Transcript;
+use crate::transcript::Transcript;
 
 /// Longest side of a [`Page::thumbnail`], in pixels. Big enough for the viewer's thumbnails on a
 /// 2x display.
@@ -14,10 +15,11 @@ pub const THUMBNAIL_SIDE_PX: u32 = 256;
 /// An image file the user opened.
 ///
 /// Holds the encoded bytes rather than decoded pixels: a 12 MP photo decodes to ~48 MB, too much
-/// to keep around for every page. Call [`decode`] on `bytes` when the full image is needed.
+/// to keep around for every page. Call [`decode`] on `bytes` when the full image is needed. They're
+/// shared, so handing them to a transcription thread doesn't copy them.
 pub struct Page {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
     pub thumbnail: RgbaImage,
     /// Claude's transcription, once there is one.
     pub transcript: Option<Transcript>,
@@ -28,7 +30,7 @@ impl Page {
         let thumbnail = shrink_to_fit(decode(&bytes)?, THUMBNAIL_SIDE_PX);
         Ok(Self {
             name,
-            bytes,
+            bytes: bytes.into(),
             thumbnail,
             transcript: None,
         })
@@ -71,8 +73,27 @@ pub fn shrink_to_fit(img: RgbaImage, max_side: u32) -> RgbaImage {
     if w <= max_side && h <= max_side {
         return img;
     }
-    let (w, h) = fitted_size(w, h, max_side);
-    imageops::thumbnail(&img, w, h)
+    shrunk_copy(&img, max_side)
+}
+
+/// [`shrink_to_fit`] for a borrowed image: a copy, scaled down only if it doesn't fit.
+pub(crate) fn shrunk_copy(img: &RgbaImage, max_side: u32) -> RgbaImage {
+    let (w, h) = img.dimensions();
+    match fitted_size(w, h, max_side) {
+        (fw, fh) if (fw, fh) == (w, h) => img.clone(),
+        (fw, fh) => imageops::thumbnail(img, fw, fh),
+    }
+}
+
+/// The longest side a `w` x `h` image can be scaled to, keeping the aspect ratio, and have at most
+/// `max_pixels`. Never more than its longest side now.
+pub(crate) fn max_side_within(w: u32, h: u32, max_pixels: u32) -> u32 {
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels <= u64::from(max_pixels) {
+        return w.max(h);
+    }
+    let scale = (f64::from(max_pixels) / pixels as f64).sqrt();
+    (f64::from(w.max(h)) * scale) as u32
 }
 
 /// The size `w` x `h` scales to so neither side exceeds `max_side`, keeping the aspect ratio.
@@ -120,6 +141,16 @@ impl Pages {
         let page = self.0.remove(from);
         self.0.insert(to, page);
         true
+    }
+
+    /// Where the page named `name` is.
+    pub fn position(&self, name: &str) -> Option<usize> {
+        self.0.iter().position(|p| p.name == name)
+    }
+
+    /// The page named `name`.
+    pub fn find(&self, name: &str) -> Option<&Page> {
+        self.0.iter().find(|p| p.name == name)
     }
 
     pub fn sort_by_name(&mut self) {
@@ -220,6 +251,20 @@ mod tests {
     }
 
     #[test]
+    fn copies_shrink_the_same_way() {
+        let img = RgbaImage::from_fn(400, 100, |x, y| Rgba([x as u8, y as u8, 0, 255]));
+        assert_eq!(shrunk_copy(&img, 128), shrink_to_fit(img.clone(), 128));
+        assert_eq!(shrunk_copy(&img, 1000), img);
+    }
+
+    #[test]
+    fn max_side_within_a_pixel_budget() {
+        assert_eq!(max_side_within(400, 100, 40_000), 400, "already fits");
+        assert_eq!(max_side_within(400, 100, 10_000), 200);
+        assert_eq!(max_side_within(100, 400, 10_000), 200);
+    }
+
+    #[test]
     fn page_has_small_thumbnail() {
         let page = Page::from_file("big.png".into(), png(512, 256)).unwrap();
         assert_eq!(
@@ -283,6 +328,16 @@ mod tests {
         assert_eq!(pages.add(page("a.png")), Some(2));
         assert_eq!(pages.add(page("b.png")), None);
         assert_eq!(names(&pages), ["d.png", "b.png", "a.png"]);
+    }
+
+    #[test]
+    fn finds_pages_by_name() {
+        let mut pages = pages(&["a.png", "b.png"]);
+        pages.move_page(1, 0);
+        assert_eq!(pages.position("a.png"), Some(1));
+        assert_eq!(pages.find("b.png").map(|p| p.name.as_str()), Some("b.png"));
+        assert_eq!(pages.position("c.png"), None);
+        assert!(pages.find("c.png").is_none());
     }
 
     #[test]

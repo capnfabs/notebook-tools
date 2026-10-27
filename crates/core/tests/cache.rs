@@ -4,9 +4,11 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use notebook_core::cache::{Cache, Fetched};
+use notebook_core::cache::Cache;
 use notebook_core::compare;
-use notebook_core::ocr::{Model, OcrError, Transcript};
+use notebook_core::llm_model::Model;
+use notebook_core::ocr::{Fetched, OcrError};
+use notebook_core::transcript::Transcript;
 
 const PHOTO: &[u8] = b"photo bytes";
 const SIZE: (u32, u32) = (1200, 900);
@@ -47,7 +49,11 @@ fn transcribe_with(
 ) -> Result<Transcript, OcrError> {
     cache.transcript_or(photo, model, || -> Result<Fetched, OcrError> {
         fetches.set(fetches.get() + 1);
-        Ok((status, fixture(fixture_name), SIZE))
+        Ok(Fetched {
+            status,
+            body: fixture(fixture_name),
+            image_size: SIZE,
+        })
     })
 }
 
@@ -131,7 +137,11 @@ fn refresh_fetches_and_replaces_the_entry() {
     let first = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     let refreshed = cache
         .refresh(PHOTO, Model::Opus, || -> Result<Fetched, OcrError> {
-            Ok((200, fixture("fallback"), SIZE))
+            Ok(Fetched {
+                status: 200,
+                body: fixture("fallback"),
+                image_size: SIZE,
+            })
         })
         .unwrap();
     assert!(!refreshed.from_cache);
@@ -149,7 +159,11 @@ fn failed_refresh_keeps_the_entry() {
     transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     let before = std::fs::read(cache.entry_path(PHOTO, Model::Opus)).unwrap();
     let failed = cache.refresh(PHOTO, Model::Opus, || -> Result<Fetched, OcrError> {
-        Ok((529, fixture("api_error"), SIZE))
+        Ok(Fetched {
+            status: 529,
+            body: fixture("api_error"),
+            image_size: SIZE,
+        })
     });
     assert!(failed.is_err());
     assert_eq!(
@@ -162,7 +176,11 @@ fn failed_refresh_keeps_the_entry() {
 fn refresh_with(cache: &Cache, model: Model) -> Transcript {
     cache
         .refresh(PHOTO, model, || -> Result<Fetched, OcrError> {
-            Ok((200, fixture("fallback"), SIZE))
+            Ok(Fetched {
+                status: 200,
+                body: fixture("fallback"),
+                image_size: SIZE,
+            })
         })
         .unwrap()
 }

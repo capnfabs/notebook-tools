@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use notebook_core::cache::Cache;
 use notebook_core::compare::{self, Comparison};
-use notebook_core::ocr::{Model, Transcript, Usage};
+use notebook_core::llm_model::{Model, Usage};
+use notebook_core::transcript::Transcript;
 
-use crate::transcribe::OnSent;
+use crate::transcribe::OnTranscribeCompleted;
 
 /// Whether eval loglines are being logged.
 pub fn enabled() -> bool {
@@ -20,7 +21,7 @@ pub fn enabled() -> bool {
 
 /// Logs how each page sent to Claude differs from other models' transcripts of it in `cache`, if
 /// there are any. Reads and compares on the transcription threads, off the UI's.
-pub fn log_comparisons(cache: Cache) -> OnSent {
+pub fn log_comparisons(cache: Cache) -> OnTranscribeCompleted {
     Arc::new(move |page, page_bytes, transcript| {
         for (old, comparison) in compare::with_cached(&cache, page_bytes, transcript) {
             let line = comparison_line(page, &transcript.model, old, &comparison);

@@ -1,26 +1,29 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use eframe::egui;
 use egui::{
-    Align, Color32, Key, Label, Layout, Margin, Modifiers, Pos2, Rect, RichText, Sense, Shape,
-    Stroke, StrokeKind, TextStyle, TextWrapMode, TextureHandle, TextureOptions, UiBuilder, Vec2,
-    WidgetInfo, WidgetText, accesskit::Role,
+    Align, Color32, Key, Label, Layout, Modifiers, Pos2, Rect, RichText, Shape, Stroke, TextStyle,
+    TextWrapMode, TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetText,
 };
 use jiff::tz::TimeZone;
-use notebook_core::ocr::{Model, Transcript};
+use notebook_core::cache::Cache;
+use notebook_core::llm_model::Model;
+use notebook_core::transcript::Transcript;
 use notebook_core::{
     CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
 };
 
-use crate::dialog::{self, Action, Choice};
 use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
 use crate::ingest::Ingest;
-use crate::split::{self, Split};
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions};
-use crate::transcript_view::{self, TranscriptView};
+use crate::ui::dialog::{self, Action, Choice};
+use crate::ui::split::{self, Split};
+use crate::ui::thumbnails::{self, Thumbnails};
+use crate::ui::transcript_view::{self, TranscriptView};
 
 /// Why the Transcribed view is unavailable.
 const NO_TRANSCRIBER_HINT: &str =
@@ -35,30 +38,6 @@ const FORCE_LABEL: &str = "Force retranscription";
 
 /// Transcribe all asks first when it would send more pages than this.
 const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
-
-/// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
-/// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
-const THUMB_SIZE_PT: f32 = 96.0;
-
-/// Corner radius of the thumbnails, in points. The selected page's frame follows the same curve.
-const THUMB_CORNER_PT: f32 = 6.0;
-
-/// Width of the frame around the selected page's thumbnail, and of the drop marker when dragging
-/// one, in points.
-const ACTIVE_FRAME_PT: f32 = 3.0;
-
-/// Space between thumbnails, in points. The drop marker goes in the middle, so it needs room to
-/// stay clear of the selected page's frame.
-const THUMB_GAP_PT: f32 = 16.0;
-
-/// Space at either end of the strip, in points, so the frame and the drop marker aren't clipped
-/// there. Must fit half a gap plus the marker.
-const STRIP_END_PT: i8 = 12;
-
-/// How close to the strip's edge, in points, a dragged thumbnail starts scrolling it, and how far
-/// it scrolls per frame.
-const DRAG_SCROLL_EDGE_PT: f32 = 32.0;
-const DRAG_SCROLL_STEP_PT: f32 = 8.0;
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -80,9 +59,6 @@ impl View {
     }
 }
 
-/// Drag-and-drop payload: the index of the page whose thumbnail is being dragged.
-struct DraggedPage(usize);
-
 /// The texture on screen, and what it shows.
 struct Shown {
     name: String,
@@ -98,12 +74,8 @@ pub struct NotebookApp {
     thumbs: HashMap<String, TextureHandle>,
     /// Name of the page the user picked. The first page is shown until they pick one.
     selected: Option<String>,
-    /// The page whose thumbnail the strip last scrolled into view, and where it was. Scrolls
-    /// again only when either changes, so it doesn't fight the user scrolling the strip.
-    scrolled_to: Option<(String, usize)>,
-    /// Where a dragged thumbnail would go if dropped now: the index of the gap before it, with
-    /// `pages.len()` meaning the end.
-    drop_slot: Option<usize>,
+    /// The strip of page thumbnails.
+    thumbnails: Thumbnails,
     /// Stays the same when another page is selected.
     view: View,
     /// Full-size texture for the selected page and view. Only one is kept: see
@@ -131,10 +103,11 @@ pub struct NotebookApp {
 }
 
 impl NotebookApp {
-    /// Without a transcriber, the Transcribed view is disabled.
-    pub fn with_transcriber(transcriber: Option<Transcriber>) -> Self {
+    /// Without a transcriber, the Transcribed view is disabled. Without a cache, every page is sent
+    /// to Claude.
+    pub fn with_transcription(transcriber: Option<Transcriber>, cache: Option<Cache>) -> Self {
         Self {
-            transcriptions: Transcriptions::new(transcriber),
+            transcriptions: Transcriptions::new(transcriber, cache),
             ..Self::default()
         }
     }
@@ -155,12 +128,18 @@ impl NotebookApp {
     /// The app's UI, separate from [`eframe::App`] so tests can drive it directly.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Set here because the context only exists once the UI runs.
+        if !self.transcriptions.has_waker() {
+            let ctx = ctx.clone();
+            self.transcriptions
+                .set_waker(Arc::new(move || ctx.request_repaint()));
+        }
         if self.ingest.read_drops(&ctx) > 0 {
             self.errors.clear();
         }
         self.add_next_page(&ctx);
-        while let Some(done) = self.transcriptions.next(&ctx) {
-            let index = self.pages.iter().position(|p| p.name == done.name);
+        while let Some(done) = self.transcriptions.next() {
+            let index = self.pages.position(&done.name);
             // The page may have been deleted meanwhile. Only a forced retranscription replaces a
             // transcript: a late cache hit mustn't undo the user's corrections.
             if let Some(page) = index.and_then(|i| self.pages.get_mut(i))
@@ -205,8 +184,9 @@ impl NotebookApp {
         // Duplicate names are skipped.
         if let Some(index) = self.pages.add(page) {
             let bytes = self.pages.get(index).map(|p| p.bytes.clone());
-            self.transcriptions
-                .look_up(&name, bytes.unwrap_or_default(), ctx);
+            if let Some(bytes) = bytes {
+                self.transcriptions.look_up(&name, bytes);
+            }
             self.thumbs.insert(name, thumb);
         }
     }
@@ -252,7 +232,7 @@ impl NotebookApp {
             dialog::buttons(ui, "Delete page", Action::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative) {
-            let index = self.pages.iter().position(|p| p.name == name);
+            let index = self.pages.position(&name);
             if let Some(index) = index {
                 self.delete_page(index);
             }
@@ -271,15 +251,15 @@ impl NotebookApp {
     }
 
     /// Queues every page [`Self::untranscribed`]. Cached ones aren't sent.
-    fn transcribe_all(&mut self, ctx: &egui::Context) {
-        let pages: Vec<(String, Vec<u8>)> = self
+    fn transcribe_all(&mut self) {
+        let pages: Vec<(String, Arc<[u8]>)> = self
             .untranscribed()
             .into_iter()
             .map(|p| (p.name.clone(), p.bytes.clone()))
             .collect();
         for (name, bytes) in pages {
             self.transcriptions
-                .start_later(&name, bytes, self.clean_params.clone(), ctx);
+                .start_later(&name, bytes, self.clean_params.clone());
         }
     }
 
@@ -293,7 +273,7 @@ impl NotebookApp {
             dialog::buttons(ui, "Transcribe", Action::Default, count > 0)
         });
         if choice == Some(Choice::Affirmative) {
-            self.transcribe_all(ctx);
+            self.transcribe_all();
         }
         if choice.is_some() {
             self.confirm_transcribe_all = false;
@@ -301,10 +281,10 @@ impl NotebookApp {
     }
 
     /// Retranscribes the page named `name`, skipping the cache.
-    fn force(&mut self, name: &str, ctx: &egui::Context) {
-        if let Some(page) = self.pages.iter().find(|p| p.name == name) {
+    fn force(&mut self, name: &str) {
+        if let Some(page) = self.pages.find(name) {
             self.transcriptions
-                .force(name, page.bytes.clone(), self.clean_params.clone(), ctx);
+                .force(name, page.bytes.clone(), self.clean_params.clone());
         }
     }
 
@@ -319,7 +299,7 @@ impl NotebookApp {
             dialog::buttons(ui, "Retranscribe", Action::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative) {
-            self.force(&name, ctx);
+            self.force(&name);
         }
         if choice.is_some() {
             self.confirm_force = None;
@@ -328,17 +308,13 @@ impl NotebookApp {
 
     /// Transcribes the selected page, unless it's transcribed, being transcribed, or failed
     /// (which waits for Retry).
-    fn transcribe_selected(&mut self, ctx: &egui::Context) {
+    fn transcribe_selected(&mut self) {
         let Some(page) = self.pages.get(self.selected_index()) else {
             return;
         };
         if page.transcript.is_none() && self.transcriptions.error(&page.name).is_none() {
-            self.transcriptions.start(
-                &page.name,
-                page.bytes.clone(),
-                self.clean_params.clone(),
-                ctx,
-            );
+            self.transcriptions
+                .start(&page.name, page.bytes.clone(), self.clean_params.clone());
         }
     }
 
@@ -386,8 +362,7 @@ impl NotebookApp {
 
     fn selected_index(&self) -> usize {
         let name = self.selected.as_ref();
-        name.and_then(|name| self.pages.iter().position(|p| p.name == *name))
-            .unwrap_or(0)
+        name.and_then(|name| self.pages.position(name)).unwrap_or(0)
     }
 
     fn drop_zone(&mut self, ui: &mut egui::Ui) {
@@ -431,7 +406,7 @@ impl NotebookApp {
                     .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
                 if transcribed.clicked() && self.view != View::Transcribed {
                     self.view = View::Transcribed;
-                    self.transcribe_selected(ui.ctx());
+                    self.transcribe_selected();
                 }
                 ui.separator();
                 let index = self.selected_index();
@@ -460,14 +435,15 @@ impl NotebookApp {
 
         egui::Panel::bottom("pages").show(ui, |ui| {
             ui.add_space(4.0);
-            egui::ScrollArea::horizontal().show(ui, |ui| {
-                egui::Frame::NONE
-                    .inner_margin(Margin::symmetric(STRIP_END_PT, 0))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = THUMB_GAP_PT;
-                        ui.horizontal(|ui| self.thumbnails(ui));
-                    });
-            });
+            let selected = self.selected_index();
+            match self
+                .thumbnails
+                .show(ui, &self.pages, &self.thumbs, selected)
+            {
+                Some(thumbnails::Action::Select(name)) => self.selected = Some(name),
+                Some(thumbnails::Action::Move { from, to }) => self.move_page(from, to),
+                None => {}
+            }
             ui.horizontal(|ui| {
                 self.status(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -502,7 +478,7 @@ impl NotebookApp {
                         if untranscribed > TRANSCRIBE_ALL_CONFIRM_ABOVE {
                             self.confirm_transcribe_all = true;
                         } else {
-                            self.transcribe_all(ui.ctx());
+                            self.transcribe_all();
                         }
                     }
                 });
@@ -571,102 +547,6 @@ impl NotebookApp {
                 .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
         });
         self.transcriptions.set_model(model);
-    }
-
-    /// The strip of thumbnails, which select a page when clicked and rearrange pages when dragged.
-    fn thumbnails(&mut self, ui: &mut egui::Ui) {
-        let selected = self.selected_index();
-        let dragged = egui::DragAndDrop::payload::<DraggedPage>(ui.ctx()).map(|p| p.0);
-        let selection = ui.visuals().selection.stroke.color;
-        let mut rects = Vec::with_capacity(self.pages.len());
-        for (i, page) in self.pages.iter().enumerate() {
-            let tint = if dragged == Some(i) {
-                Color32::from_white_alpha(96)
-            } else {
-                Color32::WHITE
-            };
-            let response = ui
-                .add(
-                    egui::Image::new(&self.thumbs[&page.name])
-                        .max_size(Vec2::splat(THUMB_SIZE_PT))
-                        .tint(tint)
-                        .corner_radius(THUMB_CORNER_PT)
-                        .alt_text(&page.name)
-                        .sense(Sense::click_and_drag()),
-                )
-                .on_hover_text(&page.name);
-            let active = i == selected;
-            response.widget_info(|| WidgetInfo::selected(Role::Image, true, active, &page.name));
-            response.dnd_set_drag_payload(DraggedPage(i));
-            if active {
-                // An outside stroke adds its width to the radius, so this stays concentric.
-                ui.painter().rect_stroke(
-                    response.rect,
-                    THUMB_CORNER_PT,
-                    Stroke::new(ACTIVE_FRAME_PT, selection),
-                    StrokeKind::Outside,
-                );
-                if self
-                    .scrolled_to
-                    .as_ref()
-                    .is_none_or(|(name, at)| *name != page.name || *at != i)
-                {
-                    response.scroll_to_me(None);
-                    self.scrolled_to = Some((page.name.clone(), i));
-                }
-            }
-            if response.clicked() {
-                self.selected = Some(page.name.clone());
-            }
-            rects.push(response.rect);
-        }
-
-        let Some(from) = dragged else {
-            self.drop_slot = None;
-            return;
-        };
-        if let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|pos| pos.x) {
-            self.drop_slot = Some(rects.iter().filter(|r| r.center().x < x).count());
-            // Near an edge, scroll towards it while there's more strip beyond it.
-            let visible = ui.clip_rect();
-            let (first, last) = (rects[0], rects[rects.len() - 1]);
-            let scroll = if x < visible.left() + DRAG_SCROLL_EDGE_PT
-                && first.left() < visible.left()
-            {
-                DRAG_SCROLL_STEP_PT
-            } else if x > visible.right() - DRAG_SCROLL_EDGE_PT && last.right() > visible.right() {
-                -DRAG_SCROLL_STEP_PT
-            } else {
-                0.0
-            };
-            if scroll != 0.0 {
-                ui.scroll_with_delta(Vec2::X * scroll);
-                ui.ctx().request_repaint();
-            }
-        }
-        let Some(slot) = self.drop_slot else {
-            return;
-        };
-        // Dropping either side of the dragged page leaves it where it is.
-        let to = if slot > from { slot - 1 } else { slot };
-        if to != from {
-            let gap = ui.spacing().item_spacing.x / 2.0;
-            let x = match slot.checked_sub(1).and_then(|i| rects.get(i)) {
-                Some(before) => before.right() + gap,
-                None => rects[0].left() - gap,
-            };
-            let ys = rects
-                .iter()
-                .fold(rects[0].y_range(), |ys, r| ys.union(r.y_range()));
-            ui.painter()
-                .vline(x, ys, Stroke::new(ACTIVE_FRAME_PT, selection));
-        }
-        if ui.input(|i| i.pointer.any_released())
-            && egui::DragAndDrop::take_payload::<DraggedPage>(ui.ctx()).is_some()
-        {
-            self.drop_slot = None;
-            self.move_page(from, to);
-        }
     }
 
     /// The page named `name` as large as fits in `rect`, centred, returning where it went.
@@ -782,7 +662,7 @@ impl NotebookApp {
             if corrected {
                 self.confirm_force = Some(name);
             } else {
-                self.force(&name, ui.ctx());
+                self.force(&name);
             }
         }
         Some(scope.response.rect)
@@ -812,8 +692,7 @@ impl NotebookApp {
         };
         if start {
             let params = self.clean_params.clone();
-            self.transcriptions
-                .start(name, page.bytes.clone(), params, ui.ctx());
+            self.transcriptions.start(name, page.bytes.clone(), params);
         }
     }
 
@@ -875,14 +754,19 @@ impl NotebookApp {
     /// What cleaning found for the page named `name`, cleaning it if that hasn't happened yet.
     fn report(&mut self, name: &str) -> Option<&CleanReport> {
         if !self.reports.contains_key(name) {
-            let page = self.pages.iter().find(|p| p.name == name)?;
-            let img = decode(&page.bytes).ok()?;
-            let cleaned = timed(format_args!("{name}: clean"), || {
-                clean(&img, &self.clean_params)
-            });
-            self.reports.insert(name.to_owned(), cleaned.report);
+            let img = decode(&self.pages.find(name)?.bytes).ok()?;
+            self.clean_page(name, &img);
         }
         self.reports.get(name)
+    }
+
+    /// `img`, the page named `name`, cleaned. What cleaning found is kept for the debug overlay.
+    fn clean_page(&mut self, name: &str, img: &RgbaImage) -> RgbaImage {
+        let cleaned = timed(format_args!("{name}: clean"), || {
+            clean(img, &self.clean_params)
+        });
+        self.reports.insert(name.to_owned(), cleaned.report);
+        cleaned.image
     }
 
     /// Loading and transcription progress, errors from the last drop, and what the last export
@@ -921,15 +805,11 @@ impl NotebookApp {
             .as_ref()
             .is_none_or(|shown| shown.name != page.name || shown.cleaned != cleaned)
         {
-            let name = &page.name;
-            let texture = match timed(format_args!("{name}: decode"), || decode(&page.bytes)) {
+            let (name, bytes) = (page.name.clone(), page.bytes.clone());
+            let texture = match timed(format_args!("{name}: decode"), || decode(&bytes)) {
                 Ok(img) => {
                     let img = if cleaned {
-                        let cleaned = timed(format_args!("{name}: clean"), || {
-                            clean(&img, &self.clean_params)
-                        });
-                        self.reports.insert(name.clone(), cleaned.report);
-                        cleaned.image
+                        self.clean_page(&name, &img)
                     } else {
                         img
                     };
@@ -943,17 +823,17 @@ impl NotebookApp {
                     });
                     let color = timed(format_args!("{name}: color image"), || color_image(&img));
                     timed(format_args!("{name}: load texture"), || {
-                        ctx.load_texture(name, color, TextureOptions::LINEAR)
+                        ctx.load_texture(&name, color, TextureOptions::LINEAR)
                     })
                 }
                 // Already decoded once when the page was added, so this shouldn't happen.
                 Err(err) => {
-                    log::error!("Couldn't decode {}: {err}", page.name);
-                    self.thumbs[&page.name].clone()
+                    log::error!("Couldn't decode {name}: {err}");
+                    self.thumbs[&name].clone()
                 }
             };
             self.current = Some(Shown {
-                name: page.name.clone(),
+                name,
                 cleaned,
                 texture,
             });
