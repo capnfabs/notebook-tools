@@ -19,19 +19,20 @@
 
 ## features
 - [ ] [PDF export](pdf-export.md)
-- [ ] [Multi-model handling](multi-model.md)
 
 ## polish
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [HEIC decoding](heic-decoding.md)
 - [ ] [Background decoding](background-decoding.md)
 - [ ] [Downscale on load](downscale-on-load.md)
+- [ ] [Multi-model handling](multi-model.md)
 - [ ] [Prune the transcription cache](prune-cache.md)
 - [ ] [Cached transcripts without credentials](cache-without-credentials.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
 - [ ] [Mac menu bar](mac-menu.md)
+- [ ] [Manual page detection tooling](manual-page-detection.md)
 
 ## polish (difficult)
 - [ ] [Claude auth approach](claude-auth.md)
