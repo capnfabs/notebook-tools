@@ -8,7 +8,6 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use notebook_core::CleanParams;
@@ -16,6 +15,8 @@ use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError, parse_response};
 use notebook_core::transcript::Transcript;
+
+use crate::jobs::Jobs;
 
 /// Most pages sent to Claude at once. More risks rate limits and overloaded errors.
 pub const MAX_CONCURRENT: usize = 4;
@@ -124,16 +125,16 @@ pub struct Done {
     pub elapsed: Option<Duration>,
 }
 
-/// A job's page name, kind, and its transcript: `None` for a [`Kind::Lookup`] that missed.
-type Finished = (String, Kind, Result<Option<Ran>, String>);
+/// A job's transcript: `None` for a [`Kind::Lookup`] that missed.
+type Finished = Result<Option<Ran>, String>;
 
 pub struct Transcriptions {
     /// Sends pages to Claude. Without one, nothing is sent.
     transcriber: Option<Transcriber>,
     /// Without one, nothing is looked up.
     cache: Option<Cache>,
-    tx: Sender<Finished>,
-    rx: Receiver<Finished>,
+    /// By page name and what they do.
+    jobs: Jobs<(String, Kind), Finished>,
     /// Pages waiting to be sent, next first.
     queue: VecDeque<Job>,
     /// Pages being sent, by name.
@@ -144,7 +145,6 @@ pub struct Transcriptions {
     errors: HashMap<String, String>,
     /// Pages are sent to it from now on.
     model: Model,
-    waker: Option<Waker>,
 }
 
 impl Default for Transcriptions {
@@ -155,29 +155,26 @@ impl Default for Transcriptions {
 
 impl Transcriptions {
     pub fn new(transcriber: Option<Transcriber>, cache: Option<Cache>) -> Self {
-        let (tx, rx) = channel();
         Self {
             transcriber,
             cache,
-            tx,
-            rx,
+            jobs: Jobs::on_own_threads(),
             queue: VecDeque::new(),
             running: HashSet::new(),
             checking: HashSet::new(),
             errors: HashMap::new(),
             model: Model::default(),
-            waker: None,
         }
     }
 
     /// Whether [`Self::set_waker`] has been called.
     pub fn has_waker(&self) -> bool {
-        self.waker.is_some()
+        self.jobs.has_waker()
     }
 
     /// Calls `waker` whenever a page finishes, from the thread it ran on.
     pub fn set_waker(&mut self, waker: Waker) {
-        self.waker = Some(waker);
+        self.jobs.set_waker(waker);
     }
 
     /// Which model pages are sent to, and preferred in the cache.
@@ -274,26 +271,19 @@ impl Transcriptions {
 
     /// Runs `work` for the page named `name` on a thread of its own, for [`Self::next`] to collect.
     fn spawn(
-        &self,
+        &mut self,
         name: String,
         kind: Kind,
         work: impl FnOnce() -> Result<Option<Ran>, OcrError> + Send + 'static,
     ) {
-        let (tx, waker) = (self.tx.clone(), self.waker.clone());
-        std::thread::spawn(move || {
-            let result = work().map_err(|e| e.to_string());
-            // The receiver lives as long as the app, so a failed send only happens during shutdown.
-            tx.send((name, kind, result)).ok();
-            if let Some(waker) = waker {
-                waker();
-            }
-        });
+        self.jobs
+            .spawn((name, kind), move || work().map_err(|e| e.to_string()));
     }
 
     /// The next page that finished transcribing, if any, sending the next queued page in its
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
     pub fn next(&mut self) -> Option<Done> {
-        while let Ok((name, kind, result)) = self.rx.try_recv() {
+        while let Some(((name, kind), result)) = self.jobs.next() {
             if kind == Kind::Lookup {
                 self.checking.remove(&name);
             } else {

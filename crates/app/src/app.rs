@@ -11,15 +11,14 @@ use jiff::tz::TimeZone;
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::transcript::Transcript;
-use notebook_core::{
-    CleanParams, CleanReport, Page, Pages, RgbaImage, clean, decode, shrink_to_fit,
-};
+use notebook_core::{CleanParams, Page, Pages, RgbaImage, decode, shrink_to_fit};
 
 use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
-use crate::ingest::Ingest;
+use crate::ingest::{Ingest, Load};
+use crate::jobs::Jobs;
 use crate::timing::timed;
-use crate::transcribe::{Transcriber, Transcriptions};
+use crate::transcribe::{Transcriber, Transcriptions, Waker};
 use crate::ui::dialog::{self, Action, Choice};
 use crate::ui::split::{self, Split};
 use crate::ui::thumbnails::{self, Thumbnails};
@@ -66,12 +65,51 @@ struct Shown {
     texture: TextureHandle,
 }
 
+/// What the viewer shows of the selected page.
+enum Showing {
+    Full(TextureHandle),
+    /// Its thumbnail until the full image is decoded, or nothing while the page loads.
+    Placeholder(Option<TextureHandle>),
+}
+
+impl Showing {
+    fn texture(&self) -> Option<&TextureHandle> {
+        match self {
+            Self::Full(texture) => Some(texture),
+            Self::Placeholder(texture) => texture.as_ref(),
+        }
+    }
+}
+
+/// A page's thumbnails, as loaded.
+struct Thumbs {
+    original: TextureHandle,
+    cleaned: TextureHandle,
+}
+
+/// Decodes the selected page's image for the viewer, on a thread of its own so it doesn't wait
+/// behind pages that are loading. By page name and whether it's the cleaned image.
+struct Decodes {
+    jobs: Jobs<(String, bool), Result<egui::ColorImage, String>>,
+    /// The image the viewer is waiting for. Any other that comes back is stale.
+    wanted: Option<(String, bool)>,
+}
+
+impl Default for Decodes {
+    fn default() -> Self {
+        Self {
+            jobs: Jobs::on_own_threads(),
+            wanted: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct NotebookApp {
     ingest: Ingest,
     pages: Pages,
-    /// One per page, by name.
-    thumbs: HashMap<String, TextureHandle>,
+    /// One per loaded page, by name.
+    thumbs: HashMap<String, Thumbs>,
     /// Name of the page the user picked. The first page is shown until they pick one.
     selected: Option<String>,
     /// The strip of page thumbnails.
@@ -79,11 +117,10 @@ pub struct NotebookApp {
     /// Stays the same when another page is selected.
     view: View,
     /// Full-size texture for the selected page and view. Only one is kept: see
-    /// `decisions/2026-10-23-pages-keep-encoded-bytes.md`.
+    /// `decisions/2026-10-28-pages-cleaned-on-load.md`.
     current: Option<Shown>,
+    decodes: Decodes,
     clean_params: CleanParams,
-    /// What cleaning found, by page name. Small, so kept for every page cleaned so far.
-    reports: HashMap<String, CleanReport>,
     /// Show the cleanup debug overlay.
     debug: bool,
     errors: Vec<String>,
@@ -120,6 +157,19 @@ impl NotebookApp {
         }
     }
 
+    /// Loads dropped pages with `load` rather than [`notebook_core::Loaded::new`].
+    pub fn with_loader(self, load: Load) -> Self {
+        Self {
+            ingest: Ingest::new(load),
+            ..self
+        }
+    }
+
+    /// Whether any page is loading, or any image is being decoded for the viewer.
+    pub fn loading(&self) -> bool {
+        self.ingest.pending() > 0 || self.decodes.jobs.running() > 0
+    }
+
     /// What's been transcribed and corrected this session, for judging the models.
     pub fn eval_log(&self) -> &EvalLog {
         &self.eval_log
@@ -131,13 +181,14 @@ impl NotebookApp {
         // Set here because the context only exists once the UI runs.
         if !self.transcriptions.has_waker() {
             let ctx = ctx.clone();
-            self.transcriptions
-                .set_waker(Arc::new(move || ctx.request_repaint()));
+            let waker: Waker = Arc::new(move || ctx.request_repaint());
+            self.transcriptions.set_waker(waker.clone());
+            self.ingest.set_waker(waker.clone());
+            self.decodes.jobs.set_waker(waker);
         }
-        if self.ingest.read_drops(&ctx) > 0 {
-            self.errors.clear();
-        }
-        self.add_next_page(&ctx);
+        self.add_dropped(&ctx);
+        self.add_loaded(&ctx);
+        self.show_decoded(&ctx);
         self.export.poll(&ctx);
         while let Some(done) = self.transcriptions.next() {
             let index = self.pages.position(&done.name);
@@ -162,46 +213,85 @@ impl NotebookApp {
         }
     }
 
-    /// Decodes at most one received file per frame, so a big drop doesn't freeze the UI.
-    fn add_next_page(&mut self, ctx: &egui::Context) {
-        let Some((name, bytes)) = self.ingest.next() else {
-            return;
-        };
-        ctx.request_repaint();
-
-        let page = timed(format_args!("{name}: decode + thumbnail"), || {
-            bytes.and_then(|b| Page::from_file(name.clone(), b).map_err(|e| e.to_string()))
-        });
-        let page = match page {
-            Ok(page) => page,
-            Err(err) => {
-                self.errors.push(format!("Couldn't open {name}: {err}"));
-                return;
-            }
-        };
-        let thumb = timed(format_args!("{name}: thumbnail texture"), || {
-            ctx.load_texture(&name, color_image(&page.thumbnail), TextureOptions::LINEAR)
-        });
-        // Duplicate names are skipped.
-        if let Some(index) = self.pages.add(page) {
-            let bytes = self.pages.get(index).map(|p| p.bytes.clone());
-            if let Some(bytes) = bytes {
+    /// Adds the files dropped this frame as pages, and starts loading them. Pages are usable
+    /// before they've loaded: they can be moved, deleted and transcribed.
+    fn add_dropped(&mut self, ctx: &egui::Context) {
+        let received = self.ingest.read_drops(ctx);
+        if !received.is_empty() {
+            self.errors.clear();
+        }
+        for (name, bytes) in received {
+            let bytes: Arc<[u8]> = match bytes {
+                Ok(bytes) => bytes.into(),
+                Err(err) => {
+                    self.errors.push(format!("Couldn't open {name}: {err}"));
+                    continue;
+                }
+            };
+            // Duplicate names are skipped.
+            if self
+                .pages
+                .add(Page::new(name.clone(), bytes.clone()))
+                .is_some()
+            {
+                self.ingest
+                    .load(&name, bytes.clone(), self.clean_params.clone());
                 self.transcriptions.look_up(&name, bytes);
             }
-            self.thumbs.insert(name, thumb);
         }
     }
 
-    /// Removes page `index`, selecting the one after it, or before it if it was the last.
+    /// Fills in pages that finished loading, and removes those that couldn't be.
+    fn add_loaded(&mut self, ctx: &egui::Context) {
+        while let Some((name, bytes, loaded)) = self.ingest.next() {
+            // The page may have been deleted meanwhile, or replaced by another of the same name.
+            let Some(index) = self.pages.position(&name).filter(|&i| {
+                self.pages
+                    .get(i)
+                    .is_some_and(|p| Arc::ptr_eq(&p.bytes, &bytes))
+            }) else {
+                continue;
+            };
+            match loaded {
+                Ok(loaded) => {
+                    let texture = |suffix: &str, img: &RgbaImage| {
+                        let name = format!("{name}{suffix}");
+                        ctx.load_texture(name, color_image(img), TextureOptions::LINEAR)
+                    };
+                    let thumbs = Thumbs {
+                        original: texture("", &loaded.thumbnail),
+                        cleaned: texture(" (cleaned)", &loaded.cleaned_thumbnail),
+                    };
+                    self.thumbs.insert(name, thumbs);
+                    if let Some(page) = self.pages.get_mut(index) {
+                        page.loaded = Some(loaded);
+                    }
+                }
+                Err(err) => {
+                    self.errors.push(format!("Couldn't open {name}: {err}"));
+                    self.delete_page(index);
+                }
+            }
+        }
+    }
+
+    /// Removes page `index`. If it was shown, selects the one after it, or before it if it was
+    /// the last.
     fn delete_page(&mut self, index: usize) {
+        let shown = self.selected_index() == index;
+        if !shown {
+            self.pin_selection();
+        }
         let Some(page) = self.pages.remove(index) else {
             return;
         };
         self.thumbs.remove(&page.name);
-        self.reports.remove(&page.name);
         self.transcriptions.forget(&page.name);
         if self.current.as_ref().is_some_and(|c| c.name == page.name) {
             self.current = None;
+        }
+        if !shown {
+            return;
         }
         self.transcript_view = TranscriptView::default();
         let next = self
@@ -387,7 +477,7 @@ impl NotebookApp {
             ui.vertical_centered(|ui| {
                 ui.add_space(rect.center().y - ui.min_rect().top() - 40.0);
                 ui.heading("Drop image files here");
-                ui.label("JPEG or PNG");
+                ui.label("JPEG, PNG or HEIC");
                 self.status(ui);
             });
         });
@@ -437,10 +527,8 @@ impl NotebookApp {
         egui::Panel::bottom("pages").show(ui, |ui| {
             ui.add_space(4.0);
             let selected = self.selected_index();
-            match self
-                .thumbnails
-                .show(ui, &self.pages, &self.thumbs, selected)
-            {
+            let thumbs = |name: &str| self.thumbs.get(name).map(|t| &t.original);
+            match self.thumbnails.show(ui, &self.pages, thumbs, selected) {
                 Some(thumbnails::Action::Select(name)) => self.selected = Some(name),
                 Some(thumbnails::Action::Move { from, to }) => self.move_page(from, to),
                 None => {}
@@ -463,12 +551,8 @@ impl NotebookApp {
                         egui::Button::new("Re-export"),
                     );
                     if reexport.clicked() {
-                        self.export.reexport(
-                            ui.ctx(),
-                            &self.pages,
-                            self.selected_index(),
-                            &self.clean_params,
-                        );
+                        self.export
+                            .reexport(ui.ctx(), &self.pages, self.selected_index());
                     }
                     let untranscribed = self.untranscribed().len();
                     let transcribe_all = ui
@@ -501,10 +585,12 @@ impl NotebookApp {
                 .pages
                 .get(self.selected_index())
                 .map(|p| p.name.clone());
-            if let (Some(name), Some(texture)) = (name, self.current_texture(ui.ctx())) {
+            if let (Some(name), Some(showing)) = (name, self.current_texture(ui.ctx())) {
                 let panel = ui.available_rect_before_wrap();
-                let image_rect = self.show_page(ui, &name, &texture, panel);
-                if self.debug {
+                let image_rect = self.show_page(ui, &name, &showing, panel);
+                if self.debug
+                    && let Some(image_rect) = image_rect
+                {
                     self.debug_overlay(ui, &name, image_rect);
                 }
             }
@@ -513,12 +599,8 @@ impl NotebookApp {
         self.delete_dialog(ui.ctx());
         self.transcribe_all_dialog(ui.ctx());
         self.force_dialog(ui.ctx());
-        self.export.dialog(
-            ui.ctx(),
-            &self.pages,
-            self.selected_index(),
-            &self.clean_params,
-        );
+        self.export
+            .dialog(ui.ctx(), &self.pages, self.selected_index());
 
         if is_hovering_files(ui) {
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -560,25 +642,36 @@ impl NotebookApp {
         self.transcriptions.set_model(model);
     }
 
-    /// The page named `name` as large as fits in `rect`, centred, returning where it went.
+    /// The page named `name` as large as fits in `rect`, centred, returning where it went. A
+    /// placeholder gets a spinner, and a page that's loading only a spinner.
     fn show_page(
         &self,
         ui: &mut egui::Ui,
         name: &str,
-        texture: &TextureHandle,
+        showing: &Showing,
         rect: Rect,
-    ) -> Rect {
-        let alt_text = if self.view.shows_cleaned() {
-            format!("Current: {name} (cleaned)")
-        } else {
-            format!("Current: {name}")
+    ) -> Option<Rect> {
+        let spinner = Rect::from_center_size(rect.center(), Vec2::splat(32.0));
+        let Some(texture) = showing.texture() else {
+            egui::Spinner::new().paint_at(ui, spinner);
+            return None;
+        };
+        let alt_text = match (showing, self.view.shows_cleaned()) {
+            (Showing::Placeholder(_), _) => format!("Current: {name} (loading)"),
+            (Showing::Full(_), true) => format!("Current: {name} (cleaned)"),
+            (Showing::Full(_), false) => format!("Current: {name}"),
         };
         let image = egui::Image::new(texture).shrink_to_fit().alt_text(alt_text);
         // Give the image exactly the rect it's drawn in. In a justified layout its response
         // would cover the whole panel, with the image centred inside.
         let size = image.calc_size(rect.size(), Some(texture.size_vec2()));
-        ui.put(Rect::from_center_size(rect.center(), size), image)
-            .rect
+        let image_rect = ui
+            .put(Rect::from_center_size(rect.center(), size), image)
+            .rect;
+        if let Showing::Placeholder(_) = showing {
+            egui::Spinner::new().paint_at(ui, spinner);
+        }
+        Some(image_rect)
     }
 
     /// The cleaned page beside its transcript, for correcting.
@@ -590,7 +683,7 @@ impl NotebookApp {
         // A page being retranscribed shows progress, not the transcript it's replacing.
         let transcribing = self.transcriptions.queued_or_running(&name);
         let rect = ui.available_rect_before_wrap();
-        let texture = self.current_texture(ui.ctx());
+        let showing = self.current_texture(ui.ctx());
         let shown = self
             .pages
             .get(index)
@@ -598,7 +691,7 @@ impl NotebookApp {
             .filter(|_| !transcribing);
         let limits = split::Limits {
             text_natural: shown.map(|t| transcript_view::natural_width(ui, t)),
-            image_cap: texture.as_ref().map(|t| {
+            image_cap: showing.as_ref().and_then(Showing::texture).map(|t| {
                 let size = t.size_vec2();
                 rect.height() * size.x / size.y
             }),
@@ -608,7 +701,7 @@ impl NotebookApp {
         if !transcribing && let Some(status) = self.transcript_status(ui, index, page_rect) {
             page_rect.max.y = status.top() - ui.spacing().item_spacing.y;
         }
-        let image_rect = texture.map(|texture| self.show_page(ui, &name, &texture, page_rect));
+        let image_rect = showing.and_then(|showing| self.show_page(ui, &name, &showing, page_rect));
         let transcript = self
             .pages
             .get_mut(index)
@@ -709,7 +802,8 @@ impl NotebookApp {
 
     /// The detected page outline over the original, and what cleaning found, for tuning cleanup.
     fn debug_overlay(&mut self, ui: &mut egui::Ui, name: &str, image_rect: Rect) {
-        let Some(report) = self.report(name).cloned() else {
+        let report = self.pages.find(name).and_then(|p| p.loaded.as_ref());
+        let Some(report) = report.map(|l| l.report.clone()) else {
             return;
         };
         let outline = report.outline.as_ref();
@@ -762,24 +856,6 @@ impl NotebookApp {
             });
     }
 
-    /// What cleaning found for the page named `name`, cleaning it if that hasn't happened yet.
-    fn report(&mut self, name: &str) -> Option<&CleanReport> {
-        if !self.reports.contains_key(name) {
-            let img = decode(&self.pages.find(name)?.bytes).ok()?;
-            self.clean_page(name, &img);
-        }
-        self.reports.get(name)
-    }
-
-    /// `img`, the page named `name`, cleaned. What cleaning found is kept for the debug overlay.
-    fn clean_page(&mut self, name: &str, img: &RgbaImage) -> RgbaImage {
-        let cleaned = timed(format_args!("{name}: clean"), || {
-            clean(img, &self.clean_params)
-        });
-        self.reports.insert(name.to_owned(), cleaned.report);
-        cleaned.image
-    }
-
     /// Loading and transcription progress, errors from the last drop, and what the last export
     /// did.
     fn status(&self, ui: &mut egui::Ui) {
@@ -810,42 +886,61 @@ impl NotebookApp {
         }
     }
 
-    /// The selected page at full size in the current view, decoding (and cleaning) it if the
-    /// selection or view changed.
-    fn current_texture(&mut self, ctx: &egui::Context) -> Option<TextureHandle> {
-        let index = self.selected_index();
-        let page = self.pages.get(index)?;
+    /// The selected page at full size in the current view, once it's decoded. Until then, its
+    /// thumbnail while the full image is decoded off the UI thread.
+    fn current_texture(&mut self, ctx: &egui::Context) -> Option<Showing> {
+        let page = self.pages.get(self.selected_index())?;
         let cleaned = self.view.shows_cleaned();
-        if self
-            .current
-            .as_ref()
-            .is_none_or(|shown| shown.name != page.name || shown.cleaned != cleaned)
-        {
-            let (name, bytes) = (page.name.clone(), page.bytes.clone());
-            let texture = match timed(format_args!("{name}: decode"), || decode(&bytes)) {
-                Ok(img) => {
-                    let img = if cleaned {
-                        self.clean_page(&name, &img)
-                    } else {
-                        img
-                    };
-                    let max_side = ctx.input(|i| i.max_texture_side) as u32;
-                    log::debug!(
-                        "{name}: {:?}, max texture side {max_side}",
-                        img.dimensions()
-                    );
-                    let img = timed(format_args!("{name}: shrink"), || {
-                        shrink_to_fit(img, max_side)
-                    });
-                    let color = timed(format_args!("{name}: color image"), || color_image(&img));
-                    timed(format_args!("{name}: load texture"), || {
-                        ctx.load_texture(&name, color, TextureOptions::LINEAR)
-                    })
-                }
-                // Already decoded once when the page was added, so this shouldn't happen.
+        let current = self.current.as_ref();
+        if let Some(shown) = current.filter(|s| s.name == page.name && s.cleaned == cleaned) {
+            return Some(Showing::Full(shown.texture.clone()));
+        }
+        let Some(loaded) = &page.loaded else {
+            return Some(Showing::Placeholder(None));
+        };
+        let key = (page.name.clone(), cleaned);
+        if self.decodes.wanted.as_ref() != Some(&key) {
+            let name = page.name.clone();
+            let jpeg = if cleaned {
+                loaded.cleaned.clone()
+            } else {
+                loaded.original.clone()
+            };
+            let max_side = ctx.input(|i| i.max_texture_side) as u32;
+            self.decodes.jobs.spawn(key.clone(), move || {
+                let img = timed(format_args!("{name}: decode"), || decode(&jpeg));
+                let img = img.map_err(|e| e.to_string())?;
+                Ok(color_image(&shrink_to_fit(img, max_side)))
+            });
+            self.decodes.wanted = Some(key);
+        }
+        let thumbs = self.thumbs.get(&page.name);
+        let thumb = thumbs.map(|t| if cleaned { &t.cleaned } else { &t.original });
+        Some(Showing::Placeholder(thumb.cloned()))
+    }
+
+    /// Puts the image the viewer is waiting for on screen once it's decoded. Others are stale.
+    fn show_decoded(&mut self, ctx: &egui::Context) {
+        while let Some(((name, cleaned), image)) = self.decodes.jobs.next() {
+            if self.decodes.wanted.as_ref() != Some(&(name.clone(), cleaned)) {
+                continue;
+            }
+            self.decodes.wanted = None;
+            let texture = match image {
+                Ok(image) => timed(format_args!("{name}: load texture"), || {
+                    ctx.load_texture(&name, image, TextureOptions::LINEAR)
+                }),
+                // It decoded when the page loaded, so this shouldn't happen.
                 Err(err) => {
                     log::error!("Couldn't decode {name}: {err}");
-                    self.thumbs[&name].clone()
+                    let Some(thumbs) = self.thumbs.get(&name) else {
+                        continue;
+                    };
+                    if cleaned {
+                        thumbs.cleaned.clone()
+                    } else {
+                        thumbs.original.clone()
+                    }
                 }
             };
             self.current = Some(Shown {
@@ -854,7 +949,6 @@ impl NotebookApp {
                 texture,
             });
         }
-        self.current.as_ref().map(|shown| shown.texture.clone())
     }
 }
 

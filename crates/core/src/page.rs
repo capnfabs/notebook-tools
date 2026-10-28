@@ -1,69 +1,79 @@
 //! Opened image files and the ordered set of them.
 
-use std::fmt;
-use std::io::Cursor;
 use std::sync::Arc;
 
-use image::{DynamicImage, ImageDecoder as _, ImageReader, RgbaImage, imageops};
+use image::buffer::ConvertBuffer as _;
+use image::{RgbImage, RgbaImage, imageops};
 
+use crate::clean::{CleanParams, CleanReport, clean};
+use crate::decode::{DecodeError, decode};
 use crate::transcript::Transcript;
 
-/// Longest side of a [`Page::thumbnail`], in pixels. Big enough for the viewer's thumbnails on a
-/// 2x display.
+/// Longest side of the thumbnails in [`Loaded`], in pixels. Big enough for the viewer's thumbnails
+/// on a 2x display.
 pub const THUMBNAIL_SIDE_PX: u32 = 256;
+
+/// Quality of the JPEGs in [`Loaded`]. The cleaned one goes into PDFs as it is.
+pub const PAGE_JPEG_QUALITY: u8 = 85;
 
 /// An image file the user opened.
 ///
-/// Holds the encoded bytes rather than decoded pixels: a 12 MP photo decodes to ~48 MB, too much
-/// to keep around for every page. Call [`decode`] on `bytes` when the full image is needed. They're
-/// shared, so handing them to a transcription thread doesn't copy them.
+/// Holds the file's bytes, which transcription works from, and once [`Loaded`], small copies for
+/// everything else. A 12 MP photo decodes to ~48 MB, too much to keep around for every page. The
+/// bytes are shared, so handing them to a transcription thread doesn't copy them. See
+/// `decisions/2026-10-28-pages-cleaned-on-load.md`.
 pub struct Page {
     pub name: String,
     pub bytes: Arc<[u8]>,
-    pub thumbnail: RgbaImage,
+    /// Filled in off the UI thread, as loading decodes and cleans the whole photo.
+    pub loaded: Option<Loaded>,
     /// Claude's transcription, once there is one.
     pub transcript: Option<Transcript>,
 }
 
 impl Page {
-    pub fn from_file(name: String, bytes: Vec<u8>) -> Result<Self, DecodeError> {
-        let thumbnail = shrink_to_fit(decode(&bytes)?, THUMBNAIL_SIDE_PX);
-        Ok(Self {
+    /// A page that isn't [`Loaded`] yet.
+    pub fn new(name: String, bytes: Arc<[u8]>) -> Self {
+        Self {
             name,
-            bytes: bytes.into(),
-            thumbnail,
+            bytes,
+            loaded: None,
             transcript: None,
+        }
+    }
+}
+
+/// A page's file decoded and cleaned once, kept as JPEGs no longer than
+/// [`CleanParams::max_output_side`] so the viewer and the PDF never decode the full photo.
+pub struct Loaded {
+    /// The photo as it was.
+    pub original: Arc<[u8]>,
+    /// The photo [`clean`]ed.
+    pub cleaned: Arc<[u8]>,
+    pub thumbnail: RgbaImage,
+    pub cleaned_thumbnail: RgbaImage,
+    /// What cleaning found. Its `output_size` is `cleaned`'s size.
+    pub report: CleanReport,
+}
+
+impl Loaded {
+    /// Decodes and cleans a page's file. Takes a while for a big photo.
+    pub fn new(bytes: &[u8], params: &CleanParams) -> Result<Self, DecodeError> {
+        let photo = decode(bytes)?;
+        let original = shrunk_copy(&photo, params.max_output_side);
+        let cleaned = clean(&photo, params);
+        let jpeg = |img: &RgbaImage| -> Arc<[u8]> {
+            let rgb: RgbImage = img.convert();
+            crate::ocr::jpeg(&rgb, PAGE_JPEG_QUALITY).into()
+        };
+        Ok(Self {
+            thumbnail: shrunk_copy(&original, THUMBNAIL_SIDE_PX),
+            cleaned_thumbnail: shrunk_copy(&cleaned.image, THUMBNAIL_SIDE_PX),
+            original: jpeg(&original),
+            cleaned: jpeg(&cleaned.image),
+            report: cleaned.report,
         })
     }
-}
-
-#[derive(Debug)]
-pub struct DecodeError(image::ImageError);
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl std::error::Error for DecodeError {}
-
-impl From<image::ImageError> for DecodeError {
-    fn from(err: image::ImageError) -> Self {
-        Self(err)
-    }
-}
-
-/// Decodes a JPEG or PNG, applying its EXIF orientation so the result is upright.
-pub fn decode(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
-    let mut decoder = ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(image::ImageError::IoError)?
-        .into_decoder()?;
-    let orientation = decoder.orientation()?;
-    let mut img = DynamicImage::from_decoder(decoder)?;
-    img.apply_orientation(orientation);
-    Ok(img.into_rgba8())
 }
 
 /// Scales `img` down so neither side exceeds `max_side`, keeping the aspect ratio.
@@ -184,9 +194,10 @@ impl Pages {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
-    use image::codecs::jpeg::JpegEncoder;
-    use image::{ImageEncoder as _, ImageFormat, Rgb, RgbImage, Rgba};
+    use image::{ImageFormat, Rgba};
 
     fn png(w: u32, h: u32) -> Vec<u8> {
         let img = RgbaImage::from_fn(w, h, |x, y| Rgba([x as u8, y as u8, 0, 255]));
@@ -196,51 +207,12 @@ mod tests {
         bytes
     }
 
-    /// A JPEG whose EXIF says "rotate 90° clockwise to display", as iPhones write for portrait shots.
-    fn rotated_jpeg(w: u32, h: u32) -> Vec<u8> {
-        #[rustfmt::skip]
-        let exif = vec![
-            b'I', b'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, // little-endian TIFF header, IFD at 8
-            0x01, 0x00,                                     // one entry
-            0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, // Orientation, SHORT, count 1
-            0x06, 0x00, 0x00, 0x00,                         // value 6 (Rotate90)
-            0x00, 0x00, 0x00, 0x00,                         // no next IFD
-        ];
-        let img = RgbImage::from_pixel(w, h, Rgb([200, 100, 50]));
-        let mut bytes = Vec::new();
-        let mut encoder = JpegEncoder::new(&mut bytes);
-        encoder.set_exif_metadata(exif).unwrap();
-        encoder
-            .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        bytes
-    }
-
     fn page(name: &str) -> Page {
-        Page::from_file(name.to_owned(), png(2, 2)).unwrap()
+        Page::new(name.to_owned(), png(2, 2).into())
     }
 
     fn names(pages: &Pages) -> Vec<&str> {
         pages.iter().map(|p| p.name.as_str()).collect()
-    }
-
-    #[test]
-    fn decodes_png() {
-        let img = decode(&png(3, 2)).unwrap();
-        assert_eq!(img.dimensions(), (3, 2));
-        assert_eq!(img.get_pixel(2, 1), &Rgba([2, 1, 0, 255]));
-    }
-
-    #[test]
-    fn applies_exif_orientation() {
-        let img = decode(&rotated_jpeg(16, 8)).unwrap();
-        assert_eq!(img.dimensions(), (8, 16));
-    }
-
-    #[test]
-    fn rejects_non_images() {
-        assert!(decode(b"just some notes").is_err());
-        assert!(Page::from_file("notes.txt".into(), b"hi".to_vec()).is_err());
     }
 
     #[test]
@@ -264,13 +236,51 @@ mod tests {
         assert_eq!(max_side_within(100, 400, 10_000), 200);
     }
 
+    /// A cream page on a brown table, which cleanup finds an outline for.
+    fn page_photo(w: u32, h: u32) -> Vec<u8> {
+        let img = RgbaImage::from_fn(w, h, |x, y| {
+            let inside = (w / 5..w * 4 / 5).contains(&x) && (h / 8..h * 7 / 8).contains(&y);
+            if inside {
+                Rgba([235, 225, 200, 255])
+            } else {
+                Rgba([120, 80, 50, 255])
+            }
+        });
+        let mut bytes = Vec::new();
+        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
     #[test]
-    fn page_has_small_thumbnail() {
-        let page = Page::from_file("big.png".into(), png(512, 256)).unwrap();
+    fn loading_cleans_and_shrinks_the_page() {
+        let params = CleanParams {
+            max_output_side: 400,
+            ..CleanParams::default()
+        };
+        let loaded = Loaded::new(&page_photo(1000, 500), &params).unwrap();
+        assert!(loaded.report.outline.is_ok(), "{:?}", loaded.report.outline);
+
+        let original = decode(&loaded.original).unwrap();
+        assert_eq!(original.dimensions(), (400, 200));
         assert_eq!(
-            page.thumbnail.dimensions(),
+            loaded.thumbnail.dimensions(),
             (THUMBNAIL_SIDE_PX, THUMBNAIL_SIDE_PX / 2)
         );
+
+        let cleaned = decode(&loaded.cleaned).unwrap();
+        assert_eq!(cleaned.dimensions(), loaded.report.output_size);
+        let (w, h) = cleaned.dimensions();
+        // The page is 600x375, so cropped to it the image is taller than the photo's 2:1.
+        assert_eq!(w, 400);
+        assert!((240..=260).contains(&h), "cropped to the page: {w}x{h}");
+        let (tw, th) = loaded.cleaned_thumbnail.dimensions();
+        assert_eq!(tw.max(th), THUMBNAIL_SIDE_PX.min(w.max(h)));
+    }
+
+    #[test]
+    fn loading_rejects_non_images() {
+        assert!(Loaded::new(b"hi", &CleanParams::default()).is_err());
     }
 
     #[test]

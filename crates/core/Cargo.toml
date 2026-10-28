@@ -13,6 +13,7 @@ epaint_default_fonts = "0.37"
 image.workspace = true
 imageproc = { workspace = true, features = ["rayon"] }
 krilla = "0.8"
+libheif-rs.workspace = true
 log = "0.4"
 # Markdown as plain text, for the PDF's text layer.
 pulldown-cmark = { version = "0.13.5", default-features = false }

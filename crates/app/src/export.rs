@@ -1,8 +1,8 @@
 //! The export dialog, and Re-export, which repeats the last export without asking.
 //!
-//! Only transcribed pages can be exported: if any page in scope isn't, the dialog says which and
-//! won't go. Files are chosen through a [`SavePath`], so tests can stand in for the save dialog.
-//! The export itself runs on a thread, as a PDF cleans every page.
+//! Only transcribed, loaded pages can be exported: if any page in scope isn't, the dialog says which
+//! and won't go. Files are chosen through a [`SavePath`], so tests can stand in for the save
+//! dialog. The export itself runs on a thread, as a PDF of a whole notebook takes a moment.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use eframe::egui;
 use notebook_core::export::PdfPage;
 use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, Pages};
+use notebook_core::{Page, Pages};
 
 use crate::ui::dialog::{self, Action, Choice};
 
@@ -127,13 +127,7 @@ impl Export {
     }
 
     /// The export dialog, if it's open. `selected` is the index of the selected page.
-    pub fn dialog(
-        &mut self,
-        ctx: &egui::Context,
-        pages: &Pages,
-        selected: usize,
-        params: &CleanParams,
-    ) {
+    pub fn dialog(&mut self, ctx: &egui::Context, pages: &Pages, selected: usize) {
         if !self.dialog_open {
             return;
         }
@@ -155,31 +149,25 @@ impl Export {
                 "Markdown to file",
             );
             ui.radio_value(&mut settings.format, Format::Pdf, "PDF");
-            let missing = in_scope(pages, selected, settings.scope).err();
-            if let Some(missing) = &missing {
-                ui.colored_label(ui.visuals().warn_fg_color, not_transcribed(missing));
+            let blocked = in_scope(pages, selected, settings.scope).err();
+            if let Some(blocked) = &blocked {
+                ui.colored_label(ui.visuals().warn_fg_color, blocked);
             }
-            dialog::buttons(ui, "Go", Action::Default, missing.is_none())
+            dialog::buttons(ui, "Go", Action::Default, blocked.is_none())
         });
         if choice.is_some() {
             self.dialog_open = false;
         }
         if choice == Some(Choice::Affirmative) {
-            self.run(ctx, self.settings, None, pages, selected, params);
+            self.run(ctx, self.settings, None, pages, selected);
         }
     }
 
     /// Repeats the last export, to the same file if it went to one.
-    pub fn reexport(
-        &mut self,
-        ctx: &egui::Context,
-        pages: &Pages,
-        selected: usize,
-        params: &CleanParams,
-    ) {
+    pub fn reexport(&mut self, ctx: &egui::Context, pages: &Pages, selected: usize) {
         if let Some(Last { settings, path }) = &self.last {
             let (settings, path) = (*settings, path.clone());
-            self.run(ctx, settings, path, pages, selected, params);
+            self.run(ctx, settings, path, pages, selected);
         }
     }
 
@@ -191,18 +179,14 @@ impl Export {
         path: Option<PathBuf>,
         pages: &Pages,
         selected: usize,
-        params: &CleanParams,
     ) {
         if self.running.is_some() {
             return;
         }
         let in_scope = match in_scope(pages, selected, settings.scope) {
             Ok(in_scope) => in_scope,
-            Err(missing) => {
-                self.status = Some(Err(format!(
-                    "Couldn't export. {}",
-                    not_transcribed(&missing)
-                )));
+            Err(blocked) => {
+                self.status = Some(Err(format!("Couldn't export. {blocked}")));
                 return;
             }
         };
@@ -218,45 +202,49 @@ impl Export {
                 path
             }
         };
-        let what = match in_scope.len() {
-            1 => in_scope[0].0.to_owned(),
-            n => format!("{n} pages"),
+        let what = match in_scope.as_slice() {
+            [page] => page.name.clone(),
+            pages => format!("{} pages", pages.len()),
         };
-        // The pages' bytes are shared, not copied.
-        let snapshot: Vec<(String, Arc<[u8]>, Transcript)> = in_scope
-            .iter()
-            .map(|(name, transcript)| {
-                let bytes = pages.find(name).expect("in scope").bytes.clone();
-                (name.to_string(), bytes, (*transcript).clone())
-            })
-            .collect();
-        let (params, ctx) = (params.clone(), ctx.clone());
+        let ctx = ctx.clone();
         let (tx, done) = mpsc::channel();
+        let pages = in_scope.len();
         std::thread::spawn(move || {
             // The UI may have gone, and with it the receiver.
-            tx.send(export(settings.format, &snapshot, &params, path, &what))
+            tx.send(export(settings.format, &in_scope, path, &what))
                 .ok();
             ctx.request_repaint();
         });
         self.status = None;
         self.running = Some(Running {
             settings,
-            pages: in_scope.len(),
+            pages,
             done,
         });
     }
+}
+
+/// A page to export, as it was when the export started.
+struct Snapshot {
+    name: String,
+    /// Shared with the page, not copied.
+    cleaned: Arc<[u8]>,
+    size: (u32, u32),
+    transcript: Transcript,
 }
 
 /// Exports `pages` as `format` to `path`, or for the clipboard if there's no path. `what` names
 /// the pages.
 fn export(
     format: Format,
-    pages: &[(String, Arc<[u8]>, Transcript)],
-    params: &CleanParams,
+    pages: &[Snapshot],
     path: Option<PathBuf>,
     what: &str,
 ) -> Result<Done, String> {
-    let by_name: Vec<(&str, &Transcript)> = pages.iter().map(|(n, _, t)| (n.as_str(), t)).collect();
+    let by_name: Vec<(&str, &Transcript)> = pages
+        .iter()
+        .map(|p| (p.name.as_str(), &p.transcript))
+        .collect();
     let markdown = || notebook_core::export::markdown(&by_name);
     let Some(path) = path else {
         return Ok(Done {
@@ -269,15 +257,16 @@ fn export(
         Format::Pdf => {
             let pdf_pages: Vec<PdfPage> = pages
                 .iter()
-                .map(|(name, bytes, transcript)| PdfPage {
-                    name,
-                    bytes,
-                    transcript,
+                .map(|p| PdfPage {
+                    name: &p.name,
+                    jpeg: &p.cleaned,
+                    size: p.size,
+                    transcript: &p.transcript,
                 })
                 .collect();
             let markdown_name = path.with_extension("md");
             let markdown_name = markdown_name.file_name().unwrap_or_default();
-            notebook_core::export::pdf(&pdf_pages, params, &markdown_name.to_string_lossy())
+            notebook_core::export::pdf(&pdf_pages, &markdown_name.to_string_lossy())
                 .map_err(|err| format!("Couldn't export: {err}"))?
         }
         Format::MarkdownFile | Format::MarkdownClipboard => markdown().into_bytes(),
@@ -292,43 +281,54 @@ fn export(
     }
 }
 
-/// The transcribed pages `scope` covers, by name, or the names of those not transcribed yet.
-fn in_scope(
-    pages: &Pages,
-    selected: usize,
-    scope: Scope,
-) -> Result<Vec<(&str, &Transcript)>, Vec<&str>> {
-    let covered: Vec<_> = match scope {
+/// The pages `scope` covers, or why they can't be exported: which aren't transcribed or loaded.
+fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot>, String> {
+    let covered: Vec<&Page> = match scope {
         Scope::Current => pages.get(selected).into_iter().collect(),
         Scope::Everything => pages.iter().collect(),
     };
-    let missing: Vec<&str> = covered
-        .iter()
-        .filter(|p| p.transcript.is_none())
-        .map(|p| p.name.as_str())
-        .collect();
-    if !missing.is_empty() || covered.is_empty() {
-        return Err(missing);
+    let names = |missing: fn(&Page) -> bool| -> Vec<&str> {
+        let names = covered.iter().filter(|p| missing(p));
+        names.map(|p| p.name.as_str()).collect()
+    };
+    let untranscribed = names(|p| p.transcript.is_none());
+    let loading = names(|p| p.loaded.is_none());
+    let mut blocked = Vec::new();
+    if !untranscribed.is_empty() {
+        blocked.push(format!("Not transcribed yet: {}", untranscribed.join(", ")));
+    }
+    if !loading.is_empty() {
+        blocked.push(format!("Still loading: {}", loading.join(", ")));
+    }
+    if covered.is_empty() {
+        blocked.push("No pages to export".to_owned());
+    }
+    if !blocked.is_empty() {
+        return Err(blocked.join(". "));
     }
     Ok(covered
         .into_iter()
-        .filter_map(|p| Some((p.name.as_str(), p.transcript.as_ref()?)))
+        .filter_map(|p| {
+            let (loaded, transcript) = (p.loaded.as_ref()?, p.transcript.as_ref()?);
+            Some(Snapshot {
+                name: p.name.clone(),
+                cleaned: loaded.cleaned.clone(),
+                size: loaded.report.output_size,
+                transcript: transcript.clone(),
+            })
+        })
         .collect())
 }
 
-fn not_transcribed(names: &[&str]) -> String {
-    format!("Not transcribed yet: {}", names.join(", "))
-}
-
 /// The page's name as a `format` file for one page, else a name for the notebook.
-fn suggested_name(pages: &[(&str, &Transcript)], scope: Scope, format: Format) -> String {
+fn suggested_name(pages: &[Snapshot], scope: Scope, format: Format) -> String {
     let extension = match format {
         Format::Pdf => "pdf",
         Format::MarkdownFile | Format::MarkdownClipboard => "md",
     };
     match (scope, pages) {
-        (Scope::Current, [(name, _)]) => {
-            let stem = Path::new(name).file_stem().unwrap_or_default();
+        (Scope::Current, [page]) => {
+            let stem = Path::new(&page.name).file_stem().unwrap_or_default();
             format!("{}.{extension}", stem.to_string_lossy())
         }
         _ => format!("notebook.{extension}"),

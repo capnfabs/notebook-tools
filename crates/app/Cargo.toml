@@ -14,6 +14,7 @@ eframe.workspace = true
 env_logger = "0.11"
 jiff = "0.2"
 log = "0.4"
+rayon.workspace = true
 rfd = "0.17"
 
 [dev-dependencies]

@@ -1,8 +1,6 @@
 //! The strip of page thumbnails along the bottom of the window: clicking one selects its page,
 //! dragging one moves its page.
 
-use std::collections::HashMap;
-
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{Color32, Margin, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
@@ -57,12 +55,13 @@ pub struct Thumbnails {
 
 impl Thumbnails {
     /// The strip, scrolling sideways, of `pages` with their `textures` by name, page `selected`
-    /// framed. Returns what the user did, if anything.
-    pub fn show(
+    /// framed. A page without a texture is still loading, and gets a spinner. Returns what the user
+    /// did, if anything.
+    pub fn show<'a>(
         &mut self,
         ui: &mut egui::Ui,
         pages: &Pages,
-        textures: &HashMap<String, TextureHandle>,
+        textures: impl Fn(&str) -> Option<&'a TextureHandle>,
         selected: usize,
     ) -> Option<Action> {
         egui::ScrollArea::horizontal()
@@ -79,11 +78,11 @@ impl Thumbnails {
             .inner
     }
 
-    fn thumbnails(
+    fn thumbnails<'a>(
         &mut self,
         ui: &mut egui::Ui,
         pages: &Pages,
-        textures: &HashMap<String, TextureHandle>,
+        textures: impl Fn(&str) -> Option<&'a TextureHandle>,
         selected: usize,
     ) -> Option<Action> {
         let mut action = None;
@@ -96,16 +95,18 @@ impl Thumbnails {
             } else {
                 Color32::WHITE
             };
-            let response = ui
-                .add(
-                    egui::Image::new(&textures[&page.name])
+            let response = match textures(&page.name) {
+                Some(texture) => ui.add(
+                    egui::Image::new(texture)
                         .max_size(Vec2::splat(THUMB_SIZE_PT))
                         .tint(tint)
                         .corner_radius(THUMB_CORNER_PT)
                         .alt_text(&page.name)
                         .sense(Sense::click_and_drag()),
-                )
-                .on_hover_text(&page.name);
+                ),
+                None => loading_tile(ui, tint),
+            }
+            .on_hover_text(&page.name);
             let active = i == selected;
             response.widget_info(|| WidgetInfo::selected(Role::Image, true, active, &page.name));
             response.dnd_set_drag_payload(DraggedPage(i));
@@ -180,4 +181,18 @@ impl Thumbnails {
         }
         action
     }
+}
+
+/// Stands in for the thumbnail of a page that's loading.
+fn loading_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
+    let size = Vec2::new(THUMB_SIZE_PT * 3.0 / 4.0, THUMB_SIZE_PT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let fill = ui
+        .visuals()
+        .extreme_bg_color
+        .gamma_multiply(tint.a() as f32 / 255.0);
+    ui.painter().rect_filled(rect, THUMB_CORNER_PT, fill);
+    let spinner = egui::Rect::from_center_size(rect.center(), Vec2::splat(THUMB_SIZE_PT / 4.0));
+    egui::Spinner::new().paint_at(ui, spinner);
+    response
 }

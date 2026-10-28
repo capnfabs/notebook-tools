@@ -4,7 +4,7 @@ use std::path::Path;
 
 use notebook_core::ocr::parse_response;
 use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, clean, decode, export};
+use notebook_core::{CleanParams, Loaded, export};
 
 fn recorded(name: &str) -> Transcript {
     let path =
@@ -48,27 +48,29 @@ fn fixture(name: &str) -> Vec<u8> {
 
 #[test]
 fn pdf_has_a_searchable_page_each_and_the_markdown() {
-    let photo = fixture("page-grey-table.jpg");
+    let page = Loaded::new(&fixture("page-grey-table.jpg"), &CleanParams::default()).unwrap();
     let (first, mut second) = (recorded("success"), recorded("success"));
     assert!(second.resolve(0, "plumbers"));
     let pages = [
         export::PdfPage {
             name: "a.jpg",
-            bytes: &photo,
+            jpeg: &page.cleaned,
+            size: page.report.output_size,
             transcript: &first,
         },
         export::PdfPage {
             name: "b.jpg",
-            bytes: &photo,
+            jpeg: &page.cleaned,
+            size: page.report.output_size,
             transcript: &second,
         },
     ];
-    let bytes = export::pdf(&pages, &CleanParams::default(), "notebook.md").unwrap();
+    let bytes = export::pdf(&pages, "notebook.md").unwrap();
     let pdf = lopdf::Document::load_mem(&bytes).unwrap();
 
     let ids: Vec<_> = pdf.get_pages().into_values().collect();
     assert_eq!(ids.len(), 2);
-    let cleaned = clean(&decode(&photo).unwrap(), &CleanParams::default()).image;
+    let (w, h) = page.report.output_size;
     let expected = |px: u32| px as f32 / export::PDF_DPI * 72.0;
     let media_box: Vec<f32> = pdf
         .get_dictionary(ids[0])
@@ -80,15 +82,7 @@ fn pdf_has_a_searchable_page_each_and_the_markdown() {
         .iter()
         .map(|n| n.as_float().unwrap())
         .collect();
-    assert_eq!(
-        media_box,
-        [
-            0.0,
-            0.0,
-            expected(cleaned.width()),
-            expected(cleaned.height())
-        ]
-    );
+    assert_eq!(media_box, [0.0, 0.0, expected(w), expected(h)]);
 
     // Text is only drawn through graphics states that make it invisible.
     let page = pdf.get_dictionary(ids[1]).unwrap();

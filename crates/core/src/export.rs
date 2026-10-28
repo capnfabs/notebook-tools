@@ -4,8 +4,6 @@
 //! over the line's box (`decisions/2026-10-23-line-level-pdf-text.md`). The markdown rides along as
 //! an embedded file. See `decisions/2026-10-28-pdf-text-layer.md`.
 
-use image::RgbImage;
-use image::buffer::ConvertBuffer as _;
 use krilla::Document;
 use krilla::embed::{AssociationKind, EmbeddedFile, MimeType};
 use krilla::geom::{Point, Size, Transform};
@@ -16,14 +14,11 @@ use krilla::paint::Fill;
 use krilla::surface::Surface;
 use krilla::text::{Font, TextDirection};
 use pulldown_cmark::{Event, Options, Parser};
-use rayon::prelude::*;
 
-use crate::CleanParams;
 use crate::transcript::Transcript;
 
 /// Resolution of the page images in a PDF, which sets the pages' physical size.
 pub const PDF_DPI: f32 = 300.0;
-const PDF_JPEG_QUALITY: u8 = 85;
 /// The text layer's font: egui's, as it's already in the binary. It's invisible, so its looks
 /// don't matter.
 const FONT: &[u8] = epaint_default_fonts::UBUNTU_LIGHT;
@@ -38,40 +33,30 @@ pub fn markdown(pages: &[(&str, &Transcript)]) -> String {
     pages.join("\n")
 }
 
-/// A transcribed page to put in a PDF: its name, its file's bytes and its transcript.
+/// A transcribed page to put in a PDF: its name, its cleaned image and its transcript.
 pub struct PdfPage<'a> {
     pub name: &'a str,
-    pub bytes: &'a [u8],
+    /// [`crate::Loaded::cleaned`], embedded as it is.
+    pub jpeg: &'a [u8],
+    /// The JPEG's size in pixels.
+    pub size: (u32, u32),
     pub transcript: &'a Transcript,
 }
 
-/// `pages` as a searchable PDF, in order: each cleaned with `params`, under an invisible text
-/// layer. Their [`markdown`] is embedded as `markdown_name`.
-pub fn pdf(
-    pages: &[PdfPage],
-    params: &CleanParams,
-    markdown_name: &str,
-) -> Result<Vec<u8>, String> {
-    let images = pages
-        .par_iter()
-        .map(|page| {
-            let photo = crate::decode(page.bytes)
-                .map_err(|err| format!("Couldn't decode {}: {err}", page.name))?;
-            let rgb: RgbImage = crate::clean(&photo, params).image.convert();
-            Ok((crate::ocr::jpeg(&rgb, PDF_JPEG_QUALITY), rgb.dimensions()))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-
+/// `pages` as a searchable PDF, in order: each page's image under an invisible text layer. Their
+/// [`markdown`] is embedded as `markdown_name`.
+pub fn pdf(pages: &[PdfPage], markdown_name: &str) -> Result<Vec<u8>, String> {
     let font = Font::new(FONT.into(), 0).expect("the bundled font parses");
     let face = ttf_parser::Face::parse(FONT, 0).expect("the bundled font parses");
     let mut document = Document::new();
-    for (page, (jpeg, (w, h))) in pages.iter().zip(images) {
+    for page in pages {
+        let (w, h) = page.size;
         let size = (w as f32 / PDF_DPI * 72.0, h as f32 / PDF_DPI * 72.0);
         let settings = PageSettings::from_wh(size.0, size.1)
             .ok_or_else(|| format!("{} is an empty image", page.name))?;
         let mut pdf_page = document.start_page_with(settings);
         let mut surface = pdf_page.surface();
-        let image = Image::from_jpeg(jpeg.into(), true)
+        let image = Image::from_jpeg(page.jpeg.to_vec().into(), true)
             .map_err(|err| format!("Couldn't embed {}: {err}", page.name))?;
         surface.draw_image(image, Size::from_wh(size.0, size.1).expect("checked above"));
         surface.set_fill(Some(Fill {
