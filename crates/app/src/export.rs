@@ -74,6 +74,9 @@ pub struct Export {
     running: Option<Running>,
     /// What the last export did, or why it failed.
     status: Option<Result<String, String>>,
+    /// The save dialog was opened since [`Self::take_asked_where`] last looked. It holds up the
+    /// frame that opens it until the user closes it.
+    asked_where: bool,
 }
 
 impl Export {
@@ -94,6 +97,11 @@ impl Export {
 
     pub fn status(&self) -> Option<&Result<String, String>> {
         self.status.as_ref()
+    }
+
+    /// Whether the save dialog has been opened since this was last called.
+    pub fn take_asked_where(&mut self) -> bool {
+        std::mem::take(&mut self.asked_where)
     }
 
     /// How many pages the running export covers, if one is running.
@@ -194,7 +202,11 @@ impl Export {
             Format::MarkdownClipboard => None,
             Format::MarkdownFile | Format::Pdf => {
                 let suggested = suggested_name(&in_scope, settings.scope, settings.format);
-                let path = path.or_else(|| self.save_path.as_ref().and_then(|ask| ask(&suggested)));
+                let path = path.or_else(|| {
+                    let ask = self.save_path.as_ref()?;
+                    self.asked_where = true;
+                    ask(&suggested)
+                });
                 if path.is_none() {
                     // Cancelled, or there's no save dialog.
                     return;

@@ -35,6 +35,9 @@ model are used; this one's is preferred.";
 /// The button that retranscribes a page, skipping the cache.
 const FORCE_LABEL: &str = "Force retranscription";
 
+/// Frames taking longer than this, in seconds, are logged.
+const SLOW_FRAME_SECS: f32 = 0.05;
+
 /// Transcribe all asks first when it would send more pages than this.
 const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 
@@ -168,6 +171,14 @@ impl NotebookApp {
     /// Whether any page is loading, or any image is being decoded for the viewer.
     pub fn loading(&self) -> bool {
         self.ingest.pending() > 0 || self.decodes.jobs.running() > 0
+    }
+
+    /// How long the last frame took, given its `cpu_usage` in seconds, if it was slow enough to log
+    /// and not because it waited for the user in the save dialog. Call once per frame: it forgets
+    /// the dialog was opened.
+    pub fn frame_time_for_logs(&mut self, cpu_usage: Option<f32>) -> Option<f32> {
+        let waited = self.export.take_asked_where();
+        cpu_usage.filter(|&secs| secs > SLOW_FRAME_SECS && !waited)
     }
 
     /// What's been transcribed and corrected this session, for judging the models.
@@ -998,8 +1009,8 @@ fn color_image(img: &RgbaImage) -> egui::ColorImage {
 impl eframe::App for NotebookApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         // Covers the previous frame's ui and paint, including texture uploads.
-        if let Some(cpu) = frame.info().cpu_usage.filter(|&s| s > 0.05) {
-            log::debug!("slow frame: {:.0} ms", cpu * 1000.0);
+        if let Some(secs) = self.frame_time_for_logs(frame.info().cpu_usage) {
+            log::debug!("slow frame: {:.0} ms", secs * 1000.0);
         }
         NotebookApp::ui(self, ui);
     }

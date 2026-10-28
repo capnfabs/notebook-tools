@@ -1285,6 +1285,43 @@ fn reexport_overwrites_the_same_file() {
 }
 
 #[test]
+fn time_in_the_save_dialog_isnt_a_slow_frame() {
+    // Cancelled.
+    let save_path: SavePath = Arc::new(|_| None);
+    let mut harness = harness_for(
+        NotebookApp::with_transcription(Some(transcriber()), None).with_save_path(save_path),
+    );
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert_eq!(
+        harness.state_mut().frame_time_for_logs(Some(0.2)),
+        Some(0.2)
+    );
+    assert_eq!(
+        harness.state_mut().frame_time_for_logs(Some(0.01)),
+        None,
+        "fast"
+    );
+
+    export(&mut harness, &["Markdown to clipboard"]);
+    step_until(&mut harness, "Copied a.png");
+    assert_eq!(
+        harness.state_mut().frame_time_for_logs(Some(0.2)),
+        Some(0.2),
+        "no dialog"
+    );
+
+    export(&mut harness, &["Markdown to file"]);
+    settle(&mut harness);
+    assert_eq!(harness.state_mut().frame_time_for_logs(Some(5.0)), None);
+    assert_eq!(
+        harness.state_mut().frame_time_for_logs(Some(0.2)),
+        Some(0.2),
+        "only the frame that opened it"
+    );
+}
+
+#[test]
 fn export_defaults_to_everything_as_markdown_on_the_clipboard() {
     let mut harness = harness_with(transcriber());
     drop_files(&mut harness, &[("a.png", page_photo())]);
