@@ -91,6 +91,10 @@ impl Export {
         self.dialog_open = true;
     }
 
+    pub fn dialog_open(&self) -> bool {
+        self.dialog_open
+    }
+
     pub fn can_reexport(&self) -> bool {
         self.last.is_some()
     }

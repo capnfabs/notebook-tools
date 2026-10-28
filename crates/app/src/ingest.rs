@@ -1,6 +1,7 @@
-//! Reads files dropped onto the window, and loads each one ([`Loaded::new`]) off the UI thread:
+//! Reads files dropped onto the window or picked with Add Pages…, and loads each one ([`Loaded::new`]) off the UI thread:
 //! decoding and cleaning a big photo takes a while. Finished loads come out of [`Ingest::next`].
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
@@ -9,8 +10,12 @@ use notebook_core::{CleanParams, DecodeError, Loaded};
 use crate::jobs::Jobs;
 use crate::transcribe::Waker;
 
-/// A dropped file's name and contents, or why it couldn't be read.
+/// A dropped or picked file's name and contents, or why it couldn't be read.
 pub type Received = (String, Result<Vec<u8>, String>);
+
+/// Asks which files to add as pages: none if the user cancelled. Tests stand in for the file
+/// picker.
+pub type PickFiles = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
 /// Loads a page from its file's bytes. Tests stand in for [`Loaded::new`] to hold loads up.
 pub type Load = Arc<dyn Fn(&[u8], &CleanParams) -> Result<Loaded, DecodeError> + Send + Sync>;
@@ -49,12 +54,17 @@ impl Ingest {
     /// go at the end in the order they're added.
     pub fn read_drops(&self, ctx: &egui::Context) -> Vec<Received> {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let mut received: Vec<Received> = dropped
+        let received = dropped
             .iter()
-            .map(|file| (file_name(&**file), file.bytes()))
-            .collect();
-        received.sort_by(|a, b| a.0.cmp(&b.0));
-        received
+            .map(|file| (file_name(file.path()), file.bytes()));
+        by_name(received.collect())
+    }
+
+    /// The files at `paths`, in filename order like [`Self::read_drops`].
+    pub fn read_paths(paths: &[PathBuf]) -> Vec<Received> {
+        let read = |path: &PathBuf| std::fs::read(path).map_err(|e| e.to_string());
+        let received = paths.iter().map(|path| (file_name(path), read(path)));
+        by_name(received.collect())
     }
 
     /// Starts loading the page named `name`.
@@ -78,8 +88,12 @@ impl Ingest {
     }
 }
 
-fn file_name(file: &dyn egui::DroppedFile) -> String {
-    let path = file.path();
+fn by_name(mut received: Vec<Received>) -> Vec<Received> {
+    received.sort_by(|a, b| a.0.cmp(&b.0));
+    received
+}
+
+fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),

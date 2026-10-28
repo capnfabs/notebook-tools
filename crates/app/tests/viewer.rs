@@ -10,7 +10,10 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, SavePath, Transcriber};
+use notebook_app::{
+    Command, Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath,
+    Transcriber,
+};
 use notebook_core::Loaded;
 use notebook_core::cache::Cache;
 use notebook_core::compare;
@@ -326,9 +329,15 @@ fn painted_3pt(harness: &Harness<'_, NotebookApp>) -> (Vec<egui::Rangef>, Vec<eg
 }
 
 fn press_command(harness: &mut Harness<'_, NotebookApp>, key: egui::Key) {
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, key);
+    press(harness, egui::Modifiers::COMMAND, key);
+}
+
+fn press(harness: &mut Harness<'_, NotebookApp>, modifiers: egui::Modifiers, key: egui::Key) {
+    harness.key_press_modifiers(modifiers, key);
     settle(harness);
 }
+
+const COMMAND_SHIFT: egui::Modifiers = egui::Modifiers::COMMAND.plus(egui::Modifiers::SHIFT);
 
 /// The labels of the thumbnails marked selected.
 fn selected_thumbnails(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
@@ -503,7 +512,7 @@ fn debug_overlay_shows_what_cleanup_found() {
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     assert!(harness.query_by_label_contains("Page outline").is_none());
 
-    harness.get_by_label("Debug").click();
+    harness.state_mut().queue(Command::ToggleDebug);
     settle(&mut harness);
     harness.get_by_label_contains("Page outline: (");
     harness.get_by_label_contains("Black / white point");
@@ -520,7 +529,7 @@ fn controls_without_a_transcriber() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png())]);
 
-    for label in ["Original", "Cleaned", "Debug", "Delete"] {
+    for label in ["Original", "Cleaned", "Delete"] {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
@@ -809,7 +818,7 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     let mut harness = harness_with_cache(transcriber, &dir);
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    // Its label, then the dropdown (named by the label), then Debug, in a row.
+    // Its label, then the dropdown (named by the label), then Sort by name, in a row.
     let label = harness
         .query_all_by_role(Role::Label)
         .find(|n| n.value().as_deref() == Some("Transcription model"))
@@ -821,10 +830,10 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
         let node = harness.get_by_label(label);
         node.accesskit_node().bounding_box().unwrap()
     };
-    let (combo, debug) = (bounds("Transcription model"), bounds("Debug"));
+    let (combo, sort) = (bounds("Transcription model"), bounds("Sort by name"));
     assert!(
-        label.x1 <= combo.x0 && combo.x1 <= debug.x0,
-        "{label:?} {combo:?} {debug:?}"
+        label.x1 <= combo.x0 && combo.x1 <= sort.x0,
+        "{label:?} {combo:?} {sort:?}"
     );
     assert!(
         label.y0 < combo.y1 && combo.y0 < label.y1,
@@ -1616,4 +1625,274 @@ fn export_follows_page_order() {
     let b = copied.find("<!-- b.png -->").unwrap();
     let a = copied.find("<!-- a.png -->").unwrap();
     assert!(b < a, "{copied}");
+}
+
+#[test]
+fn arrows_select_the_previous_and_next_page() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", png()), ("b.png", png()), ("c.png", png())],
+    );
+    let none = egui::Modifiers::NONE;
+
+    // Already first.
+    press(&mut harness, none, egui::Key::ArrowLeft);
+    harness.get_by_label("Current: a.png");
+    for _ in 0..3 {
+        press(&mut harness, none, egui::Key::ArrowRight);
+    }
+    harness.get_by_label("Current: c.png");
+    press(&mut harness, none, egui::Key::ArrowLeft);
+    harness.get_by_label("Current: b.png");
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png"]);
+}
+
+#[test]
+fn command_numbers_switch_the_view() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    press_command(&mut harness, egui::Key::Num2);
+    harness.get_by_label("Current: a.png (cleaned)");
+    press_command(&mut harness, egui::Key::Num1);
+    harness.get_by_label("Current: a.png");
+    press_command(&mut harness, egui::Key::Num3);
+    step_until(&mut harness, "# Thurs 23 Oct");
+
+    press_command(&mut harness, egui::Key::Num1);
+    press_command(&mut harness, egui::Key::Num3);
+    harness.get_by_label_contains("# Thurs 23 Oct");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn command_backspace_deletes_the_page() {
+    let mut harness = harness_with(transcriber());
+    drop_files(
+        &mut harness,
+        &[("a.png", page_photo()), ("b.png", png()), ("c.png", png())],
+    );
+    press_command(&mut harness, egui::Key::Backspace);
+    assert_eq!(thumbnails(&harness), ["b.png", "c.png"]);
+
+    // A transcribed page asks first, and nothing else happens until it's answered.
+    show_transcript(&mut harness);
+    press_command(&mut harness, egui::Key::Backspace);
+    harness.get_by_label("Delete b.png and its transcript?");
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    press_command(&mut harness, egui::Key::Num1);
+    harness.get_by_label("Cancel").click();
+    settle(&mut harness);
+    assert_eq!(thumbnails(&harness), ["b.png", "c.png"]);
+    harness.get_by_label("Current: b.png (cleaned)");
+}
+
+#[test]
+fn command_t_transcribes_or_says_how_to_retranscribe() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    press_command(&mut harness, egui::Key::T);
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    press_command(&mut harness, egui::Key::T);
+    harness.get_by_label_contains("a.png is already transcribed.");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // It goes after a few seconds.
+    harness.run_steps(20);
+    assert!(
+        harness
+            .query_by_label_contains("already transcribed")
+            .is_none()
+    );
+}
+
+#[test]
+fn command_t_retries_a_failed_page() {
+    let answers = vec![Err(overloaded()), Ok(recorded())];
+    let (fetch, calls) = answering(answers, Duration::ZERO);
+    let mut harness = harness_with(Transcriber::new(fetch));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+
+    press_command(&mut harness, egui::Key::T);
+    step_until(&mut harness, "Couldn't transcribe a.png");
+    press_command(&mut harness, egui::Key::T);
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn command_shift_t_forces_retranscription() {
+    let answers = vec![Ok(recorded()), Ok(recorded_fixture("fallback"))];
+    let (fetch, calls) = answering(answers, Duration::ZERO);
+    let mut harness = cached_harness(fetch, &cache_dir("command_shift_t"));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    press(&mut harness, COMMAND_SHIFT, egui::Key::T);
+    step_until(&mut harness, "by claude-opus-4-8");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    // A corrected page asks first.
+    correct_plumber(&mut harness);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::T);
+    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
+    harness.get_by_label("Cancel").click();
+    settle(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn command_e_exports_then_reexports() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-command-e/a.md");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::remove_file(&path).ok();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let save_path: SavePath = {
+        let (asked, path) = (asked.clone(), path.clone());
+        Arc::new(move |_| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            Some(path.clone())
+        })
+    };
+    let mut harness = harness_for(
+        NotebookApp::with_transcription(Some(transcriber()), None).with_save_path(save_path),
+    );
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    // Nothing to repeat yet, so it asks.
+    press_command(&mut harness, egui::Key::E);
+    for option in ["Current page", "Markdown to file", "Go"] {
+        harness.get_by_label(option).click();
+        settle(&mut harness);
+    }
+    step_until(&mut harness, "Exported a.png to ");
+
+    correct_plumber(&mut harness);
+    press_command(&mut harness, egui::Key::E);
+    assert!(harness.query_by_label("Go").is_none());
+    step_until(&mut harness, "Exported a.png to ");
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(written.contains("ring the plumbers re:"), "{written}");
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+
+    // Export… always asks.
+    press(&mut harness, COMMAND_SHIFT, egui::Key::E);
+    harness.get_by_label("Go");
+}
+
+#[test]
+fn add_pages_adds_the_picked_files() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-add-pages");
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths = vec![dir.join("b.png"), dir.join("a.png")];
+    for path in &paths {
+        std::fs::write(path, png()).unwrap();
+    }
+    let pick_files: PickFiles = Arc::new(move || paths.clone());
+    let mut harness = harness_for(NotebookApp::default().with_file_picker(pick_files));
+
+    press(&mut harness, COMMAND_SHIFT, egui::Key::I);
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+    assert_eq!(harness.state_mut().frame_time_for_logs(Some(1.0)), None);
+}
+
+#[test]
+fn editing_keys_stay_with_the_text_field() {
+    let mut harness = Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut NotebookApp| app.ui(ui),
+        NotebookApp::with_transcription(Some(transcriber()), None),
+    );
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    show_transcript(&mut harness);
+    harness.run_steps(30);
+    let line = harness.get_by_label("# Thurs 23 Oct");
+    line.click();
+    line.click();
+    harness.run_ok();
+    harness.get_by_role(Role::TextInput);
+
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    press_command(&mut harness, egui::Key::Backspace);
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+    harness.get_by_label("Current: a.png (cleaned)");
+    harness.get_by_role(Role::TextInput);
+}
+
+#[test]
+fn enter_picks_the_affirmative_button() {
+    let (fetch, calls) = counting_fetch();
+    let mut harness = harness_with(Transcriber::new(fetch));
+    let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
+    let mut files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
+    files[0].1 = page_photo();
+    drop_files(&mut harness, &files);
+    let enter = |harness: &mut Harness<'_, NotebookApp>| {
+        harness.key_press(egui::Key::Enter);
+        settle(harness);
+    };
+
+    harness.get_by_label("Transcribe all").click();
+    settle(&mut harness);
+    harness.get_by_label("Transcribe 6 pages?");
+    enter(&mut harness);
+    step_until_transcribed(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 6);
+
+    // Dangerous ones too.
+    show_transcript(&mut harness);
+    correct_plumber(&mut harness);
+    harness.get_by_label("Force retranscription").click();
+    settle(&mut harness);
+    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
+    enter(&mut harness);
+    step_until_transcribed(&mut harness);
+    assert_eq!(calls.load(Ordering::SeqCst), 7);
+
+    harness.get_by_label("Export").click();
+    settle(&mut harness);
+    enter(&mut harness);
+    step_until(&mut harness, "Copied 6 pages to the clipboard");
+
+    harness.get_by_label("Delete").click();
+    settle(&mut harness);
+    harness.get_by_label("Delete a.png and its transcript?");
+    enter(&mut harness);
+    assert_eq!(thumbnails(&harness), &names[1..]);
+}
+
+#[test]
+fn enter_does_nothing_while_the_affirmative_button_is_disabled() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Export").click();
+    settle(&mut harness);
+    harness.get_by_label("Not transcribed yet: b.png");
+    harness.key_press(egui::Key::Enter);
+    settle(&mut harness);
+    harness.get_by_label("Go");
+    assert!(harness.query_by_label_contains("Copied").is_none());
+}
+
+#[test]
+fn enter_is_the_focused_widgets() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("Delete").click();
+    settle(&mut harness);
+    harness.get_by_label("Cancel").focus();
+    settle(&mut harness);
+    harness.key_press(egui::Key::Enter);
+    settle(&mut harness);
+    assert!(harness.query_by_label_contains("Delete a.png").is_none());
+    assert_eq!(thumbnails(&harness), ["a.png"]);
 }

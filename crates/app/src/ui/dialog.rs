@@ -1,8 +1,9 @@
 //! Modal dialogs laid out the macOS way: buttons at the bottom right, the affirmative one
-//! rightmost.
+//! rightmost. Enter picks the affirmative button, unless a widget has the keyboard focus, and
+//! Escape cancels.
 
 use eframe::egui;
-use egui::{Align, Color32, Layout, RichText};
+use egui::{Align, Color32, Key, Layout, Modifiers, RichText};
 
 /// Space between a dialog's edge and its contents.
 const PADDING: f32 = 20.0;
@@ -50,13 +51,17 @@ pub fn show(
 }
 
 /// Cancel and the affirmative button, bottom right with the affirmative one rightmost. It's
-/// disabled unless `enabled`.
+/// disabled unless `enabled`. Enter clicks it, even when it's dangerous, as on macOS, unless
+/// something has the keyboard focus: then Enter is that widget's, as usual.
 pub fn buttons(
     ui: &mut egui::Ui,
     affirmative: &str,
     action: Action,
     enabled: bool,
 ) -> Option<Choice> {
+    let unfocused = ui.memory(|m| m.focused().is_none());
+    let entered =
+        enabled && unfocused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     ui.add_space(PADDING / 2.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let visuals = ui.visuals();
@@ -66,7 +71,7 @@ pub fn buttons(
         };
         let button = egui::Button::new(RichText::new(affirmative).color(text)).fill(fill);
         // Right to left, so the first added is rightmost.
-        let affirmative = ui.add_enabled(enabled, button).clicked();
+        let affirmative = ui.add_enabled(enabled, button).clicked() || entered;
         let cancel = ui.button("Cancel").clicked();
         match (affirmative, cancel) {
             (true, _) => Some(Choice::Affirmative),

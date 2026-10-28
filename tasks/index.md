@@ -20,15 +20,16 @@
 - [x] [Background decoding](background-decoding.md)
 - [x] [Downscale on load](downscale-on-load.md)
 - [x] [HEIC decoding](heic-decoding.md)
+- [x] [Mac menu bar](mac-menu.md)
 
 ## features
 
 ## polish
-- [ ] [Mac menu bar](mac-menu.md)
 - [ ] [Manual page detection tooling](manual-page-detection.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 
+- [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [Prune the transcription cache](prune-cache.md)
 - [ ] [Multi-model handling](multi-model.md)

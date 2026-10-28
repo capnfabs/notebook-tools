@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use eframe::egui;
 use egui::{
-    Align, Color32, Key, Label, Layout, Modifiers, Pos2, Rect, RichText, Shape, Stroke, TextStyle,
+    Align, Color32, Label, Layout, Pos2, Rect, Response, RichText, Shape, Stroke, TextStyle,
     TextWrapMode, TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetText,
 };
 use jiff::tz::TimeZone;
@@ -13,9 +13,10 @@ use notebook_core::llm_model::Model;
 use notebook_core::transcript::Transcript;
 use notebook_core::{CleanParams, Page, Pages, RgbaImage, decode, shrink_to_fit};
 
+use crate::command::{Command, CommandState, EguiKeys, Frontend};
 use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
-use crate::ingest::{Ingest, Load};
+use crate::ingest::{Ingest, Load, PickFiles, Received};
 use crate::jobs::Jobs;
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions, Waker};
@@ -40,6 +41,9 @@ const SLOW_FRAME_SECS: f32 = 0.05;
 
 /// Transcribe all asks first when it would send more pages than this.
 const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
+
+/// How long a hint stays in the status line, in seconds.
+const HINT_SECS: f64 = 4.0;
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -81,6 +85,15 @@ impl Showing {
             Self::Full(texture) => Some(texture),
             Self::Placeholder(texture) => texture.as_ref(),
         }
+    }
+}
+
+/// Where the user's commands come from: egui's key presses unless there's a native menu bar.
+struct Input(Box<dyn Frontend>);
+
+impl Default for Input {
+    fn default() -> Self {
+        Self(Box::new(EguiKeys))
     }
 }
 
@@ -140,6 +153,15 @@ pub struct NotebookApp {
     /// The corrected page the user asked to retranscribe, until they confirm.
     confirm_force: Option<String>,
     eval_log: EvalLog,
+    input: Input,
+    /// Commands to run next frame.
+    queued: Vec<Command>,
+    /// Asks which files to add as pages. Without one, Add Pages… is disabled.
+    pick_files: Option<PickFiles>,
+    /// The file picker was opened since [`Self::frame_time_for_logs`] last looked.
+    asked_which_files: bool,
+    /// A passing note for the status line, and the time (`InputState::time`) it goes.
+    hint: Option<(String, f64)>,
 }
 
 impl NotebookApp {
@@ -160,6 +182,27 @@ impl NotebookApp {
         }
     }
 
+    /// Asks which files to add with `pick_files`, for Add Pages….
+    pub fn with_file_picker(self, pick_files: PickFiles) -> Self {
+        Self {
+            pick_files: Some(pick_files),
+            ..self
+        }
+    }
+
+    /// Takes commands from `frontend`, such as the native menu bar, instead of egui's key presses.
+    pub fn with_frontend(self, frontend: Box<dyn Frontend>) -> Self {
+        Self {
+            input: Input(frontend),
+            ..self
+        }
+    }
+
+    /// Runs `command` next frame, if it's enabled then.
+    pub fn queue(&mut self, command: Command) {
+        self.queued.push(command);
+    }
+
     /// Loads dropped pages with `load` rather than [`notebook_core::Loaded::new`].
     pub fn with_loader(self, load: Load) -> Self {
         Self {
@@ -174,10 +217,10 @@ impl NotebookApp {
     }
 
     /// How long the last frame took, given its `cpu_usage` in seconds, if it was slow enough to log
-    /// and not because it waited for the user in the save dialog. Call once per frame: it forgets
-    /// the dialog was opened.
+    /// and not because it waited for the user in the save dialog or file picker. Call once per
+    /// frame: it forgets the dialog was opened.
     pub fn frame_time_for_logs(&mut self, cpu_usage: Option<f32>) -> Option<f32> {
-        let waited = self.export.take_asked_where();
+        let waited = self.export.take_asked_where() | std::mem::take(&mut self.asked_which_files);
         cpu_usage.filter(|&secs| secs > SLOW_FRAME_SECS && !waited)
     }
 
@@ -197,6 +240,7 @@ impl NotebookApp {
             self.ingest.set_waker(waker.clone());
             self.decodes.jobs.set_waker(waker);
         }
+        self.run_commands(&ctx);
         self.add_dropped(&ctx);
         self.add_loaded(&ctx);
         self.show_decoded(&ctx);
@@ -222,12 +266,147 @@ impl NotebookApp {
         } else {
             self.viewer(ui);
         }
+        let states = self.command_states(&ctx);
+        self.input.0.sync(&|c| states[c as usize]);
     }
 
-    /// Adds the files dropped this frame as pages, and starts loading them. Pages are usable
-    /// before they've loaded: they can be moved, deleted and transcribed.
+    /// What `command` can do right now. Menus, key presses and [`Self::queue`] all go by this.
+    pub fn command_state(&self, ctx: &egui::Context, command: Command) -> CommandState {
+        let spec = command.spec();
+        let index = self.selected_index();
+        let page = self.pages.get(index);
+        let can_transcribe = self.transcriptions.available();
+        let can_export = can_transcribe && self.export.running().is_none();
+        let possible = match command {
+            Command::AddPages => self.pick_files.is_some(),
+            Command::Export | Command::ExportAs => page.is_some() && can_export,
+            Command::ViewOriginal | Command::ViewCleaned | Command::ToggleDebug => page.is_some(),
+            Command::ViewTranscribed | Command::Transcribe => page.is_some() && can_transcribe,
+            Command::ForceRetranscribe => {
+                can_transcribe
+                    && page.is_some_and(|p| {
+                        p.transcript.is_some() && !self.transcriptions.queued_or_running(&p.name)
+                    })
+            }
+            Command::TranscribeAll => can_transcribe && !self.untranscribed().is_empty(),
+            Command::PreviousPage | Command::MoveLeft => page.is_some() && index > 0,
+            Command::NextPage | Command::MoveRight => index + 1 < self.pages.len(),
+            Command::SortByName => !self.pages.is_sorted(),
+            Command::Delete => page.is_some(),
+        };
+        let typing = spec.edits_text && ctx.egui_wants_keyboard_input();
+        let checked = match command {
+            Command::ViewOriginal => Some(self.view == View::Original),
+            Command::ViewCleaned => Some(self.view == View::Cleaned),
+            Command::ViewTranscribed => Some(self.view == View::Transcribed),
+            Command::ToggleDebug => Some(self.debug),
+            _ => None,
+        };
+        let title = match command {
+            Command::Export if self.export.can_reexport() => "Re-export",
+            _ => spec.label,
+        };
+        CommandState {
+            enabled: possible && !typing && !self.dialog_open(),
+            checked,
+            title,
+        }
+    }
+
+    /// [`Self::command_state`] for each command, indexed by `command as usize`.
+    fn command_states(&self, ctx: &egui::Context) -> [CommandState; Command::ALL.len()] {
+        Command::ALL.map(|c| self.command_state(ctx, c))
+    }
+
+    /// Whether a dialog is waiting for an answer. Commands wait for it too.
+    fn dialog_open(&self) -> bool {
+        self.confirm_delete.is_some()
+            || self.confirm_force.is_some()
+            || self.confirm_transcribe_all
+            || self.export.dialog_open()
+    }
+
+    /// Runs the commands queued and given since the last frame.
+    fn run_commands(&mut self, ctx: &egui::Context) {
+        let states = self.command_states(ctx);
+        let mut commands = std::mem::take(&mut self.queued);
+        commands.extend(self.input.0.poll(ctx, &|c| states[c as usize]));
+        for command in commands {
+            self.run(ctx, command);
+        }
+    }
+
+    /// Does what `command` says, if it's enabled.
+    fn run(&mut self, ctx: &egui::Context, command: Command) {
+        if !self.command_state(ctx, command).enabled {
+            return;
+        }
+        let index = self.selected_index();
+        match command {
+            Command::AddPages => self.add_picked(),
+            Command::Export if self.export.can_reexport() => {
+                self.export.reexport(ctx, &self.pages, index);
+            }
+            Command::Export | Command::ExportAs => self.export.open_dialog(),
+            Command::ViewOriginal => self.set_view(View::Original),
+            Command::ViewCleaned => self.set_view(View::Cleaned),
+            Command::ViewTranscribed => self.set_view(View::Transcribed),
+            Command::PreviousPage => self.select(index - 1),
+            Command::NextPage => self.select(index + 1),
+            Command::ToggleDebug => self.debug = !self.debug,
+            Command::Transcribe => self.transcribe_shown(ctx),
+            Command::ForceRetranscribe => {
+                self.set_view(View::Transcribed);
+                self.request_force(index);
+            }
+            Command::TranscribeAll => self.request_transcribe_all(),
+            Command::MoveLeft => self.move_page(index, index - 1),
+            Command::MoveRight => self.move_page(index, index + 1),
+            Command::SortByName => self.sort_pages(),
+            Command::Delete => self.request_delete(),
+        }
+    }
+
+    /// Shows `text` in the status line for a few seconds.
+    fn show_hint(&mut self, ctx: &egui::Context, text: String) {
+        let now = ctx.input(|i| i.time);
+        self.hint = Some((text, now + HINT_SECS));
+    }
+
+    fn select(&mut self, index: usize) {
+        if let Some(page) = self.pages.get(index) {
+            self.selected = Some(page.name.clone());
+        }
+    }
+
+    /// Switching to the Transcribed view transcribes the page shown.
+    fn set_view(&mut self, view: View) {
+        let switched = self.view != view;
+        self.view = view;
+        if switched && view == View::Transcribed {
+            self.transcribe_selected();
+        }
+    }
+
+    /// Asks which files to add, and adds them as pages.
+    fn add_picked(&mut self) {
+        let Some(pick_files) = self.pick_files.clone() else {
+            return;
+        };
+        self.asked_which_files = true;
+        let received = Ingest::read_paths(&pick_files());
+        self.add_received(received);
+    }
+
+    /// Adds the files dropped this frame as pages.
     fn add_dropped(&mut self, ctx: &egui::Context) {
         let received = self.ingest.read_drops(ctx);
+        self.add_received(received);
+    }
+
+    /// Adds `received` as pages, and starts loading them. Pages are usable before they've
+    /// loaded: they can be moved, deleted and transcribed.
+    fn add_received(&mut self, received: Vec<Received>) {
         if !received.is_empty() {
             self.errors.clear();
         }
@@ -365,6 +544,15 @@ impl NotebookApp {
         }
     }
 
+    /// Transcribes every untranscribed page, asking first if there are many.
+    fn request_transcribe_all(&mut self) {
+        if self.untranscribed().len() > TRANSCRIBE_ALL_CONFIRM_ABOVE {
+            self.confirm_transcribe_all = true;
+        } else {
+            self.transcribe_all();
+        }
+    }
+
     fn transcribe_all_dialog(&mut self, ctx: &egui::Context) {
         if !self.confirm_transcribe_all {
             return;
@@ -390,6 +578,20 @@ impl NotebookApp {
         }
     }
 
+    /// Retranscribes page `index`, asking first if it's been corrected.
+    fn request_force(&mut self, index: usize) {
+        let Some(page) = self.pages.get(index) else {
+            return;
+        };
+        let corrected = page.transcript.as_ref().is_some_and(Transcript::corrected);
+        let name = page.name.clone();
+        if corrected {
+            self.confirm_force = Some(name);
+        } else {
+            self.force(&name);
+        }
+    }
+
     fn force_dialog(&mut self, ctx: &egui::Context) {
         let Some(name) = self.confirm_force.clone() else {
             return;
@@ -411,10 +613,41 @@ impl NotebookApp {
     /// Transcribes the selected page, unless it's transcribed, being transcribed, or failed
     /// (which waits for Retry).
     fn transcribe_selected(&mut self) {
-        let Some(page) = self.pages.get(self.selected_index()) else {
+        let index = self.selected_index();
+        let Some(page) = self.pages.get(index) else {
             return;
         };
         if page.transcript.is_none() && self.transcriptions.error(&page.name).is_none() {
+            self.start_transcribing(index);
+        }
+    }
+
+    /// Shows the selected page's transcript, transcribing the page if it isn't, or retrying if
+    /// that failed. If it's transcribed, says how to retranscribe it.
+    fn transcribe_shown(&mut self, ctx: &egui::Context) {
+        self.view = View::Transcribed;
+        let index = self.selected_index();
+        let Some(page) = self.pages.get(index) else {
+            return;
+        };
+        if self.transcriptions.queued_or_running(&page.name) {
+            return;
+        }
+        if page.transcript.is_some() {
+            let force = shortcut_text(ctx, Command::ForceRetranscribe);
+            let hint = format!(
+                "{} is already transcribed. {force} retranscribes it.",
+                page.name
+            );
+            self.show_hint(ctx, hint);
+        } else {
+            self.start_transcribing(index);
+        }
+    }
+
+    /// Sends page `index` to be transcribed, unless it's in the cache.
+    fn start_transcribing(&mut self, index: usize) {
+        if let Some(page) = self.pages.get(index) {
             self.transcriptions
                 .start(&page.name, page.bytes.clone(), self.clean_params.clone());
         }
@@ -439,27 +672,6 @@ impl NotebookApp {
             .pages
             .get(self.selected_index())
             .map(|p| p.name.clone());
-    }
-
-    /// Cmd+Left and Cmd+Right move the selected page one place, unless a text field has the
-    /// keyboard.
-    fn move_keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        let (left, right) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::COMMAND, Key::ArrowLeft),
-                i.consume_key(Modifiers::COMMAND, Key::ArrowRight),
-            )
-        });
-        let index = self.selected_index();
-        if left && index > 0 {
-            self.move_page(index, index - 1);
-        }
-        if right && index + 1 < self.pages.len() {
-            self.move_page(index, index + 1);
-        }
     }
 
     fn selected_index(&self) -> usize {
@@ -495,20 +707,21 @@ impl NotebookApp {
     }
 
     fn viewer(&mut self, ui: &mut egui::Ui) {
-        self.move_keys(ui.ctx());
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.view, View::Original, "Original");
-                ui.selectable_value(&mut self.view, View::Cleaned, "Cleaned");
-                let transcribed = ui
-                    .add_enabled(
-                        self.transcriptions.available(),
-                        egui::Button::selectable(self.view == View::Transcribed, "Transcribed"),
-                    )
-                    .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
-                if transcribed.clicked() && self.view != View::Transcribed {
-                    self.view = View::Transcribed;
-                    self.transcribe_selected();
+                for (view, command) in [
+                    (View::Original, Command::ViewOriginal),
+                    (View::Cleaned, Command::ViewCleaned),
+                    (View::Transcribed, Command::ViewTranscribed),
+                ] {
+                    let enabled = view != View::Transcribed || self.transcriptions.available();
+                    let button = egui::Button::selectable(self.view == view, command.spec().label);
+                    let button = ui
+                        .add_enabled(enabled, button)
+                        .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                    if with_shortcut(button, command).clicked() {
+                        self.set_view(view);
+                    }
                 }
                 ui.separator();
                 let index = self.selected_index();
@@ -521,7 +734,7 @@ impl NotebookApp {
                     ));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Delete").clicked() {
+                    if with_shortcut(ui.button("Delete"), Command::Delete).clicked() {
                         self.request_delete();
                     }
                     let sort =
@@ -529,7 +742,6 @@ impl NotebookApp {
                     if sort.clicked() {
                         self.sort_pages();
                     }
-                    ui.checkbox(&mut self.debug, "Debug");
                     self.model_selector(ui);
                 });
             });
@@ -554,14 +766,14 @@ impl NotebookApp {
                     if !can_transcribe {
                         export = export.on_disabled_hover_text(NO_TRANSCRIBER_HINT);
                     }
-                    if export.clicked() {
+                    if with_shortcut(export, Command::ExportAs).clicked() {
                         self.export.open_dialog();
                     }
                     let reexport = ui.add_enabled(
                         can_export && self.export.can_reexport(),
                         egui::Button::new("Re-export"),
                     );
-                    if reexport.clicked() {
+                    if with_shortcut(reexport, Command::Export).clicked() {
                         self.export
                             .reexport(ui.ctx(), &self.pages, self.selected_index());
                     }
@@ -576,12 +788,8 @@ impl NotebookApp {
                         } else {
                             NO_TRANSCRIBER_HINT
                         });
-                    if transcribe_all.clicked() {
-                        if untranscribed > TRANSCRIBE_ALL_CONFIRM_ABOVE {
-                            self.confirm_transcribe_all = true;
-                        } else {
-                            self.transcribe_all();
-                        }
+                    if with_shortcut(transcribe_all, Command::TranscribeAll).clicked() {
+                        self.request_transcribe_all();
                     }
                 });
             });
@@ -738,10 +946,8 @@ impl NotebookApp {
     fn transcript_status(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) -> Option<Rect> {
         let page = self.pages.get(index)?;
         let transcript = page.transcript.as_ref()?;
-        let name = page.name.clone();
         let when = when_and_by(transcript, &TimeZone::system());
-        let corrected = transcript.corrected();
-        let error = self.transcriptions.error(&name);
+        let error = self.transcriptions.error(&page.name);
         let text = match error {
             Some(err) => RichText::new(format!(
                 "Retranscription failed: {err}. Using the cached version, transcribed {when}."
@@ -769,16 +975,12 @@ impl NotebookApp {
                     ui.set_max_width(text_width);
                     ui.add(Label::new(text).wrap());
                 });
-                ui.button(FORCE_LABEL).clicked()
+                with_shortcut(ui.button(FORCE_LABEL), Command::ForceRetranscribe).clicked()
             })
             .inner
         });
         if scope.inner {
-            if corrected {
-                self.confirm_force = Some(name);
-            } else {
-                self.force(&name);
-            }
+            self.request_force(index);
         }
         Some(scope.response.rect)
     }
@@ -797,17 +999,16 @@ impl NotebookApp {
                 ui.visuals().error_fg_color,
                 format!("Couldn't transcribe {name}: {err}"),
             );
-            ui.button("Retry").clicked()
+            with_shortcut(ui.button("Retry"), Command::Transcribe).clicked()
         } else if self.transcriptions.checking(name) {
             spinner(ui, &format!("Looking for {name} in the cache…"));
             false
         } else {
             ui.label(format!("{name} isn't transcribed yet."));
-            ui.button("Transcribe").clicked()
+            with_shortcut(ui.button("Transcribe"), Command::Transcribe).clicked()
         };
         if start {
-            let params = self.clean_params.clone();
-            self.transcriptions.start(name, page.bytes.clone(), params);
+            self.start_transcribing(index);
         }
     }
 
@@ -885,6 +1086,13 @@ impl NotebookApp {
         }
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);
+        }
+        let now = ui.input(|i| i.time);
+        if let Some((hint, until)) = &self.hint
+            && now < *until
+        {
+            ui.label(hint);
+            ui.ctx().request_repaint_after_secs((*until - now) as f32);
         }
         match self.export.status() {
             Some(Ok(done)) => {
@@ -988,6 +1196,21 @@ fn format_quad(quad: &[[f32; 2]; 4]) -> String {
         .map(|[x, y]| format!("({x:.0}, {y:.0})"))
         .collect();
     corners.join(" ")
+}
+
+/// `command`'s shortcut, as the platform writes it: "⇧⌘T" on a Mac.
+fn shortcut_text(ctx: &egui::Context, command: Command) -> String {
+    let shortcut = command.spec().shortcut;
+    shortcut.map_or_else(String::new, |s| ctx.format_shortcut(&s))
+}
+
+/// `button`, saying on hover which shortcut does the same.
+fn with_shortcut(button: Response, command: Command) -> Response {
+    if command.spec().shortcut.is_none() {
+        return button;
+    }
+    let keys = shortcut_text(&button.ctx, command);
+    button.on_hover_text(keys)
 }
 
 fn spinner(ui: &mut egui::Ui, label: &str) {

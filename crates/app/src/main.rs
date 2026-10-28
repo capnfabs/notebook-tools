@@ -6,10 +6,15 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "notebook-tools",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| {
+        Box::new(|cc| {
             let (transcriber, cache) = transcription();
-            let app =
-                NotebookApp::with_transcription(transcriber, cache).with_save_path(save_dialog());
+            let app = NotebookApp::with_transcription(transcriber, cache)
+                .with_save_path(save_dialog())
+                .with_file_picker(file_picker());
+            #[cfg(target_os = "macos")]
+            let app = app.with_frontend(Box::new(notebook_app::menu::NativeMenu::install(
+                &cc.egui_ctx,
+            )));
             Ok(Box::new(app))
         }),
     )
@@ -31,6 +36,16 @@ fn save_dialog() -> notebook_app::SavePath {
             .add_filter(kind, &[&*extension])
             .set_file_name(suggested)
             .save_file()
+    })
+}
+
+/// Asks which photos to add with the system's open dialog.
+fn file_picker() -> notebook_app::PickFiles {
+    std::sync::Arc::new(|| {
+        rfd::FileDialog::new()
+            .add_filter("Photos", &["jpg", "jpeg", "png", "heic", "heif"])
+            .pick_files()
+            .unwrap_or_default()
     })
 }
 
