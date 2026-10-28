@@ -15,11 +15,20 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Asks where to save with the system's save dialog.
+/// Asks where to save with the system's save dialog, offering the suggested name's file type.
 fn save_dialog() -> notebook_app::SavePath {
     std::sync::Arc::new(|suggested| {
+        let extension = std::path::Path::new(suggested)
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let kind = if extension == "pdf" {
+            "PDF"
+        } else {
+            "Markdown"
+        };
         rfd::FileDialog::new()
-            .add_filter("Markdown", &["md"])
+            .add_filter(kind, &[&*extension])
             .set_file_name(suggested)
             .save_file()
     })

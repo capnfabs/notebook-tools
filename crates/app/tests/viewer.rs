@@ -125,6 +125,26 @@ fn export(harness: &mut Harness<'_, NotebookApp>, options: &[&str]) {
     harness.get_by_label("Go").click();
 }
 
+/// Exports everything to the clipboard as markdown, the dialog's defaults, returning what was
+/// copied.
+fn export_to_clipboard(harness: &mut Harness<'_, NotebookApp>) -> String {
+    export(harness, &[]);
+    // Copied in the frame that says it was.
+    step_until(harness, "to the clipboard");
+    let copied: Vec<String> = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .filter_map(|c| match c {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(copied.len(), 1, "{copied:?}");
+    copied.into_iter().next().unwrap()
+}
+
 /// Corrects the transcript's uncertain "plumber" to "plumbers", from the text.
 fn correct_plumber(harness: &mut Harness<'_, NotebookApp>) {
     harness.get_by_label("plumber").click();
@@ -1091,26 +1111,13 @@ fn exports_markdown_to_the_clipboard() {
     show_transcript(&mut harness);
     correct_plumber(&mut harness);
 
-    export(&mut harness, &["Markdown to clipboard"]);
-    harness.step();
-    let copied: Vec<&str> = harness
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::CopyText(text) => Some(text.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(copied.len(), 1);
+    let copied = export_to_clipboard(&mut harness);
     assert!(
-        copied[0].starts_with("<!-- a.png -->\n# Thurs 23 Oct\n- ring the plumbers re:"),
-        "{}",
-        copied[0]
+        copied.starts_with("<!-- a.png -->\n# Thurs 23 Oct\n- ring the plumbers re:"),
+        "{copied}"
     );
-    harness.run();
     harness.get_by_label("Copied a.png to the clipboard");
+    harness.run();
     assert!(
         !harness
             .get_by_label("Re-export")
@@ -1146,17 +1153,78 @@ fn reexport_overwrites_the_same_file() {
     );
 
     export(&mut harness, &["Current page", "Markdown to file"]);
-    harness.run();
+    step_until(&mut harness, "Exported a.png to ");
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumber re:"), "{written}");
-    harness.get_by_label_contains("Exported a.png to ");
 
     correct_plumber(&mut harness);
     harness.get_by_label("Re-export").click();
-    harness.run();
+    // The frame that starts it still shows the first export's status.
+    harness.step();
+    step_until(&mut harness, "Exported a.png to ");
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumbers re:"), "{written}");
     assert_eq!(asked.load(Ordering::SeqCst), 1, "asked where to save once");
+}
+
+#[test]
+fn export_defaults_to_everything_as_markdown_on_the_clipboard() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    harness.get_by_label("Export").click();
+    harness.run();
+    let options: Vec<String> = harness
+        .get_all_by_role(Role::RadioButton)
+        .map(|node| {
+            let toggled = node.accesskit_node().toggled() == Some(Toggled::True);
+            let label = node.accesskit_node().label().unwrap_or_default();
+            format!("{}{label}", if toggled { "* " } else { "" })
+        })
+        .collect();
+    assert_eq!(
+        options,
+        [
+            "* Everything",
+            "Current page",
+            "* Markdown to clipboard",
+            "Markdown to file",
+            "PDF",
+        ]
+    );
+}
+
+#[test]
+fn exports_a_pdf() {
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-pdf/notebook.pdf");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::remove_file(&path).ok();
+    let save_path: SavePath = {
+        let path = path.clone();
+        Arc::new(move |suggested| {
+            assert_eq!(suggested, "notebook.pdf");
+            Some(path.clone())
+        })
+    };
+    let mut harness = harness_for(
+        NotebookApp::with_transcription(Some(transcriber()), None).with_save_path(save_path),
+    );
+    drop_files(
+        &mut harness,
+        &[("a.png", page_photo()), ("b.png", page_photo())],
+    );
+    harness.get_by_label("Transcribe all").click();
+    step_until_transcribed(&mut harness);
+
+    export(&mut harness, &["Everything", "PDF"]);
+    step_until(&mut harness, "Exported 2 pages to ");
+    let written = std::fs::read(&path).unwrap();
+    assert!(written.starts_with(b"%PDF"));
+    assert!(
+        !harness
+            .get_by_label("Re-export")
+            .accesskit_node()
+            .is_disabled()
+    );
 }
 
 /// macOS order: the affirmative button rightmost, after Cancel.
@@ -1390,18 +1458,7 @@ fn export_follows_page_order() {
 
     press_command(&mut harness, egui::Key::ArrowLeft);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
-    export(&mut harness, &["Everything", "Markdown to clipboard"]);
-    harness.step();
-    let copied = harness
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .find_map(|c| match c {
-            egui::OutputCommand::CopyText(text) => Some(text.clone()),
-            _ => None,
-        })
-        .unwrap();
+    let copied = export_to_clipboard(&mut harness);
     let b = copied.find("<!-- b.png -->").unwrap();
     let a = copied.find("<!-- a.png -->").unwrap();
     assert!(b < a, "{copied}");

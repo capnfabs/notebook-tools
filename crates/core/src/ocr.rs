@@ -169,20 +169,26 @@ fn encode_jpeg_within(img: &RgbaImage, limit: usize) -> Vec<u8> {
     let rgb: RgbImage = img.convert();
     let mut quality = 85;
     loop {
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, quality)
-            .write_image(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                ExtendedColorType::Rgb8,
-            )
-            .expect("encoding a JPEG in memory can't fail");
+        let bytes = jpeg(&rgb, quality);
         if bytes.len().div_ceil(3) * 4 <= limit || quality <= 25 {
             return bytes;
         }
         quality -= 15;
     }
+}
+
+/// `rgb` as a JPEG at `quality` (1-100).
+pub(crate) fn jpeg(rgb: &RgbImage, quality: u8) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    JpegEncoder::new_with_quality(&mut bytes, quality)
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            ExtendedColorType::Rgb8,
+        )
+        .expect("encoding a JPEG in memory can't fail");
+    bytes
 }
 
 /// The Messages API request for transcribing `jpeg` with `model`, thinking at `effort` (see

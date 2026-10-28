@@ -16,9 +16,9 @@
 - [x] [Cache status + force retranscription](cache-status-ui.md)
 - [x] [Transcribe all](transcribe-all.md)
 - [x] [Try Sonnet to save cost](sonnet-accuracy.md)
+- [x] [PDF export](pdf-export.md)
 
 ## features
-- [ ] [PDF export](pdf-export.md)
 
 ## polish
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
@@ -36,5 +36,5 @@
 
 ## polish (difficult)
 - [ ] [Claude auth approach](claude-auth.md)
-- [ ] [Decide: spread detection approach](spread-detection.md)
+- [ ] [Decide: spread detection approach + reading order](spread-detection.md)
 - [ ] [Outline detection: hard photos](outline-detection.md)

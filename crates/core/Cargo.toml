@@ -8,15 +8,23 @@ publish.workspace = true
 base64 = "0.22"
 # Transcriptions are cached on disk, by the photo's hash.
 dirs = "7"
+# egui's bundled font, reused for the PDF's invisible text.
+epaint_default_fonts = "0.37"
 image.workspace = true
 imageproc = { workspace = true, features = ["rayon"] }
+krilla = "0.8"
 log = "0.4"
+# Markdown as plain text, for the PDF's text layer.
+pulldown-cmark = { version = "0.13.5", default-features = false }
 rayon.workspace = true
 reqwest = { version = "0.13", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 similar = "2"
+# Measures text, to stretch each line of the PDF's text layer across its box.
+ttf-parser = "0.25"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
+lopdf = "0.46"

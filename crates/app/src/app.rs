@@ -138,6 +138,7 @@ impl NotebookApp {
             self.errors.clear();
         }
         self.add_next_page(&ctx);
+        self.export.poll(&ctx);
         while let Some(done) = self.transcriptions.next() {
             let index = self.pages.position(&done.name);
             // The page may have been deleted meanwhile. Only a forced retranscription replaces a
@@ -447,21 +448,27 @@ impl NotebookApp {
             ui.horizontal(|ui| {
                 self.status(ui);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // Only transcribed pages can be exported.
+                    // Only transcribed pages can be exported, one export at a time.
                     let can_transcribe = self.transcriptions.available();
-                    let export = ui
-                        .add_enabled(can_transcribe, egui::Button::new("Export"))
-                        .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                    let can_export = can_transcribe && self.export.running().is_none();
+                    let mut export = ui.add_enabled(can_export, egui::Button::new("Export"));
+                    if !can_transcribe {
+                        export = export.on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                    }
                     if export.clicked() {
                         self.export.open_dialog();
                     }
                     let reexport = ui.add_enabled(
-                        can_transcribe && self.export.can_reexport(),
+                        can_export && self.export.can_reexport(),
                         egui::Button::new("Re-export"),
                     );
                     if reexport.clicked() {
-                        self.export
-                            .reexport(ui.ctx(), &self.pages, self.selected_index());
+                        self.export.reexport(
+                            ui.ctx(),
+                            &self.pages,
+                            self.selected_index(),
+                            &self.clean_params,
+                        );
                     }
                     let untranscribed = self.untranscribed().len();
                     let transcribe_all = ui
@@ -506,8 +513,12 @@ impl NotebookApp {
         self.delete_dialog(ui.ctx());
         self.transcribe_all_dialog(ui.ctx());
         self.force_dialog(ui.ctx());
-        self.export
-            .dialog(ui.ctx(), &self.pages, self.selected_index());
+        self.export.dialog(
+            ui.ctx(),
+            &self.pages,
+            self.selected_index(),
+            &self.clean_params,
+        );
 
         if is_hovering_files(ui) {
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
@@ -779,6 +790,11 @@ impl NotebookApp {
             0 => {}
             1 => spinner(ui, "Transcribing 1 page…"),
             n => spinner(ui, &format!("Transcribing {n} pages…")),
+        }
+        match self.export.running() {
+            None => {}
+            Some(1) => spinner(ui, "Exporting 1 page…"),
+            Some(n) => spinner(ui, &format!("Exporting {n} pages…")),
         }
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);

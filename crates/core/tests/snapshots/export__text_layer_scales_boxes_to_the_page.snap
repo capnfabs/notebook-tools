@@ -1,0 +1,42 @@
+---
+source: crates/core/tests/export.rs
+expression: layer
+---
+[
+    PlacedLine {
+        text: "Thurs 23 Oct",
+        rect: [
+            60.0,
+            40.0,
+            305.0,
+            75.0,
+        ],
+    },
+    PlacedLine {
+        text: "ring the plumber re: tap shower",
+        rect: [
+            65.0,
+            95.0,
+            490.0,
+            125.0,
+        ],
+    },
+    PlacedLine {
+        text: "buy eggs",
+        rect: [
+            65.0,
+            135.0,
+            260.0,
+            165.0,
+        ],
+    },
+    PlacedLine {
+        text: "Idea: notebook OCR w/ Claude [drawing: arrow to a box]",
+        rect: [
+            60.0,
+            190.0,
+            575.0,
+            225.0,
+        ],
+    },
+]
