@@ -12,7 +12,7 @@ pub mod transcript;
 
 pub use clean::{
     CleanParams, CleanReport, Cleaned, Cropped, LightingReport, NoOutline, Quad, clean,
-    crop_to_page, detect_outline, order_corners, photo_corners,
+    crop_to_page, detect_outline, is_page_shaped, order_corners, photo_corners,
 };
 pub use decode::{DecodeError, decode};
 pub use image::RgbaImage;

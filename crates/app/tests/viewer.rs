@@ -13,11 +13,11 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use notebook_app::{
     Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath, Transcriber,
 };
-use notebook_core::Loaded;
 use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError};
+use notebook_core::{Loaded, Quad, is_page_shaped};
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -687,6 +687,112 @@ fn escape_stops_placing_corners() {
     );
     assert_near(cleaned_aspect(&harness), before, 0.01);
     assert!(disabled(&harness, "Reset Corners"));
+}
+
+/// Where the corners' handles were painted last frame.
+fn painted_handles(harness: &Harness<'_, NotebookApp>) -> Vec<egui::Pos2> {
+    let circles = harness
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Circle(circle) if circle.radius == 5.0 => Some(circle.center),
+            _ => None,
+        });
+    circles.collect()
+}
+
+/// The four handles' centres, in [`Quad`] order, as a quad. The photo is drawn at the same scale
+/// both ways, so its shape is the outline's.
+fn handles(harness: &Harness<'_, NotebookApp>) -> Quad {
+    let labels = [
+        "Top-left corner",
+        "Top-right corner",
+        "Bottom-right corner",
+        "Bottom-left corner",
+    ];
+    labels.map(|label| {
+        let at = centre(harness, label);
+        [at.x, at.y]
+    })
+}
+
+#[test]
+fn a_corner_stays_where_its_let_go() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    let from = centre(&harness, "Bottom-right corner");
+    let to = on_photo(&harness, 160.0, 75.0);
+    hold(&mut harness, from, to);
+    // Only the frame it's let go in, before the page has its new corners: `drop_at` would run
+    // another after it.
+    harness.event(egui::Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    let painted = painted_handles(&harness);
+    assert!(
+        painted.iter().any(|p| p.distance(to) < 1.0),
+        "{painted:?} doesn't include {to:?}"
+    );
+    assert!(
+        painted.iter().all(|p| p.distance(from) > 1.0),
+        "{painted:?}"
+    );
+}
+
+#[test]
+fn corners_cant_be_dragged_out_of_a_page_shape() {
+    // Into the page, denting it, or past the opposite corner, crossing its sides.
+    for (x, y) in [(130.0, 100.0), (190.0, 145.0)] {
+        let mut harness = harness();
+        cleaned_view(&mut harness);
+        let from = centre(&harness, "Top-left corner");
+        let to = on_photo(&harness, x, y);
+        // In one jump, so it has to find the limit rather than stop short of it.
+        harness.hover_at(from);
+        harness.step();
+        harness.drag_at(from);
+        harness.step();
+        harness.hover_at(to);
+        harness.step();
+        harness.drop_at(to);
+        settle(&mut harness);
+        assert!(
+            is_page_shaped(&handles(&harness)),
+            "{:?}",
+            handles(&harness)
+        );
+        // Stopped at the limit, not sent back where it was.
+        let moved = centre(&harness, "Top-left corner").distance(from);
+        assert!(moved > 20.0, "moved only {moved}");
+        harness.get_by_label("Current: a.png (cleaned)");
+    }
+}
+
+#[test]
+fn a_fourth_corner_that_spoils_the_outline_is_refused() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    harness.get_by_label("Place Corners").click();
+    settle(&mut harness);
+    // The fourth is inside the triangle of the other three.
+    for (x, y) in [(40.0, 20.0), (160.0, 20.0), (40.0, 130.0), (70.0, 50.0)] {
+        let at = on_photo(&harness, x, y);
+        click_at(&mut harness, at);
+    }
+    settle(&mut harness);
+    harness.get_by_label_contains("Those corners don't outline a page");
+    assert!(harness.query_by_label("Top-left corner").is_none());
+
+    let at = on_photo(&harness, 160.0, 130.0);
+    click_at(&mut harness, at);
+    settle(&mut harness);
+    assert!(is_page_shaped(&handles(&harness)));
+    assert_near(cleaned_aspect(&harness), 120.0 / 110.0, 0.05);
 }
 
 #[test]

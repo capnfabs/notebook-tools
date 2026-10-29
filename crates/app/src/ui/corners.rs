@@ -1,10 +1,12 @@
 //! The page's corners over the original photo, joined by its sides. Each corner can be dragged;
-//! or, while placing, the user clicks four new ones. Corners are in the photo's pixels.
+//! or, while placing, the user clicks four new ones. Corners are in the photo's pixels. Only
+//! outlines that can be straightened ([`is_page_shaped`]) are allowed: a dragged corner stops
+//! where it would spoil the shape, and a fourth click that would is refused.
 
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{Color32, CursorIcon, Key, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo};
-use notebook_core::{Quad, order_corners};
+use notebook_core::{Quad, is_page_shaped, order_corners};
 
 /// What each corner's handle is called, in [`Quad`] order.
 pub const LABELS: [&str; 4] = [
@@ -21,17 +23,31 @@ pub const PLACING_LABEL: &str = "Click the page's corners";
 const HANDLE_RADIUS: f32 = 5.0;
 const GRAB_RADIUS: f32 = 10.0;
 
+/// Asks for the corners while they're being clicked in.
+const PLACING_PROMPT: &str = "Click the page's four corners. Esc cancels.";
+
+/// Says why a fourth corner was refused.
+const REFUSED_PROMPT: &str =
+    "Those corners don't outline a page. Click another fourth corner, or Esc to cancel.";
+
+/// How many times a dragged corner halves the distance to where the pointer is, looking for the
+/// furthest it can go without spoiling the outline.
+const CONSTRAIN_STEPS: usize = 12;
+
 /// Corners being clicked in, for the page named `name`.
 struct Placing {
     name: String,
     points: Vec<[f32; 2]>,
+    /// The last fourth corner clicked was refused.
+    refused: bool,
 }
 
-/// Which corner is being dragged, and where it is on screen.
+/// Which corner is being dragged, where it is on screen, and where it is from the pointer.
 #[derive(Clone, Copy)]
 struct Drag {
     corner: usize,
     at: Pos2,
+    grip: Vec2,
 }
 
 #[derive(Default)]
@@ -47,12 +63,18 @@ impl Corners {
         self.placing = Some(Placing {
             name: name.to_owned(),
             points: Vec::new(),
+            refused: false,
         });
     }
 
-    /// Whether new corners are being clicked in for the page named `name`.
-    pub fn placing(&self, name: &str) -> bool {
-        self.placing.as_ref().is_some_and(|p| p.name == name)
+    /// What to tell the user while new corners are being clicked in for the page named `name`.
+    pub fn prompt(&self, name: &str) -> Option<&'static str> {
+        let placing = self.placing.as_ref().filter(|p| p.name == name)?;
+        Some(if placing.refused {
+            REFUSED_PROMPT
+        } else {
+            PLACING_PROMPT
+        })
     }
 
     /// `quad`, the corners of the page named `name`, over its photo of `source_size` pixels drawn
@@ -93,22 +115,40 @@ impl Corners {
                 .interact(handle, id, Sense::drag())
                 .on_hover_cursor(CursorIcon::Grab);
             response.widget_info(|| WidgetInfo::labeled(Role::GraphicsObject, true, label));
-            if response.dragged() {
+            if response.dragged()
+                && let Some(pointer) = response.interact_pointer_pos()
+            {
                 ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-                let at = image_rect.clamp(at + response.drag_delta());
-                self.drag = Some(Drag { corner: i, at });
+                let grip = match self.drag {
+                    Some(drag) if drag.corner == i => drag.grip,
+                    _ => at - ui.input(|i| i.pointer.press_origin()).unwrap_or(pointer),
+                };
+                let wanted = image_rect.clamp(pointer + grip);
+                let fits = |p: Pos2| {
+                    let mut moved = quad;
+                    moved[i] = to_source(p);
+                    is_page_shaped(&moved)
+                };
+                let at = furthest(at, wanted, fits);
+                self.drag = Some(Drag {
+                    corner: i,
+                    at,
+                    grip,
+                });
+                corners[i] = at;
             }
             if response.drag_stopped() {
                 self.drag = None;
+                // Drawn where it was let go, not back where it was, until the new corners come in.
+                corners[i] = at;
+                let mut moved = quad;
+                moved[i] = to_source(at);
                 // A press that didn't move the corner changes nothing.
-                if at.distance(placed[i]) > 0.5 {
-                    let mut moved = quad;
-                    moved[i] = to_source(at);
+                if at.distance(placed[i]) > 0.5 && is_page_shaped(&moved) {
                     changed = Some(order_corners(moved));
+                } else {
+                    corners[i] = placed[i];
                 }
-            }
-            if let Some(drag) = self.drag.filter(|d| d.corner == i) {
-                corners[i] = drag.at;
             }
         }
 
@@ -145,8 +185,13 @@ impl Corners {
             placing.points.push(to_source(pos));
         }
         if let Ok(points) = <[[f32; 2]; 4]>::try_from(placing.points.as_slice()) {
-            self.placing = None;
-            return Some(order_corners(points));
+            let quad = order_corners(points);
+            if is_page_shaped(&quad) {
+                self.placing = None;
+                return Some(quad);
+            }
+            placing.points.pop();
+            placing.refused = true;
         }
         if ui.input(|i| i.key_pressed(Key::Escape)) {
             self.placing = None;
@@ -167,6 +212,24 @@ impl Corners {
         painter.add(Shape::line(path, line));
         None
     }
+}
+
+/// The furthest point from `from` towards `to` that `fits`. If `from` doesn't fit either, `to`:
+/// an outline that's already unusable doesn't hold the corner back.
+fn furthest(from: Pos2, to: Pos2, fits: impl Fn(Pos2) -> bool) -> Pos2 {
+    if fits(to) || !fits(from) {
+        return to;
+    }
+    let (mut good, mut bad) = (0.0, 1.0);
+    for _ in 0..CONSTRAIN_STEPS {
+        let mid = (good + bad) / 2.0;
+        if fits(from.lerp(to, mid)) {
+            good = mid;
+        } else {
+            bad = mid;
+        }
+    }
+    from.lerp(to, good)
 }
 
 /// The sides' stroke, and the handles' fill.

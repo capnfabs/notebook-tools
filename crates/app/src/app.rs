@@ -941,7 +941,7 @@ impl NotebookApp {
         let Some(page) = self.pages.get(index) else {
             return rect;
         };
-        let placing = self.corners.placing(&page.name);
+        let prompt = self.corners.prompt(&page.name);
         let (can_place, can_reset) = (page.loaded.is_some(), page.corners.is_some());
         let row = ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
             ui.horizontal(|ui| {
@@ -951,8 +951,8 @@ impl NotebookApp {
                 };
                 let place = button(ui, can_place, Command::PlaceCorners);
                 let reset = button(ui, can_reset, Command::ResetCorners);
-                if placing {
-                    ui.label("Click the page's four corners. Esc cancels.");
+                if let Some(prompt) = prompt {
+                    ui.label(prompt);
                 }
                 (place, reset)
             })

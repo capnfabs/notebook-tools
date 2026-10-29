@@ -18,6 +18,10 @@ use crate::page::{fitted_size, shrunk_copy};
 /// Corners of a page outline in source pixels: top-left, top-right, bottom-right, bottom-left.
 pub type Quad = [[f32; 2]; 4];
 
+/// Sharpest corner an outline may have, in degrees; its flattest is 180° less this. Past these,
+/// straightening stretches part of the page towards infinity, and a dent (over 180°) isn't a page.
+pub const MIN_CORNER_DEG: f32 = 15.0;
+
 /// Tuning knobs for [`clean`]. Pixel sizes are measured on fixed-size working copies, so results
 /// don't depend on the photo's resolution.
 #[derive(Clone, Debug, PartialEq)]
@@ -378,9 +382,31 @@ pub fn order_corners(mut corners: Quad) -> Quad {
     corners
 }
 
+/// Whether `quad`, in [`Quad`] order, can be straightened: it's convex, clockwise on screen, and
+/// every corner is between [`MIN_CORNER_DEG`] and 180° less that.
+pub fn is_page_shaped(quad: &Quad) -> bool {
+    let (min, max) = (
+        MIN_CORNER_DEG.to_radians(),
+        (180.0 - MIN_CORNER_DEG).to_radians(),
+    );
+    (0..4).all(|i| {
+        let [px, py] = quad[(i + 3) % 4];
+        let [x, y] = quad[i];
+        let [nx, ny] = quad[(i + 1) % 4];
+        let (a, b) = ([px - x, py - y], [nx - x, ny - y]);
+        // With y pointing down, the next corner is clockwise of the previous one: a right turn.
+        let cross = a[0] * b[1] - a[1] * b[0];
+        let angle = cross.abs().atan2(a[0] * b[0] + a[1] * b[1]);
+        cross < 0.0 && (min..=max).contains(&angle)
+    })
+}
+
 /// Maps the `quad` region of `img` to an upright rectangle no longer than `max_side`.
-/// Returns `None` if the quad is degenerate.
+/// Returns `None` if the quad isn't [`is_page_shaped`].
 fn straighten(img: &RgbaImage, quad: &Quad, max_side: u32) -> Option<RgbaImage> {
+    if !is_page_shaped(quad) {
+        return None;
+    }
     let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
     let [tl, tr, br, bl] = *quad;
     let w = (dist(tl, tr) + dist(bl, br)) / 2.0;
@@ -769,6 +795,69 @@ mod tests {
         let w = ((dist(tl, tr) + dist(bl, br)) / 2.0).round() as u32;
         let h = ((dist(tl, bl) + dist(tr, br)) / 2.0).round() as u32;
         assert_eq!(cleaned.image.dimensions(), (w, h));
+    }
+
+    #[test]
+    fn page_shaped_quads_are_convex_without_extreme_corners() {
+        assert!(is_page_shaped(&QUAD));
+        assert!(is_page_shaped(&photo_corners(300, 200)));
+        let not = [
+            (
+                "dented",
+                [[0.0, 0.0], [100.0, 0.0], [50.0, 30.0], [50.0, 100.0]],
+            ),
+            (
+                "anticlockwise",
+                [[0.0, 0.0], [0.0, 100.0], [100.0, 100.0], [100.0, 0.0]],
+            ),
+            (
+                "crossed",
+                [[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]],
+            ),
+            (
+                "flat corner",
+                [[0.0, 0.0], [50.0, 2.0], [100.0, 0.0], [50.0, 100.0]],
+            ),
+            (
+                "sharp corner",
+                [[0.0, 0.0], [300.0, 45.0], [50.0, 60.0], [0.0, 50.0]],
+            ),
+            (
+                "two corners together",
+                [[0.0, 0.0], [0.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
+            ),
+        ];
+        for (name, quad) in not {
+            assert!(!is_page_shaped(&quad), "{name}");
+        }
+    }
+
+    /// Shapes that once crashed straightening: parts of them map to near infinity.
+    #[test]
+    fn cropping_to_any_corners_doesnt_panic() {
+        let img = RgbaImage::from_pixel(40, 30, CREAM);
+        let params = CleanParams::default();
+        let crashed: [Quad; 2] = [
+            [[20.0, 75.0], [100.0, 90.0], [140.0, 90.0], [20.0, 135.0]],
+            [[40.0, 0.0], [160.0, 0.0], [100.0, 45.0], [0.0, 150.0]],
+        ];
+        for quad in crashed {
+            let cropped = crop_to_page(&img, &params, Some(quad.map(|p| p.map(|c| c / 5.0))));
+            assert_eq!(cropped.outline, None, "not page-shaped, so not cropped");
+        }
+        // Corners on a coarse grid, so lines and coincident points come up often.
+        let mut seed: u32 = 1;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % 9
+        };
+        for _ in 0..300 {
+            let quad = order_corners([(); 4].map(|_| [next() as f32 * 5.0, next() as f32 * 3.75]));
+            let cropped = crop_to_page(&img, &params, Some(quad));
+            assert_eq!(cropped.outline.is_some(), is_page_shaped(&quad), "{quad:?}");
+        }
     }
 
     #[test]
