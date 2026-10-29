@@ -21,11 +21,11 @@
 - [x] [Downscale on load](downscale-on-load.md)
 - [x] [HEIC decoding](heic-decoding.md)
 - [x] [Mac menu bar](mac-menu.md)
+- [x] [Manual page detection tooling](manual-page-detection.md)
 
 ## features
 
 ## polish
-- [ ] [Manual page detection tooling](manual-page-detection.md)
 - [ ] [Flaky: `settle` during a transcription](flaky-command-tests.md)
 - [ ] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
