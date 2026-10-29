@@ -26,6 +26,8 @@
 
 ## polish
 - [ ] [Manual page detection tooling](manual-page-detection.md)
+- [ ] [Flaky: `settle` during a transcription](flaky-command-tests.md)
+- [ ] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 
@@ -35,6 +37,8 @@
 - [ ] [Multi-model handling](multi-model.md)
 - [ ] [Cached transcripts without credentials](cache-without-credentials.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
+- [ ] [Live-edit cleanup params](live-clean-params.md)
+- [ ] [Keep page corners across restarts](persist-corners.md)
 
 ## polish (difficult / lower pri)
 - [ ] [Claude auth approach](claude-auth.md)

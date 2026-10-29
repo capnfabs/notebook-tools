@@ -1,6 +1,7 @@
-//! Splits the Transcribed view between the page and its transcript, with a handle between them to
-//! drag. When the window resizes, the transcript gives up width first, down to what it needs not
-//! to wrap; growing, it gets that back first, then the page grows until its height limits it. See
+//! Splits a view in two, with a handle between them to drag: the Transcribed view's page and its
+//! transcript, or the Cleaned view's photo and cleaned page. When the window resizes, the
+//! transcript gives up width first, down to what it needs not to wrap; growing, it gets that back
+//! first, then the page grows until its height limits it. See
 //! `decisions/2026-10-24-transcript-split.md`.
 
 use eframe::egui;
@@ -33,13 +34,14 @@ pub struct Split {
 
 impl Split {
     /// Where the page and the transcript go in `rect`: side by side with a handle of `gap` points
-    /// between them, or the page above the transcript when `rect` is narrow.
+    /// between them, called `label`, or the page above the transcript when `rect` is narrow.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
         gap: f32,
         limits: Limits,
+        label: &'static str,
     ) -> (Rect, Rect) {
         if rect.width() < SIDE_BY_SIDE_MIN_WIDTH {
             let (page, text) = rect.split_top_bottom_at_fraction(0.5);
@@ -61,9 +63,9 @@ impl Split {
             rect.y_range(),
         );
         let response = ui
-            .interact(handle, ui.scope_id().with("split handle"), Sense::drag())
+            .interact(handle, ui.scope_id().with(label), Sense::drag())
             .on_hover_cursor(CursorIcon::ResizeHorizontal);
-        response.widget_info(|| WidgetInfo::labeled(Role::Splitter, true, "Resize the transcript"));
+        response.widget_info(|| WidgetInfo::labeled(Role::Splitter, true, label));
         let text = clamp(text - response.drag_delta().x, total);
         self.text = Some(text);
 

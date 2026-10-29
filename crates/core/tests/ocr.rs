@@ -220,7 +220,8 @@ fn live_transcribes_fixture_photo() {
     };
     let bytes = std::fs::read(fixtures_dir().join(format!("{name}.jpg"))).unwrap();
     let img = notebook_core::decode(&bytes).unwrap();
-    let page = notebook_core::ocr::image_to_send(&img, &notebook_core::CleanParams::default());
+    let page =
+        notebook_core::ocr::image_to_send(&img, &notebook_core::CleanParams::default(), None);
     let (status, body) = notebook_core::ocr::send(
         &credentials,
         &request_body(&encode_jpeg(&page), model, EFFORT),

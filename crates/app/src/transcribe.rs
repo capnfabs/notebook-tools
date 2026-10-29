@@ -10,19 +10,22 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use notebook_core::CleanParams;
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError, parse_response};
+use notebook_core::page::Page;
 use notebook_core::transcript::Transcript;
+use notebook_core::{CleanParams, Quad};
 
 use crate::jobs::Jobs;
 
 /// Most pages sent to Claude at once. More risks rate limits and overloaded errors.
 pub const MAX_CONCURRENT: usize = 4;
 
-/// Sends a page to a Claude model from its file's bytes.
-pub type Fetch = Arc<dyn Fn(&[u8], &CleanParams, Model) -> Result<Fetched, OcrError> + Send + Sync>;
+/// Sends a page to a Claude model from its file's bytes, cropped to the user's corners if given.
+pub type Fetch = Arc<
+    dyn Fn(&[u8], &CleanParams, Option<Quad>, Model) -> Result<Fetched, OcrError> + Send + Sync,
+>;
 
 /// Told a page's name, its file's bytes and its transcript whenever a page is sent to Claude and
 /// comes back transcribed, but not for cached transcripts. Runs on the thread that sent it.
@@ -61,7 +64,7 @@ impl Transcriber {
         let mut elapsed = None;
         let mut fetch = || {
             let started = Instant::now();
-            let fetched = (self.fetch)(bytes, &job.params, model);
+            let fetched = (self.fetch)(bytes, &job.params, job.corners, model);
             elapsed = Some(started.elapsed());
             fetched
         };
@@ -111,6 +114,8 @@ struct Job {
     name: String,
     bytes: Arc<[u8]>,
     params: CleanParams,
+    /// Where the user put the page's corners, if they did.
+    corners: Option<Quad>,
     kind: Kind,
     model: Model,
 }
@@ -123,10 +128,16 @@ pub struct Done {
     pub forced: bool,
     /// How long Claude took, if the page was sent rather than found in the cache.
     pub elapsed: Option<Duration>,
+    /// The corners the page was cropped to when it was sent: `None` for detected ones, and for
+    /// cache look-ups, which can't tell.
+    pub corners: Option<Quad>,
 }
 
 /// A job's transcript: `None` for a [`Kind::Lookup`] that missed.
 type Finished = Result<Option<Ran>, String>;
+
+/// A job's page name, what it does, and the corners it was cropped to.
+type Key = (String, Kind, Option<Quad>);
 
 pub struct Transcriptions {
     /// Sends pages to Claude. Without one, nothing is sent.
@@ -134,7 +145,7 @@ pub struct Transcriptions {
     /// Without one, nothing is looked up.
     cache: Option<Cache>,
     /// By page name and what they do.
-    jobs: Jobs<(String, Kind), Finished>,
+    jobs: Jobs<Key, Finished>,
     /// Pages waiting to be sent, next first.
     queue: VecDeque<Job>,
     /// Pages being sent, by name.
@@ -200,7 +211,7 @@ impl Transcriptions {
         };
         self.checking.insert(name.to_owned());
         let model = self.model;
-        self.spawn(name.to_owned(), Kind::Lookup, move || {
+        self.spawn((name.to_owned(), Kind::Lookup, None), move || {
             Ok(cache.find(&bytes, model).map(|transcript| Ran {
                 transcript,
                 elapsed: None,
@@ -208,39 +219,34 @@ impl Transcriptions {
         });
     }
 
-    /// Transcribes the page named `name` before any others waiting, forgetting any earlier
-    /// failure.
-    pub fn start(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
-        self.enqueue(name, bytes, params, Kind::Transcribe, true);
+    /// Transcribes `page` before any others waiting, forgetting any earlier failure.
+    pub fn start(&mut self, page: &Page, params: CleanParams) {
+        self.enqueue(page, params, Kind::Transcribe, true);
     }
 
-    /// Transcribes the page named `name` after any others waiting.
-    pub fn start_later(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
-        self.enqueue(name, bytes, params, Kind::Transcribe, false);
+    /// Transcribes `page` after any others waiting.
+    pub fn start_later(&mut self, page: &Page, params: CleanParams) {
+        self.enqueue(page, params, Kind::Transcribe, false);
     }
 
-    /// Sends the page named `name` to Claude even if it's cached, before any others waiting. The
-    /// cached entry is replaced only if this succeeds.
-    pub fn force(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
-        self.enqueue(name, bytes, params, Kind::Force, true);
+    /// Sends `page` to Claude even if it's cached, before any others waiting. The cached entry is
+    /// replaced only if this succeeds.
+    pub fn force(&mut self, page: &Page, params: CleanParams) {
+        self.enqueue(page, params, Kind::Force, true);
     }
 
-    fn enqueue(
-        &mut self,
-        name: &str,
-        bytes: Arc<[u8]>,
-        params: CleanParams,
-        kind: Kind,
-        first: bool,
-    ) {
+    /// Queues `page`, cropped to its corners as they are now.
+    fn enqueue(&mut self, page: &Page, params: CleanParams, kind: Kind, first: bool) {
+        let name = &page.name;
         if self.transcriber.is_none() || self.queued_or_running(name) {
             return;
         }
         self.errors.remove(name);
         let job = Job {
-            name: name.to_owned(),
-            bytes,
+            name: name.clone(),
+            bytes: page.bytes.clone(),
             params,
+            corners: page.corners,
             kind,
             model: self.model,
         };
@@ -263,27 +269,26 @@ impl Transcriptions {
             log::info!("{}: transcribing with {}", job.name, job.model.id());
             self.running.insert(job.name.clone());
             let (transcriber, cache) = (transcriber.clone(), self.cache.clone());
-            self.spawn(job.name.clone(), job.kind, move || {
+            self.spawn((job.name.clone(), job.kind, job.corners), move || {
                 transcriber.run(&job, cache.as_ref()).map(Some)
             });
         }
     }
 
-    /// Runs `work` for the page named `name` on a thread of its own, for [`Self::next`] to collect.
+    /// Runs `work` for the job `key` on a thread of its own, for [`Self::next`] to collect.
     fn spawn(
         &mut self,
-        name: String,
-        kind: Kind,
+        key: Key,
         work: impl FnOnce() -> Result<Option<Ran>, OcrError> + Send + 'static,
     ) {
         self.jobs
-            .spawn((name, kind), move || work().map_err(|e| e.to_string()));
+            .spawn(key, move || work().map_err(|e| e.to_string()));
     }
 
     /// The next page that finished transcribing, if any, sending the next queued page in its
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
     pub fn next(&mut self) -> Option<Done> {
-        while let Some(((name, kind), result)) = self.jobs.next() {
+        while let Some(((name, kind, corners), result)) = self.jobs.next() {
             if kind == Kind::Lookup {
                 self.checking.remove(&name);
             } else {
@@ -298,6 +303,7 @@ impl Transcriptions {
                         transcript: ran.transcript,
                         forced: kind == Kind::Force,
                         elapsed: ran.elapsed,
+                        corners,
                     });
                 }
                 Err(err) => {

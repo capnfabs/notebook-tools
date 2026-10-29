@@ -157,9 +157,9 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                 ..CleanParams::default()
             };
             let page = if variant.ends_with(CAPPED) {
-                ocr::image_to_send(&img, &params)
+                ocr::image_to_send(&img, &params, None)
             } else {
-                crop_to_page(&img, &params).0
+                crop_to_page(&img, &params, None).image
             };
             jobs.push((photo.clone(), variant, effort, max_side, page));
         }
@@ -273,7 +273,7 @@ fn draw(dir: &Path, photos: &Path, out: &Path) {
                 max_output_side: run.max_side,
                 ..CleanParams::default()
             };
-            cropped = Some((key.0, key.1, crop_to_page(&img, &params).0));
+            cropped = Some((key.0, key.1, crop_to_page(&img, &params, None).image));
         }
         let mut overlay = cropped.as_ref().unwrap().2.clone();
         draw_boxes(&mut overlay, &transcript);

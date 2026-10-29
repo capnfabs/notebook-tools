@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
-use notebook_core::{CleanParams, DecodeError, Loaded};
+use notebook_core::{CleanParams, DecodeError, Loaded, Quad};
 
 use crate::jobs::Jobs;
 use crate::transcribe::Waker;
@@ -17,8 +17,10 @@ pub type Received = (String, Result<Vec<u8>, String>);
 /// picker.
 pub type PickFiles = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
-/// Loads a page from its file's bytes. Tests stand in for [`Loaded::new`] to hold loads up.
-pub type Load = Arc<dyn Fn(&[u8], &CleanParams) -> Result<Loaded, DecodeError> + Send + Sync>;
+/// Loads a page from its file's bytes, cropped to the user's corners if given. Tests stand in for
+/// [`Loaded::new`] to hold loads up.
+pub type Load =
+    Arc<dyn Fn(&[u8], &CleanParams, Option<Quad>) -> Result<Loaded, DecodeError> + Send + Sync>;
 
 /// A page's name and bytes, and what loading them made.
 pub type Finished = (String, Arc<[u8]>, Result<Loaded, String>);
@@ -67,12 +69,18 @@ impl Ingest {
         by_name(received.collect())
     }
 
-    /// Starts loading the page named `name`.
-    pub fn load(&mut self, name: &str, bytes: Arc<[u8]>, params: CleanParams) {
+    /// Starts loading the page named `name`, or cleaning it again with the user's `corners`.
+    pub fn load(
+        &mut self,
+        name: &str,
+        bytes: Arc<[u8]>,
+        params: CleanParams,
+        corners: Option<Quad>,
+    ) {
         let load = self.load.clone();
         let key = (name.to_owned(), bytes.clone());
         self.jobs.spawn(key, move || {
-            load(&bytes, &params).map_err(|e| e.to_string())
+            load(&bytes, &params, corners).map_err(|e| e.to_string())
         });
     }
 

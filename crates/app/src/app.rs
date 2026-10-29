@@ -4,14 +4,16 @@ use std::time::SystemTime;
 
 use eframe::egui;
 use egui::{
-    Align, Color32, Label, Layout, Pos2, Rect, Response, RichText, Shape, Stroke, TextStyle,
-    TextWrapMode, TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetText,
+    Align, Label, Layout, Rect, Response, RichText, Shape, TextStyle, TextWrapMode, TextureHandle,
+    TextureOptions, UiBuilder, Vec2, WidgetText,
 };
 use jiff::tz::TimeZone;
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, Page, Pages, RgbaImage, decode, shrink_to_fit};
+use notebook_core::{
+    CleanParams, Page, Pages, Quad, RgbaImage, decode, photo_corners, shrink_to_fit,
+};
 
 use crate::command::{Command, CommandState, EguiKeys, Frontend};
 use crate::eval_log::{EvalLog, Event};
@@ -20,6 +22,7 @@ use crate::ingest::{Ingest, Load, PickFiles, Received};
 use crate::jobs::Jobs;
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions, Waker};
+use crate::ui::corners::Corners;
 use crate::ui::dialog::{self, Action, Choice};
 use crate::ui::split::{self, Split};
 use crate::ui::thumbnails::{self, Thumbnails};
@@ -45,30 +48,41 @@ const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 /// How long a hint stays in the status line, in seconds.
 const HINT_SECS: f64 = 4.0;
 
+/// Under a transcript cropped with other corners than the page's now.
+const BOUNDS_CHANGED: &str = "Bounds changed since this was transcribed.";
+
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum View {
     #[default]
     Original,
+    /// The original with the page's corners to drag, beside the page cleaned with them.
     Cleaned,
     /// Claude's transcription beside the cleaned page, for correcting. Switching to it transcribes
     /// the page shown, if it isn't already; selecting another page doesn't.
     Transcribed,
 }
 
-impl View {
-    fn shows_cleaned(self) -> bool {
-        match self {
-            Self::Original => false,
-            Self::Cleaned | Self::Transcribed => true,
-        }
+/// One of a page's full-size images: its name, whether it's the cleaned one, and its JPEG, which
+/// changes when the page is cleaned again.
+#[derive(Clone)]
+struct ImageKey {
+    name: String,
+    cleaned: bool,
+    jpeg: Arc<[u8]>,
+}
+
+impl PartialEq for ImageKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.cleaned == other.cleaned
+            && Arc::ptr_eq(&self.jpeg, &other.jpeg)
     }
 }
 
-/// The texture on screen, and what it shows.
+/// A texture on screen, and what it shows.
 struct Shown {
-    name: String,
-    cleaned: bool,
+    key: ImageKey,
     texture: TextureHandle,
 }
 
@@ -103,19 +117,20 @@ struct Thumbs {
     cleaned: TextureHandle,
 }
 
-/// Decodes the selected page's image for the viewer, on a thread of its own so it doesn't wait
-/// behind pages that are loading. By page name and whether it's the cleaned image.
+/// Decodes the selected page's images for the viewer, on a thread of its own so they don't wait
+/// behind pages that are loading.
 struct Decodes {
-    jobs: Jobs<(String, bool), Result<egui::ColorImage, String>>,
-    /// The image the viewer is waiting for. Any other that comes back is stale.
-    wanted: Option<(String, bool)>,
+    jobs: Jobs<ImageKey, Result<egui::ColorImage, String>>,
+    /// The original and the cleaned image the viewer is waiting for. Any other that comes back is
+    /// stale.
+    wanted: [Option<ImageKey>; 2],
 }
 
 impl Default for Decodes {
     fn default() -> Self {
         Self {
             jobs: Jobs::on_own_threads(),
-            wanted: None,
+            wanted: [None, None],
         }
     }
 }
@@ -132,13 +147,15 @@ pub struct NotebookApp {
     thumbnails: Thumbnails,
     /// Stays the same when another page is selected.
     view: View,
-    /// Full-size texture for the selected page and view. Only one is kept: see
-    /// `decisions/2026-10-28-pages-cleaned-on-load.md`.
-    current: Option<Shown>,
+    /// Full-size textures of the selected page: the original, then the cleaned one. Only these are
+    /// kept: see `decisions/2026-10-29-two-viewer-textures.md`.
+    shown: [Option<Shown>; 2],
     decodes: Decodes,
     clean_params: CleanParams,
-    /// Show the cleanup debug overlay.
-    debug: bool,
+    /// The page's corners in the Cleaned view.
+    corners: Corners,
+    /// Between the photo and the cleaned page in the Cleaned view.
+    cleaned_split: Split,
     errors: Vec<String>,
     transcriptions: Transcriptions,
     transcript_view: TranscriptView,
@@ -255,6 +272,7 @@ impl NotebookApp {
                 let event = Event::transcribed(&done.name, &done.transcript, done.elapsed);
                 self.eval_log.record(event);
                 page.transcript = Some(done.transcript);
+                page.transcribed_with = done.corners;
                 if done.forced {
                     self.transcript_view = TranscriptView::default();
                 }
@@ -280,7 +298,9 @@ impl NotebookApp {
         let possible = match command {
             Command::AddPages => self.pick_files.is_some(),
             Command::Export | Command::ExportAs => page.is_some() && can_export,
-            Command::ViewOriginal | Command::ViewCleaned | Command::ToggleDebug => page.is_some(),
+            Command::ViewOriginal | Command::ViewCleaned => page.is_some(),
+            Command::PlaceCorners => page.is_some_and(|p| p.loaded.is_some()),
+            Command::ResetCorners => page.is_some_and(|p| p.corners.is_some()),
             Command::ViewTranscribed | Command::Transcribe => page.is_some() && can_transcribe,
             Command::ForceRetranscribe => {
                 can_transcribe
@@ -299,7 +319,6 @@ impl NotebookApp {
             Command::ViewOriginal => Some(self.view == View::Original),
             Command::ViewCleaned => Some(self.view == View::Cleaned),
             Command::ViewTranscribed => Some(self.view == View::Transcribed),
-            Command::ToggleDebug => Some(self.debug),
             _ => None,
         };
         let title = match command {
@@ -353,7 +372,6 @@ impl NotebookApp {
             Command::ViewTranscribed => self.set_view(View::Transcribed),
             Command::PreviousPage => self.select(index - 1),
             Command::NextPage => self.select(index + 1),
-            Command::ToggleDebug => self.debug = !self.debug,
             Command::Transcribe => self.transcribe_shown(ctx),
             Command::ForceRetranscribe => {
                 self.set_view(View::Transcribed);
@@ -363,6 +381,8 @@ impl NotebookApp {
             Command::MoveLeft => self.move_page(index, index - 1),
             Command::MoveRight => self.move_page(index, index + 1),
             Command::SortByName => self.sort_pages(),
+            Command::PlaceCorners => self.place_corners(index),
+            Command::ResetCorners => self.set_corners(index, None),
             Command::Delete => self.request_delete(),
         }
     }
@@ -425,25 +445,35 @@ impl NotebookApp {
                 .is_some()
             {
                 self.ingest
-                    .load(&name, bytes.clone(), self.clean_params.clone());
+                    .load(&name, bytes.clone(), self.clean_params.clone(), None);
                 self.transcriptions.look_up(&name, bytes);
             }
         }
     }
 
-    /// Fills in pages that finished loading, and removes those that couldn't be.
+    /// Fills in pages that finished loading or cleaning again, and removes those that couldn't be
+    /// loaded.
     fn add_loaded(&mut self, ctx: &egui::Context) {
         while let Some((name, bytes, loaded)) = self.ingest.next() {
-            // The page may have been deleted meanwhile, or replaced by another of the same name.
+            // The page may have been deleted meanwhile, or replaced by another of the same name, or
+            // given other corners.
             let Some(index) = self.pages.position(&name).filter(|&i| {
-                self.pages
-                    .get(i)
-                    .is_some_and(|p| Arc::ptr_eq(&p.bytes, &bytes))
+                self.pages.get(i).is_some_and(|p| {
+                    let corners = loaded.as_ref().map_or(p.corners, |l| l.corners);
+                    Arc::ptr_eq(&p.bytes, &bytes) && corners == p.corners
+                })
             }) else {
                 continue;
             };
             match loaded {
-                Ok(loaded) => {
+                Ok(mut loaded) => {
+                    let Some(page) = self.pages.get_mut(index) else {
+                        continue;
+                    };
+                    // Cleaned again: the original is the same, so its texture stays.
+                    if let Some(old) = page.loaded.take() {
+                        loaded.original = old.original;
+                    }
                     let texture = |suffix: &str, img: &RgbaImage| {
                         let name = format!("{name}{suffix}");
                         ctx.load_texture(name, color_image(img), TextureOptions::LINEAR)
@@ -452,10 +482,8 @@ impl NotebookApp {
                         original: texture("", &loaded.thumbnail),
                         cleaned: texture(" (cleaned)", &loaded.cleaned_thumbnail),
                     };
+                    page.loaded = Some(loaded);
                     self.thumbs.insert(name, thumbs);
-                    if let Some(page) = self.pages.get_mut(index) {
-                        page.loaded = Some(loaded);
-                    }
                 }
                 Err(err) => {
                     self.errors.push(format!("Couldn't open {name}: {err}"));
@@ -477,8 +505,10 @@ impl NotebookApp {
         };
         self.thumbs.remove(&page.name);
         self.transcriptions.forget(&page.name);
-        if self.current.as_ref().is_some_and(|c| c.name == page.name) {
-            self.current = None;
+        for shown in &mut self.shown {
+            if shown.as_ref().is_some_and(|s| s.key.name == page.name) {
+                *shown = None;
+            }
         }
         if !shown {
             return;
@@ -533,14 +563,16 @@ impl NotebookApp {
 
     /// Queues every page [`Self::untranscribed`]. Cached ones aren't sent.
     fn transcribe_all(&mut self) {
-        let pages: Vec<(String, Arc<[u8]>)> = self
+        let names: Vec<String> = self
             .untranscribed()
             .into_iter()
-            .map(|p| (p.name.clone(), p.bytes.clone()))
+            .map(|p| p.name.clone())
             .collect();
-        for (name, bytes) in pages {
-            self.transcriptions
-                .start_later(&name, bytes, self.clean_params.clone());
+        for name in names {
+            if let Some(page) = self.pages.find(&name) {
+                self.transcriptions
+                    .start_later(page, self.clean_params.clone());
+            }
         }
     }
 
@@ -573,8 +605,7 @@ impl NotebookApp {
     /// Retranscribes the page named `name`, skipping the cache.
     fn force(&mut self, name: &str) {
         if let Some(page) = self.pages.find(name) {
-            self.transcriptions
-                .force(name, page.bytes.clone(), self.clean_params.clone());
+            self.transcriptions.force(page, self.clean_params.clone());
         }
     }
 
@@ -648,9 +679,31 @@ impl NotebookApp {
     /// Sends page `index` to be transcribed, unless it's in the cache.
     fn start_transcribing(&mut self, index: usize) {
         if let Some(page) = self.pages.get(index) {
-            self.transcriptions
-                .start(&page.name, page.bytes.clone(), self.clean_params.clone());
+            self.transcriptions.start(page, self.clean_params.clone());
         }
+    }
+
+    /// Shows page `index` in the Cleaned view, ready for its corners to be clicked in.
+    fn place_corners(&mut self, index: usize) {
+        self.set_view(View::Cleaned);
+        if let Some(page) = self.pages.get(index) {
+            self.corners.place(&page.name);
+        }
+    }
+
+    /// Puts page `index`'s corners at `corners`, or back where cleaning finds them, and cleans it
+    /// again with them.
+    fn set_corners(&mut self, index: usize, corners: Option<Quad>) {
+        let Some(page) = self.pages.get_mut(index) else {
+            return;
+        };
+        page.corners = corners;
+        if page.loaded.as_ref().is_some_and(|l| l.corners == corners) {
+            return;
+        }
+        let params = self.clean_params.clone();
+        self.ingest
+            .load(&page.name, page.bytes.clone(), params, corners);
     }
 
     /// Moves page `from` to index `to`, keeping the shown page shown.
@@ -795,24 +848,10 @@ impl NotebookApp {
             });
         });
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.view == View::Transcribed {
-                self.transcribed(ui);
-                return;
-            }
-            let name = self
-                .pages
-                .get(self.selected_index())
-                .map(|p| p.name.clone());
-            if let (Some(name), Some(showing)) = (name, self.current_texture(ui.ctx())) {
-                let panel = ui.available_rect_before_wrap();
-                let image_rect = self.show_page(ui, &name, &showing, panel);
-                if self.debug
-                    && let Some(image_rect) = image_rect
-                {
-                    self.debug_overlay(ui, &name, image_rect);
-                }
-            }
+        egui::CentralPanel::default().show(ui, |ui| match self.view {
+            View::Original => self.original(ui),
+            View::Cleaned => self.cleaned(ui),
+            View::Transcribed => self.transcribed(ui),
         });
 
         self.delete_dialog(ui.ctx());
@@ -861,22 +900,114 @@ impl NotebookApp {
         self.transcriptions.set_model(model);
     }
 
-    /// The page named `name` as large as fits in `rect`, centred, returning where it went. A
-    /// placeholder gets a spinner, and a page that's loading only a spinner.
+    /// The selected page's photo.
+    fn original(&mut self, ui: &mut egui::Ui) {
+        let name = self
+            .pages
+            .get(self.selected_index())
+            .map(|p| p.name.clone());
+        if let (Some(name), Some(showing)) = (name, self.current_texture(ui.ctx(), false)) {
+            let panel = ui.available_rect_before_wrap();
+            self.show_page(ui, &name, &showing, panel, false);
+        }
+    }
+
+    /// The selected page's photo with its corners to drag, beside the page cleaned with them.
+    fn cleaned(&mut self, ui: &mut egui::Ui) {
+        let index = self.selected_index();
+        let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
+            return;
+        };
+        let rect = ui.available_rect_before_wrap();
+        let gap = ui.spacing().item_spacing.x * 2.0;
+        let limits = split::Limits::default();
+        let (photo_rect, cleaned_rect) =
+            self.cleaned_split
+                .show(ui, rect, gap, limits, "Resize the cleaned page");
+        let photo_rect = self.corner_buttons(ui, index, photo_rect);
+        if let Some(showing) = self.current_texture(ui.ctx(), false)
+            && let Some(image_rect) = self.show_page(ui, &name, &showing, photo_rect, false)
+        {
+            self.edit_corners(ui, index, image_rect);
+        }
+        if let Some(showing) = self.current_texture(ui.ctx(), true) {
+            self.show_page(ui, &name, &showing, cleaned_rect, true);
+        }
+    }
+
+    /// Buttons to place page `index`'s corners or put them back, at the top of `rect`. Returns
+    /// the rest of `rect`.
+    fn corner_buttons(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) -> Rect {
+        let Some(page) = self.pages.get(index) else {
+            return rect;
+        };
+        let placing = self.corners.placing(&page.name);
+        let (can_place, can_reset) = (page.loaded.is_some(), page.corners.is_some());
+        let row = ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+            ui.horizontal(|ui| {
+                let button = |ui: &mut egui::Ui, enabled, command: Command| {
+                    let button = egui::Button::new(command.spec().label);
+                    ui.add_enabled(enabled, button).clicked()
+                };
+                let place = button(ui, can_place, Command::PlaceCorners);
+                let reset = button(ui, can_reset, Command::ResetCorners);
+                if placing {
+                    ui.label("Click the page's four corners. Esc cancels.");
+                }
+                (place, reset)
+            })
+            .inner
+        });
+        match row.inner {
+            (true, _) => self.place_corners(index),
+            (_, true) => self.set_corners(index, None),
+            _ => {}
+        }
+        rect.with_min_y(row.response.rect.bottom() + ui.spacing().item_spacing.y)
+    }
+
+    /// Page `index`'s corners over its photo, drawn at `image_rect`: the user's, else the ones
+    /// cleaning found, else the photo's own. Cleans the page again when they change.
+    fn edit_corners(&mut self, ui: &mut egui::Ui, index: usize, image_rect: Rect) {
+        let Some(page) = self.pages.get(index) else {
+            return;
+        };
+        let Some(loaded) = &page.loaded else {
+            return;
+        };
+        let report = &loaded.report;
+        let (w, h) = report.source_size;
+        let quad = page
+            .corners
+            .or(report.detected.ok())
+            .unwrap_or_else(|| photo_corners(w, h));
+        let changed = self
+            .corners
+            .show(ui, &page.name, quad, report.source_size, image_rect);
+        if let Some(corners) = changed {
+            self.set_corners(index, Some(corners));
+        }
+    }
+
+    /// The page named `name`, its `cleaned` image or its photo, as large as fits in `rect`,
+    /// centred, returning where it went. A placeholder gets a spinner, and a page that's loading
+    /// only a spinner.
     fn show_page(
         &self,
         ui: &mut egui::Ui,
         name: &str,
         showing: &Showing,
         rect: Rect,
+        cleaned: bool,
     ) -> Option<Rect> {
         let spinner = Rect::from_center_size(rect.center(), Vec2::splat(32.0));
         let Some(texture) = showing.texture() else {
             egui::Spinner::new().paint_at(ui, spinner);
             return None;
         };
-        let alt_text = match (showing, self.view.shows_cleaned()) {
-            (Showing::Placeholder(_), _) => format!("Current: {name} (loading)"),
+        let alt_text = match (showing, cleaned) {
+            (Showing::Placeholder(_), false) => format!("Current: {name} (loading)"),
+            (Showing::Placeholder(_), true) => format!("Current: {name} (cleaned, loading)"),
             (Showing::Full(_), true) => format!("Current: {name} (cleaned)"),
             (Showing::Full(_), false) => format!("Current: {name}"),
         };
@@ -902,7 +1033,7 @@ impl NotebookApp {
         // A page being retranscribed shows progress, not the transcript it's replacing.
         let transcribing = self.transcriptions.queued_or_running(&name);
         let rect = ui.available_rect_before_wrap();
-        let showing = self.current_texture(ui.ctx());
+        let showing = self.current_texture(ui.ctx(), true);
         let shown = self
             .pages
             .get(index)
@@ -916,11 +1047,14 @@ impl NotebookApp {
             }),
         };
         let gap = ui.spacing().item_spacing.x * 2.0;
-        let (mut page_rect, text_rect) = self.split.show(ui, rect, gap, limits);
+        let (mut page_rect, text_rect) =
+            self.split
+                .show(ui, rect, gap, limits, "Resize the transcript");
         if !transcribing && let Some(status) = self.transcript_status(ui, index, page_rect) {
             page_rect.max.y = status.top() - ui.spacing().item_spacing.y;
         }
-        let image_rect = showing.and_then(|showing| self.show_page(ui, &name, &showing, page_rect));
+        let image_rect =
+            showing.and_then(|showing| self.show_page(ui, &name, &showing, page_rect, true));
         let transcript = self
             .pages
             .get_mut(index)
@@ -948,15 +1082,21 @@ impl NotebookApp {
         let transcript = page.transcript.as_ref()?;
         let when = when_and_by(transcript, &TimeZone::system());
         let error = self.transcriptions.error(&page.name);
-        let text = match error {
-            Some(err) => RichText::new(format!(
-                "Retranscription failed: {err}. Using the cached version, transcribed {when}."
-            ))
-            .color(ui.visuals().error_fg_color),
-            None if transcript.from_cache => {
-                RichText::new(format!("From cache: transcribed {when}"))
+        let mut text = match error {
+            Some(err) => {
+                format!(
+                    "Retranscription failed: {err}. Using the cached version, transcribed {when}."
+                )
             }
-            None => RichText::new(format!("Transcribed {when}")),
+            None if transcript.from_cache => format!("From cache: transcribed {when}"),
+            None => format!("Transcribed {when}"),
+        };
+        if page.corners != page.transcribed_with {
+            text = format!("{text}\n{BOUNDS_CHANGED}");
+        }
+        let text = match error {
+            Some(_) => RichText::new(text).color(ui.visuals().error_fg_color),
+            None => RichText::new(text),
         };
         let layout = Layout::bottom_up(Align::Min);
         // Bottom up, so the row sits at the bottom however many lines the text wraps to.
@@ -1012,62 +1152,6 @@ impl NotebookApp {
         }
     }
 
-    /// The detected page outline over the original, and what cleaning found, for tuning cleanup.
-    fn debug_overlay(&mut self, ui: &mut egui::Ui, name: &str, image_rect: Rect) {
-        let report = self.pages.find(name).and_then(|p| p.loaded.as_ref());
-        let Some(report) = report.map(|l| l.report.clone()) else {
-            return;
-        };
-        let outline = report.outline.as_ref();
-        if let (View::Original, Ok(quad)) = (self.view, outline) {
-            let (w, h) = report.source_size;
-            let to_screen = |[x, y]: [f32; 2]| {
-                image_rect.min + Vec2::new(x / w as f32, y / h as f32) * image_rect.size()
-            };
-            let corners: Vec<Pos2> = quad.iter().copied().map(to_screen).collect();
-            let painter = ui.painter_at(image_rect.expand(4.0));
-            painter.add(Shape::closed_line(
-                corners.clone(),
-                Stroke::new(2.0, Color32::RED),
-            ));
-            for corner in corners {
-                painter.circle_filled(corner, 4.0, Color32::RED);
-            }
-        }
-
-        let lighting = &report.lighting;
-        let mut lines = vec![
-            match outline {
-                Ok(quad) => format!("Page outline: {}", format_quad(quad)),
-                Err(reason) => format!("No page outline: {reason}"),
-            },
-            format!(
-                "Output: {} x {}",
-                report.output_size.0, report.output_size.1
-            ),
-            format!("Paper colour: {:?}", lighting.paper_rgb),
-            format!(
-                "Black / white point: {} / {}",
-                lighting.black_point, lighting.white_point
-            ),
-        ];
-        lines.extend(
-            format!("{:#?}", self.clean_params)
-                .lines()
-                .map(str::to_owned),
-        );
-        egui::Area::new(egui::Id::unique("clean_debug"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(image_rect.left_top() + Vec2::splat(8.0))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    for line in lines {
-                        ui.monospace(line);
-                    }
-                });
-            });
-    }
-
     /// Loading and transcription progress, errors from the last drop, and what the last export
     /// did.
     fn status(&self, ui: &mut egui::Ui) {
@@ -1105,68 +1189,82 @@ impl NotebookApp {
         }
     }
 
-    /// The selected page at full size in the current view, once it's decoded. Until then, its
-    /// thumbnail while the full image is decoded off the UI thread.
-    fn current_texture(&mut self, ctx: &egui::Context) -> Option<Showing> {
+    /// The selected page's photo, or its `cleaned` image, at full size once it's decoded. Until
+    /// then, the image it replaces or its thumbnail, while the full image is decoded off the UI
+    /// thread. While the page is cleaned again with new corners, the cleaned image is a
+    /// placeholder too.
+    fn current_texture(&mut self, ctx: &egui::Context, cleaned: bool) -> Option<Showing> {
         let page = self.pages.get(self.selected_index())?;
-        let cleaned = self.view.shows_cleaned();
-        let current = self.current.as_ref();
-        if let Some(shown) = current.filter(|s| s.name == page.name && s.cleaned == cleaned) {
-            return Some(Showing::Full(shown.texture.clone()));
-        }
         let Some(loaded) = &page.loaded else {
             return Some(Showing::Placeholder(None));
         };
-        let key = (page.name.clone(), cleaned);
-        if self.decodes.wanted.as_ref() != Some(&key) {
-            let name = page.name.clone();
-            let jpeg = if cleaned {
-                loaded.cleaned.clone()
+        let jpeg = if cleaned {
+            &loaded.cleaned
+        } else {
+            &loaded.original
+        };
+        let key = ImageKey {
+            name: page.name.clone(),
+            cleaned,
+            jpeg: jpeg.clone(),
+        };
+        let slot = usize::from(cleaned);
+        let shown = self.shown[slot]
+            .as_ref()
+            .filter(|s| s.key.name == page.name);
+        let recleaning = cleaned && loaded.corners != page.corners;
+        if let Some(shown) = shown.filter(|s| s.key == key) {
+            let texture = shown.texture.clone();
+            return Some(if recleaning {
+                Showing::Placeholder(Some(texture))
             } else {
-                loaded.original.clone()
-            };
+                Showing::Full(texture)
+            });
+        }
+        if self.decodes.wanted[slot].as_ref() != Some(&key) {
+            let (name, jpeg) = (page.name.clone(), jpeg.clone());
             let max_side = ctx.input(|i| i.max_texture_side) as u32;
             self.decodes.jobs.spawn(key.clone(), move || {
                 let img = timed(format_args!("{name}: decode"), || decode(&jpeg));
                 let img = img.map_err(|e| e.to_string())?;
                 Ok(color_image(&shrink_to_fit(img, max_side)))
             });
-            self.decodes.wanted = Some(key);
+            self.decodes.wanted[slot] = Some(key);
         }
         let thumbs = self.thumbs.get(&page.name);
         let thumb = thumbs.map(|t| if cleaned { &t.cleaned } else { &t.original });
-        Some(Showing::Placeholder(thumb.cloned()))
+        let replaced = shown.map(|s| &s.texture);
+        Some(Showing::Placeholder(replaced.or(thumb).cloned()))
     }
 
-    /// Puts the image the viewer is waiting for on screen once it's decoded. Others are stale.
+    /// Puts the images the viewer is waiting for on screen once they're decoded. Others are
+    /// stale.
     fn show_decoded(&mut self, ctx: &egui::Context) {
-        while let Some(((name, cleaned), image)) = self.decodes.jobs.next() {
-            if self.decodes.wanted.as_ref() != Some(&(name.clone(), cleaned)) {
+        while let Some((key, image)) = self.decodes.jobs.next() {
+            let slot = usize::from(key.cleaned);
+            if self.decodes.wanted[slot].as_ref() != Some(&key) {
                 continue;
             }
-            self.decodes.wanted = None;
+            self.decodes.wanted[slot] = None;
+            let name = &key.name;
             let texture = match image {
                 Ok(image) => timed(format_args!("{name}: load texture"), || {
-                    ctx.load_texture(&name, image, TextureOptions::LINEAR)
+                    ctx.load_texture(name, image, TextureOptions::LINEAR)
                 }),
                 // It decoded when the page loaded, so this shouldn't happen.
                 Err(err) => {
                     log::error!("Couldn't decode {name}: {err}");
-                    let Some(thumbs) = self.thumbs.get(&name) else {
+                    let Some(thumbs) = self.thumbs.get(name) else {
                         continue;
                     };
-                    if cleaned {
+                    if key.cleaned {
                         thumbs.cleaned.clone()
                     } else {
                         thumbs.original.clone()
                     }
                 }
             };
-            self.current = Some(Shown {
-                name,
-                cleaned,
-                texture,
-            });
+            self.shown[slot] = Some(Shown { key, texture });
         }
     }
 }
@@ -1188,14 +1286,6 @@ fn format_time(time: SystemTime, tz: &TimeZone) -> String {
             .to_string(),
         Err(_) => "at an unknown time".to_owned(),
     }
-}
-
-fn format_quad(quad: &[[f32; 2]; 4]) -> String {
-    let corners: Vec<String> = quad
-        .iter()
-        .map(|[x, y]| format!("({x:.0}, {y:.0})"))
-        .collect();
-    corners.join(" ")
 }
 
 /// `command`'s shortcut, as the platform writes it: "⇧⌘T" on a Mac.

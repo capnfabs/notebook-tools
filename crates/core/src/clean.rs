@@ -90,7 +90,11 @@ pub struct Cleaned {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CleanReport {
     pub source_size: (u32, u32),
-    pub outline: Result<Quad, NoOutline>,
+    /// What outline detection found, whether or not it was used.
+    pub detected: Result<Quad, NoOutline>,
+    /// The corners the page was straightened and cropped to: the user's if they placed some, else
+    /// the detected ones. `None` if there were neither, or they made no sense.
+    pub outline: Option<Quad>,
     pub lighting: LightingReport,
     pub output_size: (u32, u32),
 }
@@ -132,12 +136,18 @@ pub struct LightingReport {
     pub white_point: u8,
 }
 
-pub fn clean(img: &RgbaImage, params: &CleanParams) -> Cleaned {
-    let (mut image, outline) = crop_to_page(img, params);
+/// [`crop_to_page`], then flattens the lighting.
+pub fn clean(img: &RgbaImage, params: &CleanParams, corners: Option<Quad>) -> Cleaned {
+    let Cropped {
+        mut image,
+        detected,
+        outline,
+    } = crop_to_page(img, params, corners);
     let lighting = fix_lighting(&mut image, params);
     Cleaned {
         report: CleanReport {
             source_size: img.dimensions(),
+            detected,
             outline,
             lighting,
             output_size: image.dimensions(),
@@ -146,17 +156,38 @@ pub fn clean(img: &RgbaImage, params: &CleanParams) -> Cleaned {
     }
 }
 
-/// The page straightened and cropped to its detected outline, no longer than
-/// `params.max_output_side`, with the lighting left alone. Without an outline, the whole photo
-/// scaled down.
-pub fn crop_to_page(img: &RgbaImage, params: &CleanParams) -> (RgbaImage, Result<Quad, NoOutline>) {
-    let outline = detect_outline(img, params);
-    let straightened = outline
-        .as_ref()
-        .ok()
-        .and_then(|quad| straighten(img, quad, params.max_output_side));
-    let image = straightened.unwrap_or_else(|| shrunk_copy(img, params.max_output_side));
-    (image, outline)
+/// A photo cropped to its page by [`crop_to_page`].
+pub struct Cropped {
+    pub image: RgbaImage,
+    /// What outline detection found, whether or not it was used.
+    pub detected: Result<Quad, NoOutline>,
+    /// The corners `image` was cropped to, if any.
+    pub outline: Option<Quad>,
+}
+
+/// The page straightened and cropped to `corners`, else to its detected outline, no longer than
+/// `params.max_output_side`, with the lighting left alone. Without either, the whole photo scaled
+/// down.
+pub fn crop_to_page(img: &RgbaImage, params: &CleanParams, corners: Option<Quad>) -> Cropped {
+    let detected = detect_outline(img, params);
+    let quad = corners.or_else(|| detected.as_ref().ok().copied());
+    let straightened =
+        quad.and_then(|quad| Some((quad, straighten(img, &quad, params.max_output_side)?)));
+    let (outline, image) = match straightened {
+        Some((quad, image)) => (Some(quad), image),
+        None => (None, shrunk_copy(img, params.max_output_side)),
+    };
+    Cropped {
+        image,
+        detected,
+        outline,
+    }
+}
+
+/// `img`'s own corners, in [`Quad`] order: cropping to them only scales it down.
+pub fn photo_corners(width: u32, height: u32) -> Quad {
+    let (w, h) = (width as f32, height as f32);
+    [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]
 }
 
 /// Finds the page (or open notebook) as the largest region of paper, simplified to four corners.
@@ -329,8 +360,9 @@ fn intersect(p: [f32; 2], n: [f32; 2], q: [f32; 2], m: [f32; 2]) -> Option<[f32;
     (det.abs() > 1e-6).then(|| [(c1 * m[1] - c2 * n[1]) / det, (n[0] * c2 - m[0] * c1) / det])
 }
 
-/// Orders corners top-left, top-right, bottom-right, bottom-left.
-fn order_corners(mut corners: Quad) -> Quad {
+/// Orders corners top-left, top-right, bottom-right, bottom-left. Sorted by angle around their
+/// centre, so the sides between them never cross, whatever order they came in.
+pub fn order_corners(mut corners: Quad) -> Quad {
     let cx = corners.iter().map(|p| p[0]).sum::<f32>() / 4.0;
     let cy = corners.iter().map(|p| p[1]).sum::<f32>() / 4.0;
     // With y pointing down, increasing angle runs clockwise on screen.
@@ -596,7 +628,7 @@ mod tests {
 
     #[test]
     fn cleaned_page_is_white_with_dark_coloured_ink() {
-        let cleaned = clean(&photo(900, 900, QUAD), &CleanParams::default());
+        let cleaned = clean(&photo(900, 900, QUAD), &CleanParams::default(), None);
         let img = &cleaned.image;
 
         // Roughly the page's average edge lengths.
@@ -615,7 +647,8 @@ mod tests {
         assert!(luma(px) < 100, "ink {px:?}");
         assert!(px[2] > px[0] + 40, "ink {px:?}");
 
-        assert!(cleaned.report.outline.is_ok());
+        assert!(cleaned.report.detected.is_ok());
+        assert_eq!(cleaned.report.outline, cleaned.report.detected.ok());
         assert_eq!(cleaned.report.output_size, (w, h));
         let [r, g, b] = cleaned.report.lighting.paper_rgb;
         assert!(r > g && g > b, "paper {:?}", cleaned.report.lighting);
@@ -625,8 +658,12 @@ mod tests {
     fn crop_matches_clean_without_relighting() {
         let photo = photo(900, 900, QUAD);
         let params = CleanParams::default();
-        let (cropped, outline) = crop_to_page(&photo, &params);
-        let cleaned = clean(&photo, &params);
+        let Cropped {
+            image: cropped,
+            outline,
+            ..
+        } = crop_to_page(&photo, &params, None);
+        let cleaned = clean(&photo, &params, None);
         assert_eq!(outline, cleaned.report.outline);
         assert_eq!(cropped.dimensions(), cleaned.image.dimensions());
         // The dim left side stays dim; cleaning would make it white.
@@ -640,15 +677,16 @@ mod tests {
             max_output_side: 300,
             ..CleanParams::default()
         };
-        let cleaned = clean(&photo(900, 900, QUAD), &params);
+        let cleaned = clean(&photo(900, 900, QUAD), &params, None);
         assert_eq!(cleaned.image.width().max(cleaned.image.height()), 300);
     }
 
     #[test]
     fn uniform_image_has_no_outline_and_is_only_relit() {
         let img = RgbaImage::from_pixel(300, 200, Rgba([128, 128, 128, 255]));
-        let cleaned = clean(&img, &CleanParams::default());
-        assert_eq!(cleaned.report.outline, Err(NoOutline::NoRegion));
+        let cleaned = clean(&img, &CleanParams::default(), None);
+        assert_eq!(cleaned.report.detected, Err(NoOutline::NoRegion));
+        assert_eq!(cleaned.report.outline, None);
         assert_eq!(cleaned.image.dimensions(), (300, 200));
     }
 
@@ -676,5 +714,69 @@ mod tests {
             [740.0, 800.0],
         ];
         assert_eq!(order_corners(shuffled), QUAD);
+    }
+
+    /// Whether segments `a`-`b` and `c`-`d` cross.
+    fn cross(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> bool {
+        let side = |p: [f32; 2], q: [f32; 2], r: [f32; 2]| {
+            ((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])).signum()
+        };
+        side(a, b, c) != side(a, b, d) && side(c, d, a) != side(c, d, b)
+    }
+
+    #[test]
+    fn ordered_corners_never_cross() {
+        let concave = [[0.0, 0.0], [100.0, 0.0], [50.0, 30.0], [50.0, 100.0]];
+        let skewed = [[10.0, 50.0], [90.0, 0.0], [100.0, 60.0], [0.0, 100.0]];
+        for points in [QUAD, concave, skewed] {
+            // Every order the user could click them in.
+            for perm in 0..24 {
+                let mut rest: Vec<[f32; 2]> = points.to_vec();
+                let mut shuffled = [[0.0; 2]; 4];
+                let mut n = perm;
+                for (i, slot) in shuffled.iter_mut().enumerate() {
+                    *slot = rest.remove(n % (4 - i));
+                    n /= 4 - i;
+                }
+                let q = order_corners(shuffled);
+                assert!(
+                    !cross(q[0], q[1], q[2], q[3]) && !cross(q[1], q[2], q[3], q[0]),
+                    "{shuffled:?} ordered to {q:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn crops_to_the_users_corners() {
+        let photo = photo(900, 900, QUAD);
+        let params = CleanParams::default();
+        // The top half of the page, as if the user had dragged the bottom corners up.
+        let lerp = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        let top = [
+            QUAD[0],
+            QUAD[1],
+            lerp(QUAD[1], QUAD[2]),
+            lerp(QUAD[0], QUAD[3]),
+        ];
+        let cleaned = clean(&photo, &params, Some(top));
+        assert_eq!(cleaned.report.outline, Some(top));
+        assert!(cleaned.report.detected.is_ok(), "still detected");
+
+        // Straightened to the corners' average edge lengths.
+        let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let [tl, tr, br, bl] = top;
+        let w = ((dist(tl, tr) + dist(bl, br)) / 2.0).round() as u32;
+        let h = ((dist(tl, bl) + dist(tr, br)) / 2.0).round() as u32;
+        assert_eq!(cleaned.image.dimensions(), (w, h));
+    }
+
+    #[test]
+    fn cropping_to_the_photos_corners_only_scales_it() {
+        let img = RgbaImage::from_pixel(300, 200, Rgba([128, 128, 128, 255]));
+        let corners = photo_corners(300, 200);
+        let cropped = crop_to_page(&img, &CleanParams::default(), Some(corners));
+        assert_eq!(cropped.outline, Some(corners));
+        assert_eq!(cropped.image.dimensions(), (300, 200));
     }
 }

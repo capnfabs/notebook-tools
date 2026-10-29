@@ -48,7 +48,12 @@ fn fixture(name: &str) -> Vec<u8> {
 
 #[test]
 fn pdf_has_a_searchable_page_each_and_the_markdown() {
-    let page = Loaded::new(&fixture("page-grey-table.jpg"), &CleanParams::default()).unwrap();
+    let page = Loaded::new(
+        &fixture("page-grey-table.jpg"),
+        &CleanParams::default(),
+        None,
+    )
+    .unwrap();
     let (first, mut second) = (recorded("success"), recorded("success"));
     assert!(second.resolve(0, "plumbers"));
     let pages = [

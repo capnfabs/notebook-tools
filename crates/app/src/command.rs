@@ -19,13 +19,16 @@ pub enum Command {
     ViewTranscribed,
     PreviousPage,
     NextPage,
-    ToggleDebug,
     Transcribe,
     ForceRetranscribe,
     TranscribeAll,
     MoveLeft,
     MoveRight,
     SortByName,
+    /// Click the page's four corners, in place of the ones it has.
+    PlaceCorners,
+    /// Back to the corners cleaning found.
+    ResetCorners,
     Delete,
 }
 
@@ -59,7 +62,7 @@ const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const COMMAND_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 
 impl Command {
-    pub const ALL: [Command; 16] = [
+    pub const ALL: [Command; 17] = [
         Self::AddPages,
         Self::Export,
         Self::ExportAs,
@@ -68,13 +71,14 @@ impl Command {
         Self::ViewTranscribed,
         Self::PreviousPage,
         Self::NextPage,
-        Self::ToggleDebug,
         Self::Transcribe,
         Self::ForceRetranscribe,
         Self::TranscribeAll,
         Self::MoveLeft,
         Self::MoveRight,
         Self::SortByName,
+        Self::PlaceCorners,
+        Self::ResetCorners,
         Self::Delete,
     ];
 
@@ -118,7 +122,6 @@ impl Command {
                 keys(Modifiers::NONE, Key::ArrowRight),
                 true,
             ),
-            Self::ToggleDebug => ("toggle-debug", "Cleanup Debug Overlay", None, false),
             Self::Transcribe => (
                 "transcribe",
                 "Transcribe",
@@ -150,6 +153,8 @@ impl Command {
                 true,
             ),
             Self::SortByName => ("sort-by-name", "Sort by Name", None, false),
+            Self::PlaceCorners => ("place-corners", "Place Corners", None, false),
+            Self::ResetCorners => ("reset-corners", "Reset Corners", None, false),
             Self::Delete => (
                 "delete",
                 "Delete",
@@ -159,7 +164,7 @@ impl Command {
         };
         let checkable = matches!(
             self,
-            Self::ViewOriginal | Self::ViewCleaned | Self::ViewTranscribed | Self::ToggleDebug
+            Self::ViewOriginal | Self::ViewCleaned | Self::ViewTranscribed
         );
         Spec {
             id,
@@ -243,8 +248,6 @@ pub const MENUS: &[Menu] = {
                 Sep,
                 Do(C::PreviousPage),
                 Do(C::NextPage),
-                Sep,
-                Do(C::ToggleDebug),
             ],
         },
         Menu {
@@ -257,6 +260,9 @@ pub const MENUS: &[Menu] = {
                 Do(C::MoveLeft),
                 Do(C::MoveRight),
                 Do(C::SortByName),
+                Sep,
+                Do(C::PlaceCorners),
+                Do(C::ResetCorners),
                 Sep,
                 Do(C::Delete),
             ],

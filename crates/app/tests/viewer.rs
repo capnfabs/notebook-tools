@@ -11,8 +11,7 @@ use eframe::egui::{
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use notebook_app::{
-    Command, Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath,
-    Transcriber,
+    Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath, Transcriber,
 };
 use notebook_core::Loaded;
 use notebook_core::cache::Cache;
@@ -85,14 +84,14 @@ fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
 
 /// Every page transcribes to the recorded response, without a cache.
 fn transcriber() -> Transcriber {
-    Transcriber::new(Arc::new(|_, _, _| Ok(recorded())))
+    Transcriber::new(Arc::new(|_, _, _, _| Ok(recorded())))
 }
 
 /// Answers every request with the recorded response, counting them.
 fn counting_fetch() -> (Fetch, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
-    let fetch: Fetch = Arc::new(move |_, _, _| {
+    let fetch: Fetch = Arc::new(move |_, _, _, _| {
         counter.fetch_add(1, Ordering::SeqCst);
         Ok(recorded())
     });
@@ -190,7 +189,12 @@ fn step_until_transcribed(harness: &mut Harness<'_, NotebookApp>) {
     harness.step();
     for _ in 0..500 {
         harness.step();
-        if harness.query_by_label_contains("Transcribing").is_none() {
+        // The status line and, in the Transcribed view, the page's progress.
+        if harness
+            .query_all_by_label_contains("Transcribing")
+            .next()
+            .is_none()
+        {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -216,9 +220,9 @@ fn start_dropping(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8
 
 /// Loads pages as the app does, but only while `gate` isn't held for writing.
 fn gated_loader(gate: Arc<RwLock<()>>) -> Load {
-    Arc::new(move |bytes, params| {
+    Arc::new(move |bytes, params, corners| {
         let _open = gate.read().unwrap();
-        Loaded::new(bytes, params)
+        Loaded::new(bytes, params, corners)
     })
 }
 
@@ -294,16 +298,40 @@ fn drag_thumbnail(harness: &mut Harness<'_, NotebookApp>, label: &str, x: f32) {
 /// returns where the pointer is.
 fn hold_thumbnail(harness: &mut Harness<'_, NotebookApp>, label: &str, x: f32) -> egui::Pos2 {
     let start = centre(harness, label);
-    harness.hover_at(start);
-    settle(harness);
-    harness.drag_at(start);
-    settle(harness);
+    let end = egui::pos2(x, start.y);
+    hold(harness, start, end);
+    end
+}
+
+/// Presses at `from` and moves to `to` in a few steps, without letting go. Doesn't wait for
+/// loading, so works while loads are held up.
+fn hold(harness: &mut Harness<'_, NotebookApp>, from: egui::Pos2, to: egui::Pos2) {
+    harness.hover_at(from);
+    harness.step();
+    harness.drag_at(from);
+    harness.step();
     for step in 1..=5 {
         let t = step as f32 / 5.0;
-        harness.hover_at(egui::pos2(start.x + (x - start.x) * t, start.y));
-        settle(harness);
+        harness.hover_at(from + (to - from) * t);
+        harness.step();
     }
-    egui::pos2(x, start.y)
+}
+
+/// Drags from `from` to `to` and lets go there.
+fn drag(harness: &mut Harness<'_, NotebookApp>, from: egui::Pos2, to: egui::Pos2) {
+    hold(harness, from, to);
+    harness.drop_at(to);
+    harness.step();
+}
+
+/// Presses and lets go at `at`.
+fn click_at(harness: &mut Harness<'_, NotebookApp>, at: egui::Pos2) {
+    harness.hover_at(at);
+    harness.step();
+    harness.drag_at(at);
+    harness.step();
+    harness.drop_at(at);
+    harness.step();
 }
 
 /// The left and right edges of what's painted as 3pt lines: the selected page's frame (a rect)
@@ -461,7 +489,7 @@ fn the_viewer_shows_the_thumbnail_until_the_page_is_decoded() {
 
     harness.get_by_label("Cleaned").click();
     harness.step();
-    harness.get_by_label("Current: b.png (loading)");
+    harness.get_by_label("Current: b.png (cleaned, loading)");
     settle(&mut harness);
     harness.get_by_label("Current: b.png (cleaned)");
 }
@@ -493,7 +521,7 @@ fn view_stays_when_selecting_another_page() {
     harness.get_by_label("Current: b.png (cleaned)");
 }
 
-/// The debug outline is drawn relative to the image's rect, so that rect must be where the image
+/// The page's corners are drawn relative to the image's rect, so that rect must be where the image
 /// is drawn, not the whole panel it's centred in.
 #[test]
 fn image_rect_matches_the_drawn_image() {
@@ -506,21 +534,217 @@ fn image_rect_matches_the_drawn_image() {
     assert!((aspect - 200.0 / 150.0).abs() < 0.02, "{bounds:?}");
 }
 
+/// `page_photo` in the Cleaned view, cleaned.
+fn cleaned_view(harness: &mut Harness<'_, NotebookApp>) {
+    drop_files(harness, &[("a.png", page_photo())]);
+    harness.get_by_label("Cleaned").click();
+    settle(harness);
+}
+
+/// Where pixel `(x, y)` of `page_photo`, 200 x 150, is on screen in a.png's photo.
+fn on_photo(harness: &Harness<'_, NotebookApp>, x: f32, y: f32) -> egui::Pos2 {
+    let bounds = harness.get_by_label("Current: a.png");
+    let bounds = bounds.accesskit_node().bounding_box().unwrap();
+    egui::pos2(
+        (bounds.x0 + bounds.width() * f64::from(x) / 200.0) as f32,
+        (bounds.y0 + bounds.height() * f64::from(y) / 150.0) as f32,
+    )
+}
+
+/// Width over height of a.png's cleaned image.
+fn cleaned_aspect(harness: &Harness<'_, NotebookApp>) -> f64 {
+    let image = harness.get_by_label("Current: a.png (cleaned)");
+    let bounds = image.accesskit_node().bounding_box().unwrap();
+    bounds.width() / bounds.height()
+}
+
+fn assert_near(actual: f64, expected: f64, tolerance: f64) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "{actual} isn't within {tolerance} of {expected}"
+    );
+}
+
+fn disabled(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
+    harness.get_by_label(label).accesskit_node().is_disabled()
+}
+
+/// Drags the bottom-right corner to `(x, y)` on the photo, and waits for the page to be cleaned
+/// again.
+fn move_bottom_right(harness: &mut Harness<'_, NotebookApp>, x: f32, y: f32) {
+    let from = centre(harness, "Bottom-right corner");
+    let to = on_photo(harness, x, y);
+    drag(harness, from, to);
+    settle(harness);
+}
+
 #[test]
-fn debug_overlay_shows_what_cleanup_found() {
+fn cleaned_view_shows_the_photo_with_its_corners_beside_the_cleaned_page() {
     let mut harness = harness();
-    drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
-    assert!(harness.query_by_label_contains("Page outline").is_none());
+    cleaned_view(&mut harness);
+    harness.get_by_label("Current: a.png");
+    // The page is 120 x 110.
+    assert_near(cleaned_aspect(&harness), 120.0 / 110.0, 0.1);
+    let corner = centre(&harness, "Top-left corner");
+    assert!(
+        corner.distance(on_photo(&harness, 40.0, 20.0)) < 8.0,
+        "{corner:?}"
+    );
+    for label in [
+        "Top-right corner",
+        "Bottom-right corner",
+        "Bottom-left corner",
+    ] {
+        harness.get_by_label(label);
+    }
+    assert!(disabled(&harness, "Reset Corners"));
 
-    harness.state_mut().queue(Command::ToggleDebug);
+    harness.get_by_label("Original").click();
     settle(&mut harness);
-    harness.get_by_label_contains("Page outline: (");
-    harness.get_by_label_contains("Black / white point");
+    assert!(harness.query_by_label("Top-left corner").is_none());
+}
 
-    // A blank image has no page to find.
-    harness.get_by_label("b.png").click();
+#[test]
+fn dragging_a_corner_cleans_the_page_again() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    let before = cleaned_aspect(&harness);
+
+    move_bottom_right(&mut harness, 160.0, 75.0);
+    let corner = centre(&harness, "Bottom-right corner");
+    assert!(
+        corner.distance(on_photo(&harness, 160.0, 75.0)) < 2.0,
+        "{corner:?}"
+    );
+    // Straightened to the average of opposite sides: (120 + 132) / 2 by (110 + 55) / 2.
+    assert_near(cleaned_aspect(&harness), 126.0 / 82.5, 0.1);
+
+    harness.get_by_label("Reset Corners").click();
     settle(&mut harness);
-    harness.get_by_label_contains("No page outline");
+    assert_near(cleaned_aspect(&harness), before, 0.01);
+    assert!(disabled(&harness, "Reset Corners"));
+}
+
+#[test]
+fn corners_show_they_can_be_dragged() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    let cursor = |harness: &Harness<'_, NotebookApp>| harness.output().platform_output.cursor_icon;
+
+    let corner = centre(&harness, "Top-left corner");
+    harness.hover_at(corner);
+    harness.step();
+    assert_eq!(cursor(&harness), egui::CursorIcon::Grab);
+
+    hold(&mut harness, corner, corner + egui::vec2(20.0, 20.0));
+    assert_eq!(cursor(&harness), egui::CursorIcon::Grabbing);
+}
+
+#[test]
+fn placing_corners_takes_four_clicks_in_any_order() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+
+    harness.get_by_label("Place Corners").click();
+    settle(&mut harness);
+    harness.get_by_label_contains("Click the page's four corners");
+    assert!(harness.query_by_label("Top-left corner").is_none());
+    for (x, y) in [(160.0, 75.0), (40.0, 20.0), (40.0, 75.0), (160.0, 20.0)] {
+        let at = on_photo(&harness, x, y);
+        click_at(&mut harness, at);
+    }
+    settle(&mut harness);
+
+    // The top half of the page, 120 x 55.
+    assert_near(cleaned_aspect(&harness), 120.0 / 55.0, 0.1);
+    let corner = centre(&harness, "Top-left corner");
+    assert!(
+        corner.distance(on_photo(&harness, 40.0, 20.0)) < 2.0,
+        "{corner:?}"
+    );
+    assert!(!disabled(&harness, "Reset Corners"));
+}
+
+#[test]
+fn escape_stops_placing_corners() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    let before = cleaned_aspect(&harness);
+
+    harness.get_by_label("Place Corners").click();
+    settle(&mut harness);
+    for (x, y) in [(40.0, 20.0), (160.0, 20.0)] {
+        let at = on_photo(&harness, x, y);
+        click_at(&mut harness, at);
+    }
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Escape);
+
+    harness.get_by_label("Top-left corner");
+    assert!(
+        harness
+            .query_by_label_contains("Click the page's four corners")
+            .is_none()
+    );
+    assert_near(cleaned_aspect(&harness), before, 0.01);
+    assert!(disabled(&harness, "Reset Corners"));
+}
+
+#[test]
+fn only_the_latest_corners_are_kept() {
+    let gate = Arc::new(RwLock::new(()));
+    let app = NotebookApp::default().with_loader(gated_loader(gate.clone()));
+    let mut harness = harness_for(app);
+    cleaned_view(&mut harness);
+
+    let held = gate.write().unwrap();
+    for y in [75.0, 40.0] {
+        let from = centre(&harness, "Bottom-right corner");
+        let to = on_photo(&harness, 160.0, y);
+        drag(&mut harness, from, to);
+    }
+    // The old cleaned page stays up while the new one is made.
+    harness.get_by_label("Current: a.png (cleaned, loading)");
+
+    drop(held);
+    settle(&mut harness);
+    // (120 + 150) / 2 by (110 + 20) / 2.
+    assert_near(cleaned_aspect(&harness), 135.0 / 65.0, 0.1);
+}
+
+#[test]
+fn transcription_uses_the_users_corners() {
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let fetch: Fetch = {
+        let sent = sent.clone();
+        Arc::new(move |_, _, corners, _| {
+            sent.lock().unwrap().push(corners);
+            Ok(recorded())
+        })
+    };
+    let mut harness = harness_with(Transcriber::new(fetch));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert!(harness.query_by_label_contains("Bounds changed").is_none());
+
+    harness.get_by_label("Cleaned").click();
+    settle(&mut harness);
+    move_bottom_right(&mut harness, 160.0, 75.0);
+    show_transcript(&mut harness);
+    harness.get_by_label_contains("Bounds changed since this was transcribed");
+
+    harness.get_by_label("Force retranscription").click();
+    step_until_transcribed(&mut harness);
+    step_until(&mut harness, "# Thurs 23 Oct");
+    assert!(harness.query_by_label_contains("Bounds changed").is_none());
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0], None);
+    let [_, _, [x, y], _] = sent[1].expect("the user's corners");
+    assert!(
+        (x - 160.0).abs() < 2.0 && (y - 75.0).abs() < 2.0,
+        "{:?}",
+        sent[1]
+    );
 }
 
 /// Without a transcriber (no credentials), there's nothing to transcribe or export.
@@ -616,7 +840,7 @@ fn failed_transcription_can_be_retried() {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let fetch: Fetch = Arc::new(
-        move |_, _, _| match counter.fetch_add(1, Ordering::SeqCst) {
+        move |_, _, _, _| match counter.fetch_add(1, Ordering::SeqCst) {
             0 => Err(overloaded()),
             _ => Ok(recorded()),
         },
@@ -731,7 +955,7 @@ fn answering(
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let answers = std::sync::Mutex::new(answers.into_iter());
-    let fetch: Fetch = Arc::new(move |_, _, _| {
+    let fetch: Fetch = Arc::new(move |_, _, _, _| {
         counter.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(delay);
         answers.lock().unwrap().next().expect("an answer left")
@@ -787,7 +1011,7 @@ fn force_retranscribes_without_asking_if_uncorrected() {
 #[test]
 fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     // Answers as the model asked.
-    let fetch: Fetch = Arc::new(|_, _, model| {
+    let fetch: Fetch = Arc::new(|_, _, _, model| {
         let recorded = recorded();
         let body = String::from_utf8(recorded.body).unwrap().replace(
             "\"model\": \"claude-opus-5-5\"",
@@ -929,7 +1153,7 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
     );
     let fetch: Fetch = {
         let (calls, running, most) = (calls.clone(), running.clone(), most.clone());
-        Arc::new(move |_, _, _| {
+        Arc::new(move |_, _, _, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             let now = running.fetch_add(1, Ordering::SeqCst) + 1;
             most.fetch_max(now, Ordering::SeqCst);
@@ -979,7 +1203,7 @@ fn deleting_a_queued_page_means_it_isnt_sent() {
     let (calls, slow) = (Arc::new(AtomicUsize::new(0)), Duration::from_millis(100));
     let fetch: Fetch = {
         let calls = calls.clone();
-        Arc::new(move |_, _, _| {
+        Arc::new(move |_, _, _, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             std::thread::sleep(slow);
             Ok(recorded())
@@ -1015,15 +1239,7 @@ fn dragging_the_split_widens_the_page() {
     let before = width(&harness);
 
     let start = centre(&harness, "Resize the transcript");
-    harness.hover_at(start);
-    settle(&mut harness);
-    harness.drag_at(start);
-    settle(&mut harness);
-    for step in 1..=5 {
-        harness.hover_at(egui::pos2(start.x + 12.0 * step as f32, start.y));
-        settle(&mut harness);
-    }
-    harness.drop_at(egui::pos2(start.x + 60.0, start.y));
+    drag(&mut harness, start, egui::pos2(start.x + 60.0, start.y));
     settle(&mut harness);
     assert!(
         width(&harness) > before + 50.0,

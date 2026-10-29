@@ -64,8 +64,9 @@ fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
         None => log::warn!("No cache directory: transcriptions won't be cached"),
     }
-    let fetch =
-        move |bytes: &[u8], params: &_, model| fetch_page(&credentials, bytes, params, model);
+    let fetch = move |bytes: &[u8], params: &_, corners, model| {
+        fetch_page(&credentials, bytes, params, corners, model)
+    };
     let transcriber = notebook_app::Transcriber::new(std::sync::Arc::new(fetch));
     // Comparing reads other models' cache entries: only worth it if someone's reading the log.
     let transcriber = match &cache {

@@ -148,7 +148,7 @@ fn cleaned_output_matches_golden() {
     let params = CleanParams::default();
     let mut failures = Vec::new();
     for fixture in FIXTURES {
-        let cleaned = clean(&load(fixture.name), &params);
+        let cleaned = clean(&load(fixture.name), &params, None);
         let actual = shrink_to_fit(cleaned.image, GOLDEN_SIDE_PX);
         let golden = golden_path(fixture.name);
         if update {

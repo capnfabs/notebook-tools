@@ -5,7 +5,7 @@ use std::sync::Arc;
 use image::buffer::ConvertBuffer as _;
 use image::{RgbImage, RgbaImage, imageops};
 
-use crate::clean::{CleanParams, CleanReport, clean};
+use crate::clean::{CleanParams, CleanReport, Quad, clean};
 use crate::decode::{DecodeError, decode};
 use crate::transcript::Transcript;
 
@@ -29,6 +29,12 @@ pub struct Page {
     pub loaded: Option<Loaded>,
     /// Claude's transcription, once there is one.
     pub transcript: Option<Transcript>,
+    /// Where the user put the page's corners, in the photo's pixels, if they did. Otherwise
+    /// cleaning finds them.
+    pub corners: Option<Quad>,
+    /// [`Self::corners`] when the page was sent to be transcribed. When they differ, the
+    /// transcript's boxes may not line up with the cleaned page.
+    pub transcribed_with: Option<Quad>,
 }
 
 impl Page {
@@ -39,6 +45,8 @@ impl Page {
             bytes,
             loaded: None,
             transcript: None,
+            corners: None,
+            transcribed_with: None,
         }
     }
 }
@@ -54,14 +62,22 @@ pub struct Loaded {
     pub cleaned_thumbnail: RgbaImage,
     /// What cleaning found. Its `output_size` is `cleaned`'s size.
     pub report: CleanReport,
+    /// The user's corners it was cleaned with, if any. Once they differ from the page's, it's out
+    /// of date.
+    pub corners: Option<Quad>,
 }
 
 impl Loaded {
-    /// Decodes and cleans a page's file. Takes a while for a big photo.
-    pub fn new(bytes: &[u8], params: &CleanParams) -> Result<Self, DecodeError> {
+    /// Decodes and cleans a page's file, cropping to `corners` if given. Takes a while for a big
+    /// photo.
+    pub fn new(
+        bytes: &[u8],
+        params: &CleanParams,
+        corners: Option<Quad>,
+    ) -> Result<Self, DecodeError> {
         let photo = decode(bytes)?;
         let original = shrunk_copy(&photo, params.max_output_side);
-        let cleaned = clean(&photo, params);
+        let cleaned = clean(&photo, params, corners);
         let jpeg = |img: &RgbaImage| -> Arc<[u8]> {
             let rgb: RgbImage = img.convert();
             crate::ocr::jpeg(&rgb, PAGE_JPEG_QUALITY).into()
@@ -72,6 +88,7 @@ impl Loaded {
             original: jpeg(&original),
             cleaned: jpeg(&cleaned.image),
             report: cleaned.report,
+            corners,
         })
     }
 }
@@ -258,8 +275,12 @@ mod tests {
             max_output_side: 400,
             ..CleanParams::default()
         };
-        let loaded = Loaded::new(&page_photo(1000, 500), &params).unwrap();
-        assert!(loaded.report.outline.is_ok(), "{:?}", loaded.report.outline);
+        let loaded = Loaded::new(&page_photo(1000, 500), &params, None).unwrap();
+        assert!(
+            loaded.report.outline.is_some(),
+            "{:?}",
+            loaded.report.detected
+        );
 
         let original = decode(&loaded.original).unwrap();
         assert_eq!(original.dimensions(), (400, 200));
@@ -279,8 +300,28 @@ mod tests {
     }
 
     #[test]
+    fn loading_crops_to_the_users_corners() {
+        let corners = [[0.0, 0.0], [500.0, 0.0], [500.0, 500.0], [0.0, 500.0]];
+        let loaded = Loaded::new(
+            &page_photo(1000, 500),
+            &CleanParams::default(),
+            Some(corners),
+        );
+        let loaded = loaded.unwrap();
+        assert_eq!(loaded.corners, Some(corners));
+        assert_eq!(loaded.report.outline, Some(corners));
+        assert!(
+            loaded.report.detected.is_ok(),
+            "{:?}",
+            loaded.report.detected
+        );
+        assert_eq!(loaded.report.output_size, (500, 500));
+        assert_eq!(decode(&loaded.original).unwrap().dimensions(), (1000, 500));
+    }
+
+    #[test]
     fn loading_rejects_non_images() {
-        assert!(Loaded::new(b"hi", &CleanParams::default()).is_err());
+        assert!(Loaded::new(b"hi", &CleanParams::default(), None).is_err());
     }
 
     #[test]

@@ -10,3 +10,7 @@ You draw the four-sided-shape / annotate the corners on the _original_ view. Pro
 User-placed corners change the crop sent to Claude per page, but let's _not_ do cache-busting, for now, that only happens if you force retranscription.
 
 Also: remove the debug view from the 'original' Tab and the menu. We'll eventually reincorporate the image params that the debug display shows back into the UI (add a task for this; when we do that we want to be able to live-edit them too, so it's going to be a bit of work).
+
+There's currently a couple problems that need to be resolved before marking this fixed:
+1. the page outline ‘flickers’ when a node is released
+2. it’s possible to make the app crash on certain shapes, we maybe need to constrain the angles somehow.

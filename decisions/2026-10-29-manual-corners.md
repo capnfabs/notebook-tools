@@ -1,0 +1,5 @@
+# Manual page corners: in memory, no cache-busting
+
+The Cleaned view is a split: the photo with the page's four corners on the left (the user's, else detected, else the photo's own), the page cleaned with them on the right. Corners can be dragged, or clicked in afresh with Place Corners (ordered by angle around their centre, so the sides never cross); Reset Corners goes back to detection. The page is cleaned again from the full photo, in the background, when a corner is let go. The corners are per page, in memory only, and crop what's sent to Claude. They aren't in the cache key: a cached transcript stays until the user forces retranscription, and meanwhile the Transcribed view says "Bounds changed since this was transcribed". This revisits `2026-10-28-cache-key-ignores-clean-params.md`. The cleanup debug overlay is gone (see `tasks/live-clean-params.md`).
+
+Reason: Human Taste (split view, no cache-busting, the note's wording, removing the overlay); unquestioned agent recommendation for drag-plus-Place-Corners, cleaning on release and keeping corners in memory (gap: `tasks/persist-corners.md`).

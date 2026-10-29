@@ -374,11 +374,15 @@ pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), O
     Ok((status, response.bytes().map_err(network)?.to_vec()))
 }
 
-/// What's sent for `photo`: straightened and cropped to the page, with no lighting fix, and no
-/// more than [`MAX_IMAGE_PIXELS`], so the API doesn't resize it and Claude's boxes are in its
-/// pixels. See <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>.
-pub fn image_to_send(photo: &RgbaImage, params: &crate::CleanParams) -> RgbaImage {
-    let (page, _) = crate::crop_to_page(photo, params);
+/// What's sent for `photo`: straightened and cropped to the page (to `corners`, if given), with no
+/// lighting fix, and no more than [`MAX_IMAGE_PIXELS`], so the API doesn't resize it and Claude's
+/// boxes are in its pixels. See <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>.
+pub fn image_to_send(
+    photo: &RgbaImage,
+    params: &crate::CleanParams,
+    corners: Option<crate::Quad>,
+) -> RgbaImage {
+    let page = crate::crop_to_page(photo, params, corners).image;
     let (w, h) = page.dimensions();
     crate::shrink_to_fit(page, max_side_within(w, h, MAX_IMAGE_PIXELS))
 }
@@ -392,15 +396,17 @@ pub struct Fetched {
     pub image_size: (u32, u32),
 }
 
-/// Sends a page to `model` from its file's bytes (see [`image_to_send`]).
+/// Sends a page to `model` from its file's bytes, cropped to `corners` if given (see
+/// [`image_to_send`]).
 pub fn fetch_page(
     credentials: &Credentials,
     page_bytes: &[u8],
     params: &crate::CleanParams,
+    corners: Option<crate::Quad>,
     model: Model,
 ) -> Result<Fetched, OcrError> {
     let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
-    let page = image_to_send(&img, params);
+    let page = image_to_send(&img, params, corners);
     let body = request_body(&encode_jpeg(&page), model, EFFORT);
     let (status, body) = send(credentials, &body)?;
     Ok(Fetched {
@@ -505,7 +511,7 @@ mod tests {
         let params = crate::CleanParams::default();
         // Uniform grey has no page outline, so it's sent whole, scaled to the long-side limit.
         let photo = RgbaImage::from_pixel(4000, 3000, Rgba([128, 128, 128, 255]));
-        let (w, h) = image_to_send(&photo, &params).dimensions();
+        let (w, h) = image_to_send(&photo, &params, None).dimensions();
         assert!(w * h <= MAX_IMAGE_PIXELS, "{w}x{h}");
         assert!(
             w * h > MAX_IMAGE_PIXELS * 99 / 100,
@@ -518,7 +524,26 @@ mod tests {
         );
 
         let small = RgbaImage::from_pixel(1200, 900, Rgba([128, 128, 128, 255]));
-        assert_eq!(image_to_send(&small, &params).dimensions(), (1200, 900));
+        assert_eq!(
+            image_to_send(&small, &params, None).dimensions(),
+            (1200, 900)
+        );
+    }
+
+    #[test]
+    fn image_to_send_crops_to_the_users_corners() {
+        let photo = RgbaImage::from_pixel(1200, 900, Rgba([128, 128, 128, 255]));
+        let corners = [
+            [100.0, 100.0],
+            [700.0, 100.0],
+            [700.0, 500.0],
+            [100.0, 500.0],
+        ];
+        let params = crate::CleanParams::default();
+        assert_eq!(
+            image_to_send(&photo, &params, Some(corners)).dimensions(),
+            (600, 400)
+        );
     }
 
     /// Cached responses in the old shape wouldn't parse, so a schema change needs a new version.
