@@ -27,6 +27,7 @@ struct Entry {
     image_size: (u32, u32),
     response: Value,
     /// When it was stored, in seconds since the Unix epoch.
+    /// See `decisions/2026-10-24-cache-status.md`.
     stored_at: u64,
 }
 

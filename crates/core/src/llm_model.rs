@@ -1,4 +1,6 @@
 //! The Claude models that transcribe pages, and what they cost.
+//!
+//! See `decisions/2026-10-24-model-selector.md` and `decisions/2026-10-24-sonnet-quality.md`.
 
 use serde::Deserialize;
 

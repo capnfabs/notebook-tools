@@ -1,5 +1,5 @@
 //! Spike: how accurate are Claude's line and uncertain-word boxes, and what does effort cost?
-//! See `tasks/bbox-spike.md`.
+//! See `tasks/done/bbox-spike.md`.
 //!
 //! ```sh
 //! # Sends each photo at every effort, plus a smaller image at the default effort. Costs money.

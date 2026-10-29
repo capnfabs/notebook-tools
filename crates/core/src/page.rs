@@ -135,6 +135,7 @@ pub(crate) fn fitted_size(w: u32, h: u32, max_side: u32) -> (u32, u32) {
 }
 
 /// Pages with no duplicate names, in filename order until the user rearranges them.
+/// See `decisions/2026-10-24-page-order.md`.
 #[derive(Default)]
 pub struct Pages(Vec<Page>);
 

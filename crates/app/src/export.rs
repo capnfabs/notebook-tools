@@ -3,6 +3,8 @@
 //! Only transcribed, loaded pages can be exported: if any page in scope isn't, the dialog says which
 //! and won't go. Files are chosen through a [`SavePath`], so tests can stand in for the save
 //! dialog. The export itself runs on a thread, as a PDF of a whole notebook takes a moment.
+//!
+//! See `decisions/2026-10-23-export-rules.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

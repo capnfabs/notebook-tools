@@ -3,6 +3,8 @@
 //! make requests.
 //!
 //! Response shape: `decisions/2026-10-23-ocr-response-shape.md`.
+//!
+//! Client: `decisions/2026-10-23-claude-raw-http.md`.
 
 use std::fmt;
 

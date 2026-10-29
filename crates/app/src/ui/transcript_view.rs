@@ -2,6 +2,8 @@
 //!
 //! Uncertain words are marked on both sides; clicking one, or its box on the page, offers Claude's
 //! other readings or one of the user's own. Double-clicking a line edits it.
+//!
+//! See `decisions/2026-10-23-transcript-corrections.md`.
 
 use std::ops::Range;
 

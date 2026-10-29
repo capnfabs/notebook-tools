@@ -1,5 +1,7 @@
 //! Reads files dropped onto the window or picked with Add Pages…, and loads each one ([`Loaded::new`]) off the UI thread:
 //! decoding and cleaning a big photo takes a while. Finished loads come out of [`Ingest::next`].
+//!
+//! See `decisions/2026-10-28-pages-cleaned-on-load.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

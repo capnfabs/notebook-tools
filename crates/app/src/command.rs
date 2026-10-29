@@ -3,6 +3,8 @@
 //! right now ([`CommandState`]) and runs commands; a [`Frontend`] turns the user's input into
 //! commands, and shows their state. Exactly one frontend takes input: the native menu bar where
 //! there is one, else [`EguiKeys`].
+//!
+//! See `decisions/2026-10-29-mac-menu.md`.
 
 use eframe::egui;
 use egui::{Key, KeyboardShortcut, Modifiers};

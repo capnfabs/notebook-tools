@@ -1,5 +1,5 @@
 # `rfd` for the save dialog
 
-Markdown export asks where to save with `rfd`'s native dialog, native only (`scripts/check.sh` keeps it out of the wasm tree). The app takes it as an injected `SavePath`, so tests stand in for it. The clipboard uses egui's `copy_text`.
+Export asks where to save, and Add Pages… which photos to add, with `rfd`'s native dialogs. The app takes it as an injected `SavePath`, so tests stand in for it. The clipboard uses egui's `copy_text`.
 
 Reason: unquestioned agent recommendation.

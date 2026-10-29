@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer};
 use crate::llm_model::Usage;
 
 /// How many lines either side of its claimed line an uncertain word is looked for in.
+/// See `decisions/2026-10-23-uncertain-words-nearby-lines.md`.
 pub const LINE_SEARCH_RADIUS: usize = 2;
 
 /// `[x0, y0, x1, y1]` in pixels of the image sent.

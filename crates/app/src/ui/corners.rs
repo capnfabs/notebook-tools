@@ -2,6 +2,8 @@
 //! or, while placing, the user clicks four new ones. Corners are in the photo's pixels. Only
 //! outlines that can be straightened ([`is_page_shaped`]) are allowed: a dragged corner stops
 //! where it would spoil the shape, and a fourth click that would is refused.
+//!
+//! See `decisions/2026-10-29-manual-corners.md`.
 
 use eframe::egui;
 use egui::accesskit::Role;

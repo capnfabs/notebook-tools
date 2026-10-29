@@ -1,5 +1,7 @@
 //! Turns image files into upright pixels. Each format has a [`Decoder`]; [`decode`] picks the one
 //! that recognizes the file. Nothing past here knows which format a page came from.
+//!
+//! See `decisions/2026-10-23-image-abstraction-and-heic.md` and `decisions/2026-10-28-system-libheif.md`.
 
 use std::fmt;
 use std::io::Cursor;

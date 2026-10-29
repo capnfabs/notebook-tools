@@ -1,5 +1,7 @@
 //! Turns a photo of a notebook page (or spread) into something close to a scan: find the page
 //! outline, straighten and crop to it, then flatten the lighting to white paper.
+//!
+//! See `decisions/2026-10-23-cleaning-pipeline.md` and `decisions/2026-10-29-manual-corners.md`.
 
 use std::fmt;
 

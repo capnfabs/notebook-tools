@@ -1,6 +1,8 @@
 //! Modal dialogs laid out the macOS way: buttons at the bottom right, the affirmative one
 //! rightmost. Enter picks the affirmative button, unless a widget has the keyboard focus, and
 //! Escape cancels.
+//!
+//! See `decisions/2026-10-23-dialog-buttons.md`.
 
 use eframe::egui;
 use egui::{Align, Color32, Key, Layout, Modifiers, RichText};

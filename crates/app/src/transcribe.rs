@@ -5,6 +5,8 @@
 //!
 //! Pages are sent to the [`Model`] selected at the time. A page cached by any model isn't sent
 //! unless forced.
+//!
+//! See `decisions/2026-10-24-confirm-before-transcribing.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
