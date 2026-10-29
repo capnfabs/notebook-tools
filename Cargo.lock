@@ -3492,6 +3492,7 @@ dependencies = [
  "notebook_core",
  "rayon",
  "rfd",
+ "tempfile",
 ]
 
 [[package]]
@@ -3515,6 +3516,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "similar",
+ "tempfile",
  "ttf-parser",
 ]
 

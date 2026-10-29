@@ -80,12 +80,15 @@ impl<K: Send + 'static, T: Send + 'static> Jobs<K, T> {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
+    /// By the clock rather than counting tries, and generously: the pool is shared with every
+    /// other test running at once.
     fn wait_for<K: Send + 'static, T: Send + 'static>(jobs: &mut Jobs<K, T>) -> (K, T) {
-        for _ in 0..500 {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
             if let Some(done) = jobs.next() {
                 return done;
             }

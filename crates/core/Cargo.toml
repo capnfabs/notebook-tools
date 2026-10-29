@@ -29,3 +29,4 @@ ttf-parser = "0.25"
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 lopdf = "0.46"
+tempfile.workspace = true

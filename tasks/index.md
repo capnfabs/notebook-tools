@@ -22,11 +22,11 @@
 - [x] [HEIC decoding](heic-decoding.md)
 - [x] [Mac menu bar](mac-menu.md)
 - [x] [Manual page detection tooling](manual-page-detection.md)
+- [x] [Flaky: `settle` during a transcription](flaky-command-tests.md)
 
 ## features
 
 ## polish
-- [ ] [Flaky: `settle` during a transcription](flaky-command-tests.md)
 - [ ] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)

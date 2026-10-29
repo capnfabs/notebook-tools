@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self,
@@ -18,6 +18,7 @@ use notebook_core::compare;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError};
 use notebook_core::{Loaded, Quad, is_page_shaped};
+use tempfile::TempDir;
 
 /// Stands in for a file dragged from the desktop.
 #[derive(Debug)]
@@ -98,13 +99,13 @@ fn counting_fetch() -> (Fetch, Arc<AtomicUsize>) {
     (fetch, calls)
 }
 
-/// An empty cache directory of the test's own. Harnesses given the same one share a cache.
-fn cache_dir(test: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("viewer-cache")
-        .join(test);
-    std::fs::remove_dir_all(&dir).ok();
-    dir
+/// An empty directory of the test's own, removed when dropped. Unique, so overlapping runs of the
+/// suite, from two terminals say, don't share files. Harnesses given the same one share a cache.
+fn test_dir(test: &str) -> TempDir {
+    tempfile::Builder::new()
+        .prefix(&format!("viewer-{test}-"))
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .unwrap()
 }
 
 fn cached_harness(fetch: Fetch, cache_dir: &Path) -> Harness<'static, NotebookApp> {
@@ -174,32 +175,38 @@ fn recorded_fixture(name: &str) -> Fetched {
 /// Steps frames until a label containing `text` appears. Transcription finishes on another
 /// thread, and the spinner keeps requesting repaints, so `run` won't do.
 fn step_until(harness: &mut Harness<'_, NotebookApp>, text: &str) {
-    for _ in 0..500 {
+    wait_for(&format!("{text:?} to appear"), || {
         harness.step();
-        if harness.query_by_label_contains(text).is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("{text:?} never appeared");
+        harness.query_by_label_contains(text).is_some()
+    });
 }
 
 /// Steps frames until nothing is being transcribed. The first one acts on any click.
 fn step_until_transcribed(harness: &mut Harness<'_, NotebookApp>) {
     harness.step();
-    for _ in 0..500 {
+    wait_for("transcription to finish", || {
         harness.step();
         // The status line and, in the Transcribed view, the page's progress.
-        if harness
+        harness
             .query_all_by_label_contains("Transcribing")
             .next()
             .is_none()
-        {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
+    });
+}
+
+/// How long to wait for work done off the UI thread. Far longer than it takes, because the whole
+/// suite runs at once and a busy machine can starve any one test for seconds.
+const PATIENCE: Duration = Duration::from_secs(30);
+
+/// Calls `done` until it's true, sleeping in between so other threads get a turn, and fails the
+/// test after [`PATIENCE`]. Goes by the clock rather than counting tries, since under load a try
+/// can take any time.
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    while !done() {
+        assert!(Instant::now() < deadline, "gave up waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("still transcribing");
 }
 
 fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)]) {
@@ -226,19 +233,24 @@ fn gated_loader(gate: Arc<RwLock<()>>) -> Load {
     })
 }
 
+/// Answers as `fetch` does, but only while `gate` isn't held for writing. Holds work up for as
+/// long as a test needs, where a sleep would only usually be long enough.
+fn gated_fetch(fetch: Fetch, gate: Arc<RwLock<()>>) -> Fetch {
+    Arc::new(move |bytes, params, corners, model| {
+        let _open = gate.read().unwrap();
+        fetch(bytes, params, corners, model)
+    })
+}
+
 /// Steps frames until no page is loading and the viewer has its image, which both happen off the
-/// UI thread, then runs until the UI is idle. The first frame acts on any input.
+/// UI thread, then runs until the UI is idle. The first frame acts on any input. A transcription
+/// or export in flight shows a spinner, which repaints until it's done, so that waits for it too.
 fn settle(harness: &mut Harness<'_, NotebookApp>) {
-    harness.step();
-    for _ in 0..500 {
-        if !harness.state().loading() {
-            harness.run();
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
+    wait_for("pages to load", || {
         harness.step();
-    }
-    panic!("still loading");
+        !harness.state().loading()
+    });
+    wait_for("the UI to go idle", || harness.run_ok().is_some());
 }
 
 /// The eval log's events, less each one's page and model, as `(kind, detail)`.
@@ -1006,15 +1018,15 @@ fn switching_to_transcribed_transcribes_the_shown_page() {
 
 #[test]
 fn cached_pages_show_straight_away() {
-    let dir = cache_dir("show_straight_away");
+    let dir = test_dir("show_straight_away");
     let (fetch, _) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
     // Later, the same photo under another name, after an uncached one.
     let (fetch, calls) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", png()), ("b.png", page_photo())]);
     show_transcript(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1028,22 +1040,19 @@ fn cached_pages_show_straight_away() {
 
 #[test]
 fn cached_pages_load_without_a_transcriber() {
-    let dir = cache_dir("without_transcriber");
+    let dir = test_dir("without_transcriber");
     let (fetch, _) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
-    let app = NotebookApp::with_transcription(None, Some(Cache::new(&dir)));
+    let app = NotebookApp::with_transcription(None, Some(Cache::new(dir.path())));
     let mut harness = harness_for(app);
     drop_files(&mut harness, &[("a.png", page_photo())]);
-    for _ in 0..500 {
+    wait_for("the cached transcript", || {
         harness.step();
-        if !harness.state().eval_log().events().is_empty() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+        !harness.state().eval_log().events().is_empty()
+    });
     assert!(matches!(
         harness.state().eval_log().events(),
         [Event::Transcribed {
@@ -1053,17 +1062,13 @@ fn cached_pages_load_without_a_transcriber() {
     ));
 }
 
-/// Answers with the recorded responses in `answers`, in turn, sleeping for `delay` first.
-fn answering(
-    answers: Vec<Result<Fetched, OcrError>>,
-    delay: Duration,
-) -> (Fetch, Arc<AtomicUsize>) {
+/// Answers with the recorded responses in `answers`, in turn.
+fn answering(answers: Vec<Result<Fetched, OcrError>>) -> (Fetch, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let answers = std::sync::Mutex::new(answers.into_iter());
     let fetch: Fetch = Arc::new(move |_, _, _, _| {
         counter.fetch_add(1, Ordering::SeqCst);
-        std::thread::sleep(delay);
         answers.lock().unwrap().next().expect("an answer left")
     });
     (fetch, calls)
@@ -1096,12 +1101,15 @@ fn overloaded() -> OcrError {
 #[test]
 fn force_retranscribes_without_asking_if_uncorrected() {
     let answers = vec![Ok(recorded()), Ok(recorded_fixture("fallback"))];
-    let (fetch, calls) = answering(answers, Duration::from_millis(100));
-    let mut harness = cached_harness(fetch, &cache_dir("force"));
+    let (fetch, calls) = answering(answers);
+    let gate = Arc::new(RwLock::new(()));
+    let dir = test_dir("force");
+    let mut harness = cached_harness(gated_fetch(fetch, gate.clone()), dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     force_beside(&harness, "Transcribed 20");
 
+    let held = gate.write().unwrap();
     harness.get_by_label("Force retranscription").click();
     harness.step();
     harness.step();
@@ -1110,6 +1118,7 @@ fn force_retranscribes_without_asking_if_uncorrected() {
     assert!(harness.query_by_label("# Thurs 23 Oct").is_none());
     assert!(harness.query_by_label("Force retranscription").is_none());
 
+    drop(held);
     step_until(&mut harness, "by claude-opus-4-8");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -1129,10 +1138,10 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
         })
     });
     // Each page sent, by whom, and how it compares with other models' cached transcripts.
-    let dir = cache_dir("select_model");
+    let dir = test_dir("select_model");
     let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
     let on_transcribe_completed: OnTranscribeCompleted = {
-        let (sent, cache) = (sent.clone(), Cache::new(&dir));
+        let (sent, cache) = (sent.clone(), Cache::new(dir.path()));
         Arc::new(
             move |page: &str, bytes: &[u8], t: &notebook_core::transcript::Transcript| {
                 let compared = compare::with_cached(&cache, bytes, t);
@@ -1145,7 +1154,7 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     };
     let transcriber =
         Transcriber::new(fetch).on_transcribe_completed(on_transcribe_completed.clone());
-    let mut harness = harness_with_cache(transcriber, &dir);
+    let mut harness = harness_with_cache(transcriber, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     // Its label, then the dropdown (named by the label), then Sort by name, in a row.
@@ -1189,7 +1198,7 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
             ),
         ]
     );
-    let cache = Cache::new(&dir);
+    let cache = Cache::new(dir.path());
     let photo = page_photo();
     assert!(cache.get(&photo, Model::Opus).is_some());
     assert!(cache.get(&photo, Model::Sonnet).is_some());
@@ -1197,7 +1206,7 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     // Either entry will do for a new page, which isn't sent.
     let (fetch, calls) = counting_fetch();
     let transcriber = Transcriber::new(fetch).on_transcribe_completed(on_transcribe_completed);
-    let mut harness = harness_with_cache(transcriber, &dir);
+    let mut harness = harness_with_cache(transcriber, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -1207,10 +1216,10 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
 
 #[test]
 fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
-    let dir = cache_dir("failed_force");
+    let dir = test_dir("failed_force");
     let answers = vec![Ok(recorded()), Err(overloaded())];
-    let (fetch, _) = answering(answers, Duration::ZERO);
-    let mut harness = cached_harness(fetch, &dir);
+    let (fetch, _) = answering(answers);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     correct_plumber(&mut harness);
@@ -1226,7 +1235,7 @@ fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
 
     // The cached answer is still Claude's.
     let (fetch, calls) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     harness.get_by_label("plumber");
@@ -1257,13 +1266,15 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
         Arc::new(AtomicUsize::new(0)),
         Arc::new(AtomicUsize::new(0)),
     );
+    let gate = Arc::new(RwLock::new(()));
     let fetch: Fetch = {
-        let (calls, running, most) = (calls.clone(), running.clone(), most.clone());
+        let (calls, running, most, gate) =
+            (calls.clone(), running.clone(), most.clone(), gate.clone());
         Arc::new(move |_, _, _, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             let now = running.fetch_add(1, Ordering::SeqCst) + 1;
             most.fetch_max(now, Ordering::SeqCst);
-            std::thread::sleep(Duration::from_millis(50));
+            drop(gate.read().unwrap());
             running.fetch_sub(1, Ordering::SeqCst);
             Ok(recorded())
         })
@@ -1282,7 +1293,15 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
 
     harness.get_by_label("Transcribe all").click();
     settle(&mut harness);
+    let held = gate.write().unwrap();
     harness.get_by_label("Transcribe").click();
+    wait_for("four pages to be sent", || {
+        harness.step();
+        running.load(Ordering::SeqCst) >= 4
+    });
+    // A few more frames, in which a fifth mustn't start.
+    harness.run_steps(4);
+    drop(held);
     step_until_transcribed(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 6);
     assert_eq!(most.load(Ordering::SeqCst), 4);
@@ -1290,14 +1309,14 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
 
 #[test]
 fn transcribe_all_uses_the_cache() {
-    let dir = cache_dir("transcribe_all");
+    let dir = test_dir("transcribe_all");
     let (fetch, _) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
     let (fetch, calls) = counting_fetch();
-    let mut harness = cached_harness(fetch, &dir);
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     harness.get_by_label("Transcribe all").click();
     step_until_transcribed(&mut harness);
@@ -1306,21 +1325,15 @@ fn transcribe_all_uses_the_cache() {
 
 #[test]
 fn deleting_a_queued_page_means_it_isnt_sent() {
-    let (calls, slow) = (Arc::new(AtomicUsize::new(0)), Duration::from_millis(100));
-    let fetch: Fetch = {
-        let calls = calls.clone();
-        Arc::new(move |_, _, _, _| {
-            calls.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(slow);
-            Ok(recorded())
-        })
-    };
-    let mut harness = harness_with(Transcriber::new(fetch));
+    let (fetch, calls) = counting_fetch();
+    let gate = Arc::new(RwLock::new(()));
+    let mut harness = harness_with(Transcriber::new(gated_fetch(fetch, gate.clone())));
     let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
     let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
     drop_files(&mut harness, &files);
     harness.get_by_label("Transcribe all").click();
     settle(&mut harness);
+    let held = gate.write().unwrap();
     harness.get_by_label("Transcribe").click();
     harness.step();
 
@@ -1328,6 +1341,7 @@ fn deleting_a_queued_page_means_it_isnt_sent() {
     harness.step();
     harness.get_by_label("Delete").click();
     harness.step();
+    drop(held);
     step_until_transcribed(&mut harness);
     assert_eq!(thumbnails(&harness).len(), 5);
     assert_eq!(calls.load(Ordering::SeqCst), 5);
@@ -1576,9 +1590,8 @@ fn exports_markdown_to_the_clipboard() {
 
 #[test]
 fn reexport_overwrites_the_same_file() {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-reexport/a.md");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::remove_file(&path).ok();
+    let dir = test_dir("reexport");
+    let path = dir.path().join("a.md");
     let asked = Arc::new(AtomicUsize::new(0));
     let save_path: SavePath = {
         let (asked, path) = (asked.clone(), path.clone());
@@ -1680,9 +1693,8 @@ fn export_defaults_to_everything_as_markdown_on_the_clipboard() {
 
 #[test]
 fn exports_a_pdf() {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-pdf/notebook.pdf");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::remove_file(&path).ok();
+    let dir = test_dir("pdf");
+    let path = dir.path().join("notebook.pdf");
     let save_path: SavePath = {
         let path = path.clone();
         Arc::new(move |suggested| {
@@ -2036,7 +2048,7 @@ fn command_t_transcribes_or_says_how_to_retranscribe() {
 #[test]
 fn command_t_retries_a_failed_page() {
     let answers = vec![Err(overloaded()), Ok(recorded())];
-    let (fetch, calls) = answering(answers, Duration::ZERO);
+    let (fetch, calls) = answering(answers);
     let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
@@ -2050,8 +2062,9 @@ fn command_t_retries_a_failed_page() {
 #[test]
 fn command_shift_t_forces_retranscription() {
     let answers = vec![Ok(recorded()), Ok(recorded_fixture("fallback"))];
-    let (fetch, calls) = answering(answers, Duration::ZERO);
-    let mut harness = cached_harness(fetch, &cache_dir("command_shift_t"));
+    let (fetch, calls) = answering(answers);
+    let dir = test_dir("command_shift_t");
+    let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
@@ -2070,9 +2083,8 @@ fn command_shift_t_forces_retranscription() {
 
 #[test]
 fn command_e_exports_then_reexports() {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-command-e/a.md");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::remove_file(&path).ok();
+    let dir = test_dir("command_e");
+    let path = dir.path().join("a.md");
     let asked = Arc::new(AtomicUsize::new(0));
     let save_path: SavePath = {
         let (asked, path) = (asked.clone(), path.clone());
@@ -2110,9 +2122,8 @@ fn command_e_exports_then_reexports() {
 
 #[test]
 fn add_pages_adds_the_picked_files() {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("viewer-add-pages");
-    std::fs::create_dir_all(&dir).unwrap();
-    let paths = vec![dir.join("b.png"), dir.join("a.png")];
+    let dir = test_dir("add_pages");
+    let paths = vec![dir.path().join("b.png"), dir.path().join("a.png")];
     for path in &paths {
         std::fs::write(path, png()).unwrap();
     }
