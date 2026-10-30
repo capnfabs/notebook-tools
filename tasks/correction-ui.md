@@ -8,3 +8,4 @@ In the Transcribed view (`crates/app/src/ui/transcript_view.rs`):
 - (d) Make double-click-to-edit discoverable, e.g. a tooltip on single click.
 - (e) Hovering a text line highlights its line box on the image.
 - (f) Scroll the page and the text in sync while correcting.
+- (g) clicking one orange-highlighted correction (on either the image or the transcript view) and then immediately clicking _another_ orange-highlighted correction causes the second correction to flicker open and then immediately shut, and should stay open instead.
