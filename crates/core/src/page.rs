@@ -30,11 +30,8 @@ pub struct Page {
     /// Claude's transcription, once there is one.
     pub transcript: Option<Transcript>,
     /// Where the user put the page's corners, in the photo's pixels, if they did. Otherwise
-    /// cleaning finds them.
+    /// cleaning finds them. The transcript keeps the corners it was made with.
     pub corners: Option<Quad>,
-    /// [`Self::corners`] when the page was sent to be transcribed. When they differ, the
-    /// transcript's boxes may not line up with the cleaned page.
-    pub transcribed_with: Option<Quad>,
 }
 
 impl Page {
@@ -46,7 +43,6 @@ impl Page {
             loaded: None,
             transcript: None,
             corners: None,
-            transcribed_with: None,
         }
     }
 }

@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
+use notebook_core::Crop;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{
     Credentials, EFFORT, OcrError, encode_jpeg, parse_response, request_body,
@@ -27,16 +28,13 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 fn parse(name: &str) -> Result<Transcript, OcrError> {
-    parse_response(200, &fixture(name), (1200, 900))
+    parse_response(200, &fixture(name), Crop::whole(1200, 900))
 }
 
 /// Panics if any of `transcript`'s boxes isn't ordered or inside the image sent. Boxes tend to sit
 /// a little low, so one on the bottom line can overrun slightly.
 fn assert_boxes_in_bounds(transcript: &Transcript) {
-    let (w, h) = (
-        transcript.image_size.0 as f32,
-        transcript.image_size.1 as f32,
-    );
+    let (w, h) = (transcript.crop.size.0 as f32, transcript.crop.size.1 as f32);
     let slack = w.max(h) * 0.01;
     let boxes = transcript.lines.iter().map(|l| l.bbox);
     for [x0, y0, x1, y1] in boxes
@@ -78,7 +76,7 @@ fn request_body_sets_model() {
 fn parses_success() {
     let transcript = parse("success").unwrap();
     assert_eq!(transcript.model, Model::Opus.id());
-    assert_eq!(transcript.image_size, (1200, 900));
+    assert_eq!(transcript.crop, Crop::whole(1200, 900));
     insta::assert_debug_snapshot!("success_transcript", transcript);
     insta::assert_snapshot!("success_markdown", transcript.markdown());
 }
@@ -129,7 +127,10 @@ fn parses_bbox_spike_responses() {
         // Never answered, so nothing was recorded.
         let Some(status) = run.status else { continue };
         let body = std::fs::read(dir.join(format!("{name}.json"))).unwrap();
-        match (parse_response(status, &body, run.sent_size), run.error) {
+        match (
+            parse_response(status, &body, Crop::whole(run.sent_size.0, run.sent_size.1)),
+            run.error,
+        ) {
             (Ok(transcript), None) => {
                 assert!(transcript.usage.output_tokens > 0, "{name}");
                 assert_boxes_in_bounds(&transcript);
@@ -180,14 +181,15 @@ fn truncated_answer_is_an_error() {
 #[test]
 fn api_error_status() {
     assert_eq!(
-        parse_response(529, &fixture("api_error"), (1, 1)),
+        parse_response(529, &fixture("api_error"), Crop::whole(1, 1)),
         Err(OcrError::Api {
             status: 529,
             kind: "overloaded_error".into(),
             message: "Overloaded".into(),
         })
     );
-    let Err(OcrError::Api { status, kind, .. }) = parse_response(502, b"<html>Bad gateway", (1, 1))
+    let Err(OcrError::Api { status, kind, .. }) =
+        parse_response(502, b"<html>Bad gateway", Crop::whole(1, 1))
     else {
         panic!("expected an API error");
     };
@@ -200,7 +202,7 @@ fn non_json_answer_is_a_parse_error() {
         .unwrap()
         .replace(r#""text": "{"#, r#""text": "not json {"#);
     assert!(matches!(
-        parse_response(200, body.as_bytes(), (1, 1)),
+        parse_response(200, body.as_bytes(), Crop::whole(1, 1)),
         Err(OcrError::Parse(_))
     ));
 }
@@ -220,7 +222,7 @@ fn live_transcribes_fixture_photo() {
     };
     let bytes = std::fs::read(fixtures_dir().join(format!("{name}.jpg"))).unwrap();
     let img = notebook_core::decode(&bytes).unwrap();
-    let page =
+    let (page, crop) =
         notebook_core::ocr::image_to_send(&img, &notebook_core::CleanParams::default(), None);
     let (status, body) = notebook_core::ocr::send(
         &credentials,
@@ -234,7 +236,7 @@ fn live_transcribes_fixture_photo() {
     std::fs::write(&out, &body).unwrap();
     eprintln!("response saved to {}", out.display());
 
-    let transcript = parse_response(status, &body, page.dimensions()).unwrap();
+    let transcript = parse_response(status, &body, crop).unwrap();
     eprintln!(
         "{} {:?}\n{}",
         transcript.model,

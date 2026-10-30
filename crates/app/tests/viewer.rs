@@ -17,7 +17,7 @@ use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError};
-use notebook_core::{Loaded, Quad, is_page_shaped};
+use notebook_core::{CleanParams, Crop, Loaded, Quad, decode, is_page_shaped};
 use tempfile::TempDir;
 
 /// Stands in for a file dragged from the desktop.
@@ -157,7 +157,7 @@ fn correct_plumber(harness: &mut Harness<'_, NotebookApp>) {
     settle(harness);
 }
 
-/// The recorded response from core's OCR tests.
+/// The recorded response from core's OCR tests, as if for [`page_photo`].
 fn recorded() -> Fetched {
     recorded_fixture("success")
 }
@@ -168,7 +168,18 @@ fn recorded_fixture(name: &str) -> Fetched {
     Fetched {
         status: 200,
         body: std::fs::read(path).unwrap(),
-        image_size: (1200, 900),
+        crop: sent_crop(&page_photo(), None),
+    }
+}
+
+/// Where `photo` is cut when sent cropped to `corners`, else its detected ones, but at the size of
+/// the image the recorded responses are for.
+fn sent_crop(photo: &[u8], corners: Option<Quad>) -> Crop {
+    let photo = decode(photo).unwrap();
+    let (_, crop) = notebook_core::ocr::image_to_send(&photo, &CleanParams::default(), corners);
+    Crop {
+        size: (1200, 900),
+        ..crop
     }
 }
 
@@ -834,26 +845,26 @@ fn transcription_uses_the_users_corners() {
     let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
     let fetch: Fetch = {
         let sent = sent.clone();
-        Arc::new(move |_, _, corners, _| {
+        Arc::new(move |bytes, _, corners, _| {
             sent.lock().unwrap().push(corners);
-            Ok(recorded())
+            Ok(Fetched {
+                crop: sent_crop(bytes, corners),
+                ..recorded()
+            })
         })
     };
     let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    assert!(harness.query_by_label_contains("Bounds changed").is_none());
 
     harness.get_by_label("Cleaned").click();
     settle(&mut harness);
     move_bottom_right(&mut harness, 160.0, 75.0);
     show_transcript(&mut harness);
-    harness.get_by_label_contains("Bounds changed since this was transcribed");
-
     harness.get_by_label("Force retranscription").click();
     step_until_transcribed(&mut harness);
     step_until(&mut harness, "# Thurs 23 Oct");
-    assert!(harness.query_by_label_contains("Bounds changed").is_none());
+    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0], None);
@@ -863,6 +874,94 @@ fn transcription_uses_the_users_corners() {
         "{:?}",
         sent[1]
     );
+}
+
+/// The end of the warning that transcribed lines are outside the page's bounds.
+const OUTSIDE: &str = "outside this page's new bounds";
+/// Part of the warning that much of the page wasn't transcribed.
+const MISSED: &str = "retranscribe to ensure you've got all text";
+
+/// Places a.png's corners at `corners` in the Cleaned view, then goes back to its transcript.
+fn recrop(harness: &mut Harness<'_, NotebookApp>, corners: [(f32, f32); 4]) {
+    harness.get_by_label("Cleaned").click();
+    settle(harness);
+    harness.get_by_label("Place Corners").click();
+    settle(harness);
+    for (x, y) in corners {
+        let at = on_photo(harness, x, y);
+        click_at(harness, at);
+    }
+    settle(harness);
+    show_transcript(harness);
+}
+
+/// Where the box labelled `label` is on a.png's cleaned page, as fractions of its width and height:
+/// `[x0, y0, x1, y1]`.
+fn on_page(harness: &Harness<'_, NotebookApp>, label: &str) -> [f64; 4] {
+    let page = harness.get_by_label("Current: a.png (cleaned)");
+    let page = page.accesskit_node().bounding_box().unwrap();
+    let node = harness.get_by_label(label);
+    let b = node.accesskit_node().bounding_box().unwrap();
+    [
+        (b.x0 - page.x0) / page.width(),
+        (b.y0 - page.y0) / page.height(),
+        (b.x1 - page.x0) / page.width(),
+        (b.y1 - page.y0) / page.height(),
+    ]
+}
+
+#[test]
+fn boxes_follow_the_page_when_its_corners_move() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    // As Claude put it: 330..520 of 1200 across, 190..250 of 900 down.
+    let before = on_page(&harness, "Box: plumber");
+    for (b, e) in before.iter().zip([0.275, 0.211, 0.433, 0.278]) {
+        assert_near(*b, e, 0.02);
+    }
+
+    // The top half of the page, which holds every line.
+    recrop(
+        &mut harness,
+        [(40.0, 20.0), (160.0, 20.0), (160.0, 75.0), (40.0, 75.0)],
+    );
+    let after = on_page(&harness, "Box: plumber");
+    for (a, e) in after.iter().zip([0.275, 0.422, 0.433, 0.556]) {
+        assert_near(*a, e, 0.03);
+    }
+    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
+    assert!(harness.query_by_label_contains(MISSED).is_none());
+}
+
+#[test]
+fn cropping_lines_off_the_page_warns() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    // The top fifth of the page, which holds the first line only.
+    recrop(
+        &mut harness,
+        [(40.0, 20.0), (160.0, 20.0), (160.0, 45.0), (40.0, 45.0)],
+    );
+    harness.get_by_label_contains(&format!("3 transcribed lines fall {OUTSIDE}"));
+    assert!(harness.query_by_label_contains(MISSED).is_none());
+}
+
+#[test]
+fn growing_the_crop_asks_for_retranscription() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    // Most of the photo, table and all.
+    recrop(
+        &mut harness,
+        [(5.0, 5.0), (195.0, 5.0), (195.0, 145.0), (5.0, 145.0)],
+    );
+    harness.get_by_label_contains(&format!(
+        "The bounds of this page have changed since last transcription; {MISSED}"
+    ));
+    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
 }
 
 /// Without a transcriber (no credentials), there's nothing to transcribe or export.

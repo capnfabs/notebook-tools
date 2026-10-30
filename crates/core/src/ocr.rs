@@ -16,6 +16,7 @@ use image::{ExtendedColorType, ImageEncoder as _, RgbImage, RgbaImage};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::clean::Crop;
 use crate::llm_model::{Model, Usage};
 use crate::page::max_side_within;
 use crate::transcript::{Line, Transcript, Uncertain};
@@ -302,12 +303,8 @@ struct Answer {
     uncertain: Vec<Uncertain>,
 }
 
-/// Turns an API response into a [`Transcript`]. `image_size` is the size of the image sent.
-pub fn parse_response(
-    status: u16,
-    body: &[u8],
-    image_size: (u32, u32),
-) -> Result<Transcript, OcrError> {
+/// Turns an API response into a [`Transcript`]. `crop` is where the image sent was cut from.
+pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript, OcrError> {
     if !(200..300).contains(&status) {
         return Err(match serde_json::from_slice::<ErrorResponse>(body) {
             Ok(err) => OcrError::Api {
@@ -347,7 +344,7 @@ pub fn parse_response(
     Ok(Transcript {
         lines: answer.lines,
         uncertain: answer.uncertain,
-        image_size,
+        crop,
         model: response.model,
         usage: response.usage,
         from_cache: false,
@@ -379,14 +376,23 @@ pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), O
 /// What's sent for `photo`: straightened and cropped to the page (to `corners`, if given), with no
 /// lighting fix, and no more than [`MAX_IMAGE_PIXELS`], so the API doesn't resize it and Claude's
 /// boxes are in its pixels. See <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>.
+/// Also where it was cut from.
 pub fn image_to_send(
     photo: &RgbaImage,
     params: &crate::CleanParams,
     corners: Option<crate::Quad>,
-) -> RgbaImage {
-    let page = crate::crop_to_page(photo, params, corners).image;
-    let (w, h) = page.dimensions();
-    crate::shrink_to_fit(page, max_side_within(w, h, MAX_IMAGE_PIXELS))
+) -> (RgbaImage, Crop) {
+    let cropped = crate::crop_to_page(photo, params, corners);
+    let (w, h) = cropped.image.dimensions();
+    let page = crate::shrink_to_fit(cropped.image, max_side_within(w, h, MAX_IMAGE_PIXELS));
+    let (pw, ph) = photo.dimensions();
+    let crop = Crop {
+        corners: cropped
+            .outline
+            .unwrap_or_else(|| crate::photo_corners(pw, ph)),
+        size: page.dimensions(),
+    };
+    (page, crop)
 }
 
 /// A response as it came back, for [`parse_response`] or the [`crate::cache`].
@@ -394,8 +400,8 @@ pub fn image_to_send(
 pub struct Fetched {
     pub status: u16,
     pub body: Vec<u8>,
-    /// Size of the image sent, which the response's boxes are measured in.
-    pub image_size: (u32, u32),
+    /// Where the image sent was cut from, and its size, which the response's boxes are measured in.
+    pub crop: Crop,
 }
 
 /// Sends a page to `model` from its file's bytes, cropped to `corners` if given (see
@@ -408,14 +414,10 @@ pub fn fetch_page(
     model: Model,
 ) -> Result<Fetched, OcrError> {
     let img = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
-    let page = image_to_send(&img, params, corners);
+    let (page, crop) = image_to_send(&img, params, corners);
     let body = request_body(&encode_jpeg(&page), model, EFFORT);
     let (status, body) = send(credentials, &body)?;
-    Ok(Fetched {
-        status,
-        body,
-        image_size: page.dimensions(),
-    })
+    Ok(Fetched { status, body, crop })
 }
 
 #[cfg(test)]
@@ -513,7 +515,10 @@ mod tests {
         let params = crate::CleanParams::default();
         // Uniform grey has no page outline, so it's sent whole, scaled to the long-side limit.
         let photo = RgbaImage::from_pixel(4000, 3000, Rgba([128, 128, 128, 255]));
-        let (w, h) = image_to_send(&photo, &params, None).dimensions();
+        let (image, crop) = image_to_send(&photo, &params, None);
+        let (w, h) = image.dimensions();
+        assert_eq!(crop.corners, crate::photo_corners(4000, 3000));
+        assert_eq!(crop.size, (w, h));
         assert!(w * h <= MAX_IMAGE_PIXELS, "{w}x{h}");
         assert!(
             w * h > MAX_IMAGE_PIXELS * 99 / 100,
@@ -527,7 +532,7 @@ mod tests {
 
         let small = RgbaImage::from_pixel(1200, 900, Rgba([128, 128, 128, 255]));
         assert_eq!(
-            image_to_send(&small, &params, None).dimensions(),
+            image_to_send(&small, &params, None).0.dimensions(),
             (1200, 900)
         );
     }
@@ -542,9 +547,14 @@ mod tests {
             [100.0, 500.0],
         ];
         let params = crate::CleanParams::default();
+        let (image, crop) = image_to_send(&photo, &params, Some(corners));
+        assert_eq!(image.dimensions(), (600, 400));
         assert_eq!(
-            image_to_send(&photo, &params, Some(corners)).dimensions(),
-            (600, 400)
+            crop,
+            Crop {
+                corners,
+                size: (600, 400)
+            }
         );
     }
 

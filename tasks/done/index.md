@@ -24,3 +24,4 @@ In the order they were finished.
 - [x] [Mac menu bar](mac-menu.md)
 - [x] [Manual page detection tooling](manual-page-detection.md)
 - [x] [Flaky: `settle` during a transcription](flaky-command-tests.md)
+- [x] [Manual page detection x caching](manual-page-detection-x-caching.md)

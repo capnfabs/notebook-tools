@@ -332,7 +332,9 @@ fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot
                 name: p.name.clone(),
                 cleaned: loaded.cleaned.clone(),
                 size: loaded.report.output_size,
-                transcript: transcript.clone(),
+                // Boxes follow the page if its corners moved since it was transcribed, staying
+                // upright: `decisions/2026-10-30-pdf-text-upright-boxes.md`.
+                transcript: transcript.reframed(loaded.report.crop()),
             })
         })
         .collect())

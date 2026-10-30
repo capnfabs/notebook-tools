@@ -10,9 +10,11 @@ use std::ops::Range;
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{
-    Color32, CursorIcon, Id, Key, Label, Popup, PopupCloseBehavior, Rect, RichText, Sense, Stroke,
-    StrokeKind, TextEdit, TextStyle, UiBuilder, Vec2, WidgetInfo,
+    Color32, CursorIcon, Id, Key, Label, Popup, PopupCloseBehavior, Pos2, Rect, RichText, Sense,
+    Shape, Stroke, StrokeKind, TextEdit, TextStyle, UiBuilder, Vec2, WidgetInfo,
 };
+use notebook_core::Crop;
+use notebook_core::reframe::Reframe;
 use notebook_core::transcript::{Span, Transcript};
 
 use crate::eval_log::{Event, Via};
@@ -72,15 +74,15 @@ enum Mark {
 }
 
 impl TranscriptView {
-    /// Shows `transcript`'s uncertain words over the page drawn at `image_rect`, and the
-    /// transcript itself in `text_rect`, applying the user's corrections to it. Returns what the
-    /// user corrected.
+    /// Shows `transcript`'s uncertain words over the page drawn at `image`'s rect, which was cut
+    /// from the photo at its [`Crop`], and the transcript itself in `text_rect`, applying the
+    /// user's corrections to it. Returns what the user corrected.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         page: &str,
         transcript: &mut Transcript,
-        image_rect: Option<Rect>,
+        image: Option<(Rect, Crop)>,
         text_rect: Rect,
     ) -> Vec<Event> {
         if self.page != page {
@@ -103,8 +105,8 @@ impl TranscriptView {
             .collect();
 
         let mut hovered = None;
-        if let Some(image_rect) = image_rect {
-            self.boxes(ui, transcript, &marks, image_rect, &mut hovered);
+        if let Some((image_rect, crop)) = image {
+            self.boxes(ui, transcript, &marks, image_rect, crop, &mut hovered);
         }
         ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
             egui::ScrollArea::vertical()
@@ -154,27 +156,29 @@ impl TranscriptView {
         }
     }
 
-    /// The uncertain words' boxes over the page drawn at `image_rect`.
+    /// The uncertain words' boxes over the page drawn at `image_rect`, cut from the photo at
+    /// `crop`. Boxes follow the page if it was cut elsewhere when transcribed, slanting if it's
+    /// turned. See `decisions/2026-10-30-boxes-follow-corners.md`.
     fn boxes(
         &mut self,
         ui: &mut egui::Ui,
         transcript: &Transcript,
         marks: &[Mark],
         image_rect: Rect,
+        crop: Crop,
         hovered: &mut Option<usize>,
     ) {
-        let (w, h) = transcript.image_size;
+        let reframe = Reframe::new(transcript.crop, crop);
+        let (w, h) = crop.size;
         let scale = image_rect.size() / Vec2::new(w as f32, h as f32);
+        let on_screen = |[x, y]: [f32; 2]| image_rect.min + Vec2::new(x, y) * scale;
         let painter = ui.painter_at(image_rect);
         for (i, (u, &mark)) in transcript.uncertain.iter().zip(marks).enumerate() {
-            let Some([x0, y0, x1, y1]) = u.bbox else {
+            let Some(bbox) = u.bbox else {
                 continue;
             };
-            let rect = Rect::from_min_max(
-                image_rect.min + Vec2::new(x0, y0) * scale,
-                image_rect.min + Vec2::new(x1, y1) * scale,
-            )
-            .intersect(image_rect);
+            let quad: Vec<Pos2> = reframe.quad(bbox).into_iter().map(on_screen).collect();
+            let rect = Rect::from_points(&quad).intersect(image_rect);
             let correctable = mark != Mark::Unfound;
             let sense = if correctable {
                 Sense::click()
@@ -186,8 +190,13 @@ impl TranscriptView {
                 WidgetInfo::labeled(Role::Button, correctable, format!("Box: {}", u.text))
             });
             let hot = self.is_hot(i);
-            painter.rect_filled(rect, 2.0, highlight(ui, mark, hot));
-            painter.rect_stroke(rect, 2.0, outline(ui, mark, hot), StrokeKind::Outside);
+            let (fill, stroke) = (highlight(ui, mark, hot), outline(ui, mark, hot));
+            if reframe.is_identity() {
+                painter.rect_filled(rect, 2.0, fill);
+                painter.rect_stroke(rect, 2.0, stroke, StrokeKind::Outside);
+            } else {
+                painter.add(Shape::convex_polygon(quad, fill, stroke));
+            }
 
             let response = if correctable {
                 response.on_hover_cursor(CursorIcon::PointingHand)

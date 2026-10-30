@@ -1,7 +1,9 @@
 //! Caches Claude's responses on disk, so a page is only transcribed again when its photo changes
 //! or [`CACHE_VERSION`] is bumped. An entry is the raw response, parsed on every load just like a
-//! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. See
-//! `decisions/2026-10-24-transcription-cache.md` and `decisions/2026-10-24-model-selector.md`.
+//! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. Entries
+//! keep the corners the photo was cropped to, so boxes can follow the page if its corners move.
+//! See `decisions/2026-10-24-transcription-cache.md`, `decisions/2026-10-24-model-selector.md` and
+//! `decisions/2026-10-30-boxes-follow-corners.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
+use crate::clean::{CleanParams, Crop, Quad, detect_outline, page_quad, photo_corners};
 use crate::llm_model::Model;
 use crate::ocr::{CACHE_VERSION, Fetched, OcrError, parse_response};
 use crate::transcript::Transcript;
@@ -21,10 +24,14 @@ pub struct Cache {
     dir: PathBuf,
 }
 
-/// What's stored: the response, plus the size of the image sent, which its boxes are measured in.
+/// What's stored: the response, plus where the image sent was cut from the photo and its size,
+/// which the response's boxes are measured in.
 #[derive(Serialize, Deserialize)]
 struct Entry {
     image_size: (u32, u32),
+    /// `None` only in entries stored before corners were; see [`backfill_corners`].
+    #[serde(default)]
+    corners: Option<Quad>,
     response: Value,
     /// When it was stored, in seconds since the Unix epoch.
     /// See `decisions/2026-10-24-cache-status.md`.
@@ -53,7 +60,7 @@ impl Cache {
 
     /// The photo's transcript by `model`, if there's a readable entry.
     pub fn get(&self, page_bytes: &[u8], model: Model) -> Option<Transcript> {
-        load(&self.entry_path(page_bytes, model))
+        load(&self.entry_path(page_bytes, model), page_bytes)
     }
 
     /// The photo's transcript by `preferred`, else by any other model.
@@ -87,15 +94,12 @@ impl Cache {
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
         let path = self.entry_path(page_bytes, model);
-        let Fetched {
-            status,
-            body,
-            image_size,
-        } = fetch()?;
-        let transcript = parse_response(status, &body, image_size)?;
+        let Fetched { status, body, crop } = fetch()?;
+        let transcript = parse_response(status, &body, crop)?;
         let stored_at = unix_secs(SystemTime::now());
         let entry = serde_json::from_slice(&body).map(|response| Entry {
-            image_size,
+            image_size: crop.size,
+            corners: Some(crop.corners),
             response,
             stored_at,
         });
@@ -115,13 +119,22 @@ impl Cache {
     }
 }
 
-fn load(path: &Path) -> Option<Transcript> {
+/// The transcript in the entry at `path`, for the photo `page_bytes`.
+fn load(path: &Path, page_bytes: &[u8]) -> Option<Transcript> {
     let bytes = std::fs::read(path).ok()?;
     let loaded = serde_json::from_slice::<Entry>(&bytes)
         .map_err(|e| OcrError::Parse(e.to_string()))
-        .and_then(|entry| {
+        .and_then(|mut entry| {
+            let corners = match entry.corners {
+                Some(corners) => corners,
+                None => backfill_corners(path, page_bytes, &mut entry)?,
+            };
+            let crop = Crop {
+                corners,
+                size: entry.image_size,
+            };
             let response = entry.response.to_string();
-            let transcript = parse_response(200, response.as_bytes(), entry.image_size)?;
+            let transcript = parse_response(200, response.as_bytes(), crop)?;
             Ok((entry, transcript))
         });
     match loaded {
@@ -138,6 +151,22 @@ fn load(path: &Path) -> Option<Transcript> {
             None
         }
     }
+}
+
+/// Corners for `entry`, stored at `path` before entries kept them: those cleaning finds with the
+/// default parameters, which is where the photo was cropped unless the user placed corners. They're
+/// written back to the entry, so this happens once. Remove with `tasks/remove-corner-backfill.md`.
+fn backfill_corners(path: &Path, page_bytes: &[u8], entry: &mut Entry) -> Result<Quad, OcrError> {
+    let photo = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
+    let detected = detect_outline(&photo, &CleanParams::default());
+    let corners =
+        page_quad(None, &detected).unwrap_or_else(|| photo_corners(photo.width(), photo.height()));
+    entry.corners = Some(corners);
+    match write(path, entry) {
+        Ok(()) => log::info!("backfilled corners in {}", path.display()),
+        Err(err) => log::warn!("couldn't backfill corners in {}: {err}", path.display()),
+    }
+    Ok(corners)
 }
 
 fn write(path: &Path, entry: &Entry) -> io::Result<()> {

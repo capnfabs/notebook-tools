@@ -105,6 +105,35 @@ pub struct CleanReport {
     pub output_size: (u32, u32),
 }
 
+impl CleanReport {
+    /// Where the cleaned image was cut from the photo: [`Self::outline`], else the whole photo.
+    pub fn crop(&self) -> Crop {
+        let (w, h) = self.source_size;
+        Crop {
+            corners: self.outline.unwrap_or_else(|| photo_corners(w, h)),
+            size: self.output_size,
+        }
+    }
+}
+
+/// Where an image was cut from its photo: the corners in the photo it was straightened from, and
+/// its size in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    pub corners: Quad,
+    pub size: (u32, u32),
+}
+
+impl Crop {
+    /// All of a `width` x `height` photo, at its own size.
+    pub fn whole(width: u32, height: u32) -> Self {
+        Self {
+            corners: photo_corners(width, height),
+            size: (width, height),
+        }
+    }
+}
+
 /// Why no page outline was found. The image is then cleaned without straightening or cropping.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum NoOutline {
@@ -176,7 +205,7 @@ pub struct Cropped {
 /// down.
 pub fn crop_to_page(img: &RgbaImage, params: &CleanParams, corners: Option<Quad>) -> Cropped {
     let detected = detect_outline(img, params);
-    let quad = corners.or_else(|| detected.as_ref().ok().copied());
+    let quad = page_quad(corners, &detected);
     let straightened =
         quad.and_then(|quad| Some((quad, straighten(img, &quad, params.max_output_side)?)));
     let (outline, image) = match straightened {
@@ -188,6 +217,14 @@ pub fn crop_to_page(img: &RgbaImage, params: &CleanParams, corners: Option<Quad>
         detected,
         outline,
     }
+}
+
+/// The corners [`crop_to_page`] crops to: the user's `corners`, else the `detected` ones, if
+/// they're [`is_page_shaped`]. `None` means the whole photo.
+pub(crate) fn page_quad(corners: Option<Quad>, detected: &Result<Quad, NoOutline>) -> Option<Quad> {
+    corners
+        .or_else(|| detected.as_ref().ok().copied())
+        .filter(is_page_shaped)
 }
 
 /// `img`'s own corners, in [`Quad`] order: cropping to them only scales it down.

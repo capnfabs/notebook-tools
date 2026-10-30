@@ -6,7 +6,6 @@ See [done/index.md](done/index.md).
 ## features
 
 ## polish
-- [ ] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
 
@@ -18,6 +17,8 @@ See [done/index.md](done/index.md).
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
+- [ ] [Remove the corner backfill](remove-corner-backfill.md)
+- [ ] [Polish the transcript status line](status-ui.md)
 
 ## polish (difficult / lower pri)
 - [ ] [Claude auth approach](claude-auth.md)

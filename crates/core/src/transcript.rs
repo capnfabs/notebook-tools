@@ -7,6 +7,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Deserializer};
 
+use crate::clean::Crop;
 use crate::llm_model::Usage;
 
 /// How many lines either side of its claimed line an uncertain word is looked for in.
@@ -21,8 +22,9 @@ pub type Bbox = [f32; 4];
 pub struct Transcript {
     pub lines: Vec<Line>,
     pub uncertain: Vec<Uncertain>,
-    /// Size of the image sent, which the boxes are measured in.
-    pub image_size: (u32, u32),
+    /// Where the image sent was cut from the photo, and its size, which the boxes are measured in.
+    /// [`crate::reframe`] maps them onto another crop.
+    pub crop: Crop,
     /// The model that answered; differs from the one asked for if a fallback ran.
     pub model: String,
     /// What the request cost; for a cached transcript, what it cost when it was made.
@@ -173,12 +175,12 @@ fn lenient_bbox<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Bbox>, D::Erro
 
 #[cfg(test)]
 impl Transcript {
-    /// A fresh transcript by Opus of a 100x100 image.
+    /// A fresh transcript by Opus of a whole 100x100 photo.
     pub(crate) fn for_test(lines: Vec<Line>, uncertain: Vec<Uncertain>) -> Self {
         Self {
             lines,
             uncertain,
-            image_size: (100, 100),
+            crop: Crop::whole(100, 100),
             model: crate::llm_model::Model::Opus.id().to_owned(),
             usage: Usage::default(),
             from_cache: false,

@@ -4,15 +4,21 @@ use std::cell::Cell;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use image::{ImageFormat, Rgba, RgbaImage};
 use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError};
 use notebook_core::transcript::Transcript;
+use notebook_core::{CleanParams, Crop, decode, detect_outline, photo_corners};
 use tempfile::TempDir;
 
 const PHOTO: &[u8] = b"photo bytes";
-const SIZE: (u32, u32) = (1200, 900);
+/// Where the image sent was cut from [`PHOTO`].
+const CROP: Crop = Crop {
+    corners: [[10.0, 20.0], [1300.0, 30.0], [1290.0, 1000.0], [5.0, 990.0]],
+    size: (1200, 900),
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr");
@@ -55,7 +61,7 @@ fn transcribe_with(
         Ok(Fetched {
             status,
             body: fixture(fixture_name),
-            image_size: SIZE,
+            crop: CROP,
         })
     })
 }
@@ -72,6 +78,7 @@ fn second_transcription_comes_from_the_cache() {
     let second = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     assert_eq!(fetches.get(), 1, "not fetched again");
     assert!(second.from_cache);
+    assert_eq!(second.crop, CROP, "kept where the photo was cropped");
     assert_eq!(
         second,
         Transcript {
@@ -143,7 +150,7 @@ fn refresh_fetches_and_replaces_the_entry() {
             Ok(Fetched {
                 status: 200,
                 body: fixture("fallback"),
-                image_size: SIZE,
+                crop: CROP,
             })
         })
         .unwrap();
@@ -165,7 +172,7 @@ fn failed_refresh_keeps_the_entry() {
         Ok(Fetched {
             status: 529,
             body: fixture("api_error"),
-            image_size: SIZE,
+            crop: CROP,
         })
     });
     assert!(failed.is_err());
@@ -182,7 +189,7 @@ fn refresh_with(cache: &Cache, model: Model) -> Transcript {
             Ok(Fetched {
                 status: 200,
                 body: fixture("fallback"),
-                image_size: SIZE,
+                crop: CROP,
             })
         })
         .unwrap()
@@ -255,4 +262,80 @@ fn compared_with_other_models_entries() {
         "not with its own model's entry"
     );
     assert!(compare::with_cached(&cache, b"another photo", &sonnet).is_empty());
+}
+
+fn png(img: RgbaImage) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+        .unwrap();
+    bytes
+}
+
+/// Stores `fixture("success")` for `photo` the way entries were before they kept corners.
+fn write_legacy_entry(cache: &Cache, photo: &[u8]) -> std::path::PathBuf {
+    let path = cache.entry_path(photo, Model::Opus);
+    let response: serde_json::Value = serde_json::from_slice(&fixture("success")).unwrap();
+    let entry = serde_json::json!({
+        "image_size": [1200, 900],
+        "response": response,
+        "stored_at": 1,
+    });
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, entry.to_string()).unwrap();
+    path
+}
+
+/// The corners an entry at `path` has on disk, if any.
+fn stored_corners(path: &Path) -> Option<serde_json::Value> {
+    let entry: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    entry.get("corners").cloned()
+}
+
+#[test]
+fn old_entries_get_the_detected_corners() {
+    let (_dir, cache) = cache("backfill");
+    // A cream page on a brown table, which cleanup finds an outline for.
+    let photo = png(RgbaImage::from_fn(1000, 500, |x, y| {
+        if (200..800).contains(&x) && (60..440).contains(&y) {
+            Rgba([235, 225, 200, 255])
+        } else {
+            Rgba([120, 80, 50, 255])
+        }
+    }));
+    let detected = detect_outline(&decode(&photo).unwrap(), &CleanParams::default()).unwrap();
+    let path = write_legacy_entry(&cache, &photo);
+    assert_eq!(stored_corners(&path), None);
+
+    let transcript = cache.get(&photo, Model::Opus).unwrap();
+    assert_eq!(
+        transcript.crop,
+        Crop {
+            corners: detected,
+            size: (1200, 900)
+        }
+    );
+    assert!(stored_corners(&path).is_some(), "written back");
+    assert_eq!(cache.get(&photo, Model::Opus).unwrap(), transcript);
+}
+
+#[test]
+fn old_entries_without_an_outline_get_the_photos_corners() {
+    let (_dir, cache) = cache("backfill_whole");
+    let photo = png(RgbaImage::from_pixel(400, 300, Rgba([128, 128, 128, 255])));
+    write_legacy_entry(&cache, &photo);
+    assert_eq!(
+        cache.get(&photo, Model::Opus).unwrap().crop.corners,
+        photo_corners(400, 300)
+    );
+}
+
+#[test]
+fn old_entries_for_undecodable_photos_are_fetched_again() {
+    let (_dir, cache) = cache("backfill_undecodable");
+    write_legacy_entry(&cache, PHOTO);
+    assert!(cache.get(PHOTO, Model::Opus).is_none());
+    let fetches = Cell::new(0);
+    let transcript = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+    assert_eq!(fetches.get(), 1);
+    assert_eq!(transcript.crop, CROP);
 }

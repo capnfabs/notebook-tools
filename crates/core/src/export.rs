@@ -96,9 +96,11 @@ pub struct PlacedLine {
 }
 
 /// Where `transcript`'s lines go on a page `page_size` points across and down: each line's box,
-/// scaled from the image Claude saw to the page. Lines without a box or text are left out.
+/// scaled from the image Claude saw to the page. Lines without a box or text are left out. Boxes
+/// are upright, even for a transcript reframed onto a turned crop; see
+/// `decisions/2026-10-30-pdf-text-upright-boxes.md`.
 pub fn text_layer(transcript: &Transcript, page_size: (f32, f32)) -> Vec<PlacedLine> {
-    let (w, h) = transcript.image_size;
+    let (w, h) = transcript.crop.size;
     if w == 0 || h == 0 {
         return Vec::new();
     }

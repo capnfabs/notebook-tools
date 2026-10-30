@@ -48,8 +48,9 @@ const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 /// How long a hint stays in the status line, in seconds.
 const HINT_SECS: f64 = 4.0;
 
-/// Under a transcript cropped with other corners than the page's now.
-const BOUNDS_CHANGED: &str = "Bounds changed since this was transcribed.";
+/// Under a transcript whose crop leaves out much of the page's now.
+const MISSED_PAGE: &str = "The bounds of this page have changed since last transcription; \
+    retranscribe to ensure you've got all text.";
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -272,7 +273,6 @@ impl NotebookApp {
                 let event = Event::transcribed(&done.name, &done.transcript, done.elapsed);
                 self.eval_log.record(event);
                 page.transcript = Some(done.transcript);
-                page.transcribed_with = done.corners;
                 if done.forced {
                     self.transcript_view = TranscriptView::default();
                 }
@@ -1055,15 +1055,18 @@ impl NotebookApp {
         }
         let image_rect =
             showing.and_then(|showing| self.show_page(ui, &name, &showing, page_rect, true));
-        let transcript = self
-            .pages
-            .get_mut(index)
+        let page = self.pages.get_mut(index);
+        let crop = page
+            .as_ref()
+            .and_then(|p| Some(p.loaded.as_ref()?.report.crop()));
+        let transcript = page
             .and_then(|p| p.transcript.as_mut())
             .filter(|_| !transcribing);
         if let Some(transcript) = transcript {
+            let image = image_rect.zip(crop);
             let events = self
                 .transcript_view
-                .show(ui, &name, transcript, image_rect, text_rect);
+                .show(ui, &name, transcript, image, text_rect);
             for event in events {
                 self.eval_log.record(event);
             }
@@ -1091,11 +1094,27 @@ impl NotebookApp {
             None if transcript.from_cache => format!("From cache: transcribed {when}"),
             None => format!("Transcribed {when}"),
         };
-        if page.corners != page.transcribed_with {
-            text = format!("{text}\n{BOUNDS_CHANGED}");
+        let fit = page
+            .loaded
+            .as_ref()
+            .map(|l| transcript.fit(l.report.crop()));
+        let lines_cut_off = fit.map_or(0, |f| f.lines_cut_off);
+        if lines_cut_off > 0 {
+            let lines = match lines_cut_off {
+                1 => "1 transcribed line falls".to_owned(),
+                n => format!("{n} transcribed lines fall"),
+            };
+            text = format!("{text}\n{lines} outside this page's new bounds.");
+        }
+        let missed_page = fit.is_some_and(|f| f.missed_page());
+        if missed_page {
+            text = format!("{text}\n{MISSED_PAGE}");
         }
         let text = match error {
             Some(_) => RichText::new(text).color(ui.visuals().error_fg_color),
+            None if lines_cut_off > 0 || missed_page => {
+                RichText::new(text).color(ui.visuals().warn_fg_color)
+            }
             None => RichText::new(text),
         };
         let layout = Layout::bottom_up(Align::Min);

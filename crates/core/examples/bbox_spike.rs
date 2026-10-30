@@ -25,7 +25,7 @@ use imageproc::rect::Rect;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{self, Credentials};
 use notebook_core::transcript::{Bbox, Span, Transcript};
-use notebook_core::{CleanParams, crop_to_page, decode};
+use notebook_core::{CleanParams, Crop, crop_to_page, decode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -157,7 +157,7 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                 ..CleanParams::default()
             };
             let page = if variant.ends_with(CAPPED) {
-                ocr::image_to_send(&img, &params, None)
+                ocr::image_to_send(&img, &params, None).0
             } else {
                 crop_to_page(&img, &params, None).image
             };
@@ -197,7 +197,11 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                                     run.status = Some(status);
                                     std::fs::write(out.join(format!("{}.json", run.stem())), &body)
                                         .unwrap();
-                                    let parsed = ocr::parse_response(status, &body, run.sent_size);
+                                    let parsed = ocr::parse_response(
+                                        status,
+                                        &body,
+                                        Crop::whole(run.sent_size.0, run.sent_size.1),
+                                    );
                                     run.error = parsed.err().map(|e| e.to_string());
                                 }
                                 Err(err) => run.error = Some(err.to_string()),
@@ -243,7 +247,12 @@ fn draw(dir: &Path, photos: &Path, out: &Path) {
             continue;
         }
         let body = std::fs::read(dir.join(format!("{}.json", run.stem()))).unwrap();
-        let transcript = ocr::parse_response(run.status.unwrap(), &body, run.sent_size).unwrap();
+        let transcript = ocr::parse_response(
+            run.status.unwrap(),
+            &body,
+            Crop::whole(run.sent_size.0, run.sent_size.1),
+        )
+        .unwrap();
         let raw: Value = serde_json::from_slice(&body).unwrap();
         let thinking = &raw["usage"]["output_tokens_details"]["thinking_tokens"];
         let stats = Stats::of(&transcript);
@@ -290,8 +299,8 @@ fn draw(dir: &Path, photos: &Path, out: &Path) {
 
 /// Draws `transcript`'s boxes on `img`, which may be the sent image at another scale.
 fn draw_boxes(img: &mut RgbaImage, transcript: &Transcript) {
-    let sx = img.width() as f32 / transcript.image_size.0 as f32;
-    let sy = img.height() as f32 / transcript.image_size.1 as f32;
+    let sx = img.width() as f32 / transcript.crop.size.0 as f32;
+    let sy = img.height() as f32 / transcript.crop.size.1 as f32;
     let thickness = (img.width().max(img.height()) / 1000).max(1) as i32;
     let mut rect = |[x0, y0, x1, y1]: Bbox, colour, thickness: i32| {
         for t in 0..thickness {
@@ -321,7 +330,7 @@ struct Stats {
 
 impl Stats {
     fn of(t: &Transcript) -> Self {
-        let (w, h) = (t.image_size.0 as f32, t.image_size.1 as f32);
+        let (w, h) = (t.crop.size.0 as f32, t.crop.size.1 as f32);
         let in_bounds = |[x0, y0, x1, y1]: Bbox| {
             0.0 <= x0 && x0 <= x1 && x1 <= w && 0.0 <= y0 && y0 <= y1 && y1 <= h
         };

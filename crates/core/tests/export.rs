@@ -4,12 +4,12 @@ use std::path::Path;
 
 use notebook_core::ocr::parse_response;
 use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, Loaded, export};
+use notebook_core::{CleanParams, Crop, Loaded, export};
 
 fn recorded(name: &str) -> Transcript {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/ocr/{name}.json"));
-    parse_response(200, &std::fs::read(path).unwrap(), (1200, 900)).unwrap()
+    parse_response(200, &std::fs::read(path).unwrap(), Crop::whole(1200, 900)).unwrap()
 }
 
 #[test]
@@ -35,6 +35,29 @@ fn text_layer_scales_boxes_to_the_page() {
     // Half the image's size, so every coordinate halves.
     let layer = export::text_layer(&recorded("success"), (600.0, 450.0));
     insta::assert_debug_snapshot!(layer);
+}
+
+#[test]
+fn text_layer_follows_the_crop() {
+    let transcript = recorded("success");
+    // 100px less off the top of the photo, and as big again.
+    let moved = transcript.reframed(Crop {
+        corners: [[0.0, 100.0], [1200.0, 100.0], [1200.0, 900.0], [0.0, 900.0]],
+        size: (2400, 1600),
+    });
+    let (before, after) = (
+        export::text_layer(&transcript, (1200.0, 900.0)),
+        export::text_layer(&moved, (1200.0, 800.0)),
+    );
+    assert_eq!(before.len(), after.len());
+    for (b, a) in before.iter().zip(&after) {
+        assert_eq!(a.text, b.text);
+        let [x0, y0, x1, y1] = b.rect;
+        let expected = [x0, y0 - 100.0, x1, y1 - 100.0];
+        for (a, e) in a.rect.iter().zip(expected) {
+            assert!((a - e).abs() < 0.1, "{:?} vs {expected:?}", a);
+        }
+    }
 }
 
 fn fixture(name: &str) -> Vec<u8> {

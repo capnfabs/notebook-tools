@@ -74,12 +74,8 @@ impl Transcriber {
             Some(cache) if job.kind == Kind::Force => cache.refresh(bytes, model, fetch)?,
             Some(cache) => cache.transcript_or(bytes, model, fetch)?,
             None => {
-                let Fetched {
-                    status,
-                    body,
-                    image_size,
-                } = fetch()?;
-                parse_response(status, &body, image_size)?
+                let Fetched { status, body, crop } = fetch()?;
+                parse_response(status, &body, crop)?
             }
         };
         if let Some(on_transcribe_completed) = &self.on_transcribe_completed
@@ -130,16 +126,13 @@ pub struct Done {
     pub forced: bool,
     /// How long Claude took, if the page was sent rather than found in the cache.
     pub elapsed: Option<Duration>,
-    /// The corners the page was cropped to when it was sent: `None` for detected ones, and for
-    /// cache look-ups, which can't tell.
-    pub corners: Option<Quad>,
 }
 
 /// A job's transcript: `None` for a [`Kind::Lookup`] that missed.
 type Finished = Result<Option<Ran>, String>;
 
-/// A job's page name, what it does, and the corners it was cropped to.
-type Key = (String, Kind, Option<Quad>);
+/// A job's page name and what it does.
+type Key = (String, Kind);
 
 pub struct Transcriptions {
     /// Sends pages to Claude. Without one, nothing is sent.
@@ -213,7 +206,7 @@ impl Transcriptions {
         };
         self.checking.insert(name.to_owned());
         let model = self.model;
-        self.spawn((name.to_owned(), Kind::Lookup, None), move || {
+        self.spawn((name.to_owned(), Kind::Lookup), move || {
             Ok(cache.find(&bytes, model).map(|transcript| Ran {
                 transcript,
                 elapsed: None,
@@ -271,7 +264,7 @@ impl Transcriptions {
             log::info!("{}: transcribing with {}", job.name, job.model.id());
             self.running.insert(job.name.clone());
             let (transcriber, cache) = (transcriber.clone(), self.cache.clone());
-            self.spawn((job.name.clone(), job.kind, job.corners), move || {
+            self.spawn((job.name.clone(), job.kind), move || {
                 transcriber.run(&job, cache.as_ref()).map(Some)
             });
         }
@@ -290,7 +283,7 @@ impl Transcriptions {
     /// The next page that finished transcribing, if any, sending the next queued page in its
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
     pub fn next(&mut self) -> Option<Done> {
-        while let Some(((name, kind, corners), result)) = self.jobs.next() {
+        while let Some(((name, kind), result)) = self.jobs.next() {
             if kind == Kind::Lookup {
                 self.checking.remove(&name);
             } else {
@@ -305,7 +298,6 @@ impl Transcriptions {
                         transcript: ran.transcript,
                         forced: kind == Kind::Force,
                         elapsed: ran.elapsed,
-                        corners,
                     });
                 }
                 Err(err) => {

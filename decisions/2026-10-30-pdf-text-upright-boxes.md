@@ -1,0 +1,5 @@
+# PDF text stays upright when the crop moves
+
+When a page's corners have moved since it was transcribed, its PDF text layer is placed with `Transcript::reframed`: each line's box is mapped onto the new crop (`2026-10-30-boxes-follow-corners.md`), then replaced by the upright rectangle around it, which `text_layer` and `draw_line` use as before. For the small adjustments expected that's off by a pixel or two: a turned box's upright bounds are a little taller, so the invisible text is a touch bigger, and its selection highlight won't follow slanted handwriting. Search and copy are unaffected.
+
+Alternative, if it matters: give `PlacedLine` the mapped corners (`Reframe::quad`) instead of a rect, and have `draw_line` push the affine transform taking a unit box onto the top-left, top-right and bottom-left corners (rotation plus shear; krilla's `Surface` can push transforms) before drawing the line into that unit box. Perspective can't be applied to text, so very skewed crops would still be approximate. Test: a turned crop gives a slanted text layer. Reason: unquestioned agent recommendation (not worth the complexity for minor adjustments).
