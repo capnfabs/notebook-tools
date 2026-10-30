@@ -1026,9 +1026,14 @@ impl NotebookApp {
         let rect = ui.available_rect_before_wrap();
         let gap = ui.spacing().item_spacing.x * 2.0;
         let limits = split::Limits::default();
-        let (photo_rect, cleaned_rect) =
-            self.cleaned_split
-                .show(ui, rect, gap, limits, &t!("resize-cleaned"));
+        let (photo_rect, cleaned_rect) = self.cleaned_split.show(
+            ui,
+            rect,
+            gap,
+            limits,
+            "cleaned split",
+            &t!("resize-cleaned"),
+        );
         let photo_rect = self.corner_buttons(ui, index, photo_rect);
         if let Some(showing) = self.current_texture(ui.ctx(), false)
             && let Some(image_rect) = self.show_page(ui, &name, &showing, photo_rect, false)
@@ -1152,9 +1157,14 @@ impl NotebookApp {
             }),
         };
         let gap = ui.spacing().item_spacing.x * 2.0;
-        let (mut page_rect, text_rect) =
-            self.split
-                .show(ui, rect, gap, limits, &t!("resize-transcript"));
+        let (mut page_rect, text_rect) = self.split.show(
+            ui,
+            rect,
+            gap,
+            limits,
+            "transcript split",
+            &t!("resize-transcript"),
+        );
         if !transcribing && let Some(status) = self.transcript_status(ui, index, page_rect) {
             page_rect.max.y = status.top() - ui.spacing().item_spacing.y;
         }

@@ -59,6 +59,7 @@ no-transcriber-hint = Transcription requires an ANTHROPIC_API_KEY or ANTHROPIC_A
 all-transcribed-hint = Every page is transcribed
 # The selected page, in the toolbar.
 page-position = { $name } · { $number } of { $count }
+# The handles dragged to resize the panes side by side, for screen readers.
 resize-cleaned = Resize the cleaned page
 resize-transcript = Resize the transcript
 # The page's image, for screen readers.
@@ -80,7 +81,7 @@ status-exporting = { $count ->
 }
 open-failed = Couldn't open { $name }: { $error }
 settings-save-failed = Couldn't save settings: { $error }
-already-transcribed = { $name } is already transcribed. { $shortcut } retranscribes it.
+already-transcribed = { $name } is already transcribed. Retranscribe with { $shortcut }.
 
 ## Transcription progress
 
@@ -105,11 +106,11 @@ transcribed-when = { $at ->
 transcript-from-claude = Transcribed { $when }
 transcript-from-cache = From cache: transcribed { $when }
 transcript-retranscribe-failed = Retranscription failed: { $error }. Using the cached version, transcribed { $when }.
-transcript-lines-cut-off = { $count ->
+transcript-lines-cut-off = The bounds of this page have shrunk since last transcription; { $count ->
     [one] { $count } transcribed line falls outside this page's new bounds.
    *[other] { $count } transcribed lines fall outside this page's new bounds.
 }
-transcript-missed-page = The bounds of this page have changed since last transcription; retranscribe to ensure you've got all text.
+transcript-missed-page = The bounds of this page have grown since last transcription; retranscribe to ensure you've got all text.
 
 ## Correcting a transcript
 
@@ -123,10 +124,10 @@ delete-struck = Delete struck text
 keep-word = Keep "{ $word }"
 custom-reading = Something else
 custom-reading-ok = OK
-unfound-edited-out = "{ $word }" was edited out of its line, so it can't be corrected here. { command-reset-transcript } brings it back.
-unfound-not-in-transcript = Claude was unsure of "{ $word }" here, but it isn't in the transcript. Double-click its line to fix it by hand.
+unfound-edited-out = "{ $word }" was edited out of its line, so it can't be automatically corrected. Correct it manually, or bring it back with { command-reset-transcript }.
+unfound-not-in-transcript = Claude was unsure of "{ $word }" here, but it isn't in the transcript. Fix it by hand by double-clicking on the transcript.
 # $alternatives are Claude's other readings, joined with " / ".
-unfound-not-in-transcript-alternatives = Claude was unsure of "{ $word }" (or { $alternatives }) here, but it isn't in the transcript. Double-click its line to fix it by hand.
+unfound-not-in-transcript-alternatives = Claude was unsure of "{ $word }" (or { $alternatives }) here, but it isn't in the transcript. Fix it by hand by double-clicking on the transcript..
 
 ## Page corners
 
@@ -144,12 +145,13 @@ corners-refused-prompt = Those corners don't outline a page. Click another fourt
 export-title = Export
 export-everything = Everything
 export-current-page = Current page
-# Between what to export and the formats.
+# Between what to export and the formats,
+# e.g. "Export Everything as PDF" or "Export Current page as Markdown to file"
 export-as = as
 export-markdown-clipboard = Markdown to clipboard
 export-markdown-file = Markdown to file
 export-pdf = PDF
-export-go = Go
+export-go = Export
 export-crashed = Couldn't export: it crashed
 # $reasons are the export-not-… messages below, joined with ". ".
 export-blocked = Couldn't export. { $reasons }
@@ -187,9 +189,9 @@ settings-model = Transcription model
 model-opus = Opus
 model-sonnet = Sonnet
 # What each model is good for. From `decisions/2026-10-24-sonnet-quality.md`.
-model-opus-tradeoffs = Slower (20–45s a page), about $0.07 a page. Flags more of the words it's unsure of. Best for pages you'll correct closely.
-model-sonnet-tradeoffs = 2–3× faster, about $0.03 a page, and reads words about as well. Flags fewer of its mistakes, so more are left to find by reading, and may drop separators, underlines and crossed-out words. Good for a quick first pass.
-settings-model-hint = For new and forced transcriptions. Cached transcripts by either model are used; this one's is preferred.
+model-opus-tradeoffs = More accurate, and handles formatting better, but slower and more expensive. Best if you're in a hurry and want to skip proofreading, or your handwriting is terrible.
+model-sonnet-tradeoffs = Not quite as accurate (but still really good). Faster, half the price.
+settings-model-hint = For new transcriptions. Cached transcripts from either model are retained and used; force retranscription if you want to switch.
 settings-markdown = Markdown
 # The markdown style only reaches transcripts parsed from now on, and unedited ones.
 settings-future-only = Future transcripts only

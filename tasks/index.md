@@ -6,7 +6,6 @@ See [done/index.md](done/index.md).
 ## features
 
 ## polish
-- [ ] Human review all strings!
 - [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)

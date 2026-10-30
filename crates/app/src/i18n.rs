@@ -167,7 +167,8 @@ mod tests {
         );
         assert_eq!(
             t!("transcript-lines-cut-off", count = 1),
-            "1 transcribed line falls outside this page's new bounds."
+            "The bounds of this page have shrunk since last transcription; \
+             1 transcribed line falls outside this page's new bounds."
         );
         assert_eq!(
             t!("export-copied", count = 1, name = "a.png"),

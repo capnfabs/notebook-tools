@@ -132,7 +132,9 @@ fn export(harness: &mut Harness<'_, NotebookApp>, options: &[&str]) {
         harness.get_by_label(option).click();
         settle(harness);
     }
-    harness.get_by_label(&t!("export-go")).click();
+    harness
+        .get_by_role_and_label(Role::Button, &t!("export-go"))
+        .click();
 }
 
 /// Exports everything to the clipboard as markdown, the dialog's defaults, returning what was
@@ -2022,7 +2024,7 @@ fn export_waits_for_every_page_in_scope() {
     harness.get_by_label(&t!("export-not-transcribed", names = "b.png"));
     assert!(
         harness
-            .get_by_label(&t!("export-go"))
+            .get_by_role_and_label(Role::Button, &t!("export-go"))
             .accesskit_node()
             .is_disabled()
     );
@@ -2033,7 +2035,7 @@ fn export_waits_for_every_page_in_scope() {
     assert!(harness.query_by_label_contains(&blocked).is_none());
     assert!(
         !harness
-            .get_by_label(&t!("export-go"))
+            .get_by_role_and_label(Role::Button, &t!("export-go"))
             .accesskit_node()
             .is_disabled()
     );
@@ -2056,7 +2058,7 @@ fn export_waits_for_pages_to_load() {
     harness.get_by_label(&t!("export-still-loading", names = "a.png"));
     assert!(
         harness
-            .get_by_label(&t!("export-go"))
+            .get_by_role_and_label(Role::Button, &t!("export-go"))
             .accesskit_node()
             .is_disabled()
     );
@@ -2067,7 +2069,7 @@ fn export_waits_for_pages_to_load() {
     assert!(harness.query_by_label_contains(&blocked).is_none());
     assert!(
         !harness
-            .get_by_label(&t!("export-go"))
+            .get_by_role_and_label(Role::Button, &t!("export-go"))
             .accesskit_node()
             .is_disabled()
     );
@@ -2246,7 +2248,7 @@ fn dialogs_put_the_affirmative_button_last() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     let left = |harness: &Harness<'_, NotebookApp>, label: &str| {
-        let node = harness.get_by_label(label);
+        let node = harness.get_by_role_and_label(Role::Button, label);
         node.accesskit_node().bounding_box().unwrap().x0
     };
 
@@ -2745,19 +2747,22 @@ fn command_e_exports_then_reexports() {
 
     // Nothing to repeat yet, so it asks.
     press_command(&mut harness, egui::Key::E);
-    for option in [
-        t!("export-current-page"),
-        t!("export-markdown-file"),
-        t!("export-go"),
-    ] {
+    for option in [t!("export-current-page"), t!("export-markdown-file")] {
         harness.get_by_label(&option).click();
         settle(&mut harness);
     }
+    harness
+        .get_by_role_and_label(Role::Button, &t!("export-go"))
+        .click();
     step_until(&mut harness, &exported(1, "a.png"));
 
     correct_plumber(&mut harness);
     press_command(&mut harness, egui::Key::E);
-    assert!(harness.query_by_label(&t!("export-go")).is_none());
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, &t!("export-go"))
+            .is_none()
+    );
     step_until(&mut harness, &exported(1, "a.png"));
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumbers re:"), "{written}");
@@ -2765,7 +2770,7 @@ fn command_e_exports_then_reexports() {
 
     // Export… always asks.
     press(&mut harness, COMMAND_SHIFT, egui::Key::E);
-    harness.get_by_label(&t!("export-go"));
+    harness.get_by_role_and_label(Role::Button, &t!("export-go"));
 }
 
 #[test]
@@ -2862,7 +2867,7 @@ fn enter_does_nothing_while_the_affirmative_button_is_disabled() {
     harness.get_by_label(&t!("export-not-transcribed", names = "b.png"));
     harness.key_press(egui::Key::Enter);
     settle(&mut harness);
-    harness.get_by_label(&t!("export-go"));
+    harness.get_by_role_and_label(Role::Button, &t!("export-go"));
     let copied = before_mark(t!("export-copied", count = MARK, name = MARK));
     assert!(harness.query_by_label_contains(&copied).is_none());
 }
