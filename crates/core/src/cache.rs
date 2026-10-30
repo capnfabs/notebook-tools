@@ -15,6 +15,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::clean::{CleanParams, Crop, Quad, detect_outline, page_quad, photo_corners};
 use crate::llm_model::Model;
+use crate::markdown_style::MarkdownStyle;
 use crate::ocr::{CACHE_VERSION, Fetched, OcrError, parse_response};
 use crate::transcript::Transcript;
 
@@ -58,29 +59,41 @@ impl Cache {
             .join(format!("{}.json", key(page_bytes, CACHE_VERSION, model)))
     }
 
-    /// The photo's transcript by `model`, if there's a readable entry.
-    pub fn get(&self, page_bytes: &[u8], model: Model) -> Option<Transcript> {
-        load(&self.entry_path(page_bytes, model), page_bytes)
+    /// The photo's transcript by `model` in `style`, if there's a readable entry.
+    pub fn get(
+        &self,
+        page_bytes: &[u8],
+        model: Model,
+        style: &MarkdownStyle,
+    ) -> Option<Transcript> {
+        load(&self.entry_path(page_bytes, model), page_bytes, style)
     }
 
-    /// The photo's transcript by `preferred`, else by any other model.
-    pub fn find(&self, page_bytes: &[u8], preferred: Model) -> Option<Transcript> {
+    /// The photo's transcript by `preferred`, else by any other model, in `style`.
+    pub fn find(
+        &self,
+        page_bytes: &[u8],
+        preferred: Model,
+        style: &MarkdownStyle,
+    ) -> Option<Transcript> {
         let others = Model::ALL.into_iter().filter(|&m| m != preferred);
         std::iter::once(preferred)
             .chain(others)
-            .find_map(|model| self.get(page_bytes, model))
+            .find_map(|model| self.get(page_bytes, model, style))
     }
 
-    /// The photo's cached transcript by any model, preferring `model`, else [`Self::refresh`]'s.
+    /// The photo's cached transcript by any model, preferring `model`, else [`Self::refresh`]'s;
+    /// in `style` either way.
     pub fn transcript_or(
         &self,
         page_bytes: &[u8],
         model: Model,
+        style: &MarkdownStyle,
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
-        match self.find(page_bytes, model) {
+        match self.find(page_bytes, model, style) {
             Some(transcript) => Ok(transcript),
-            None => self.refresh(page_bytes, model, fetch),
+            None => self.refresh(page_bytes, model, style, fetch),
         }
     }
 
@@ -91,11 +104,12 @@ impl Cache {
         &self,
         page_bytes: &[u8],
         model: Model,
+        style: &MarkdownStyle,
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
         let path = self.entry_path(page_bytes, model);
         let Fetched { status, body, crop } = fetch()?;
-        let transcript = parse_response(status, &body, crop)?;
+        let transcript = parse_response(status, &body, crop, style)?;
         let stored_at = unix_secs(SystemTime::now());
         let entry = serde_json::from_slice(&body).map(|response| Entry {
             image_size: crop.size,
@@ -119,8 +133,8 @@ impl Cache {
     }
 }
 
-/// The transcript in the entry at `path`, for the photo `page_bytes`.
-fn load(path: &Path, page_bytes: &[u8]) -> Option<Transcript> {
+/// The transcript in the entry at `path`, for the photo `page_bytes`, in `style`.
+fn load(path: &Path, page_bytes: &[u8], style: &MarkdownStyle) -> Option<Transcript> {
     let bytes = std::fs::read(path).ok()?;
     let loaded = serde_json::from_slice::<Entry>(&bytes)
         .map_err(|e| OcrError::Parse(e.to_string()))
@@ -134,7 +148,7 @@ fn load(path: &Path, page_bytes: &[u8]) -> Option<Transcript> {
                 size: entry.image_size,
             };
             let response = entry.response.to_string();
-            let transcript = parse_response(200, response.as_bytes(), crop)?;
+            let transcript = parse_response(200, response.as_bytes(), crop, style)?;
             Ok((entry, transcript))
         });
     match loaded {

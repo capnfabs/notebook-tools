@@ -46,7 +46,15 @@ pub fn with_cached(
     Model::ALL
         .into_iter()
         .filter(|&model| Some(model) != made_by)
-        .filter_map(|model| Some((model, compare(transcript, &cache.get(page_bytes, model)?))))
+        .filter_map(|model| {
+            Some((
+                model,
+                compare(
+                    transcript,
+                    &cache.get(page_bytes, model, &transcript.style)?,
+                ),
+            ))
+        })
         .collect()
 }
 

@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::ocr::parse_response;
 use notebook_core::transcript::Transcript;
 use notebook_core::{CleanParams, Crop, Loaded, export};
@@ -9,7 +10,13 @@ use notebook_core::{CleanParams, Crop, Loaded, export};
 fn recorded(name: &str) -> Transcript {
     let path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/ocr/{name}.json"));
-    parse_response(200, &std::fs::read(path).unwrap(), Crop::whole(1200, 900)).unwrap()
+    parse_response(
+        200,
+        &std::fs::read(path).unwrap(),
+        Crop::whole(1200, 900),
+        &MarkdownStyle::default(),
+    )
+    .unwrap()
 }
 
 #[test]

@@ -11,6 +11,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
+    Settings,
     AddPages,
     /// Re-export if there's a last export, else Export….
     Export,
@@ -66,7 +67,8 @@ const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const COMMAND_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 
 impl Command {
-    pub const ALL: [Command; 18] = [
+    pub const ALL: [Command; 19] = [
+        Self::Settings,
         Self::AddPages,
         Self::Export,
         Self::ExportAs,
@@ -89,6 +91,12 @@ impl Command {
 
     pub const fn spec(self) -> Spec {
         let (id, label, shortcut, edits_text) = match self {
+            Self::Settings => (
+                "settings",
+                "Settings…",
+                keys(Modifiers::COMMAND, Key::Comma),
+                false,
+            ),
             Self::AddPages => (
                 "add-pages",
                 "Add Pages…",
@@ -214,7 +222,7 @@ pub struct Menu {
     pub items: &'static [Item],
 }
 
-/// The menu bar, left to right. Settings… goes in the app menu once there is one.
+/// The menu bar, left to right.
 pub const MENUS: &[Menu] = {
     use Command as C;
     use Item::{Command as Do, Separator as Sep, System as Sys};
@@ -224,6 +232,8 @@ pub const MENUS: &[Menu] = {
             title: None,
             items: &[
                 Sys(S::About),
+                Sep,
+                Do(C::Settings),
                 Sep,
                 Sys(S::Services),
                 Sep,

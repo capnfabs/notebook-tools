@@ -306,8 +306,14 @@ struct Answer {
     uncertain: Vec<Uncertain>,
 }
 
-/// Turns an API response into a [`Transcript`]. `crop` is where the image sent was cut from.
-pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript, OcrError> {
+/// Turns an API response into a [`Transcript`] in `style`. `crop` is where the image sent was cut
+/// from.
+pub fn parse_response(
+    status: u16,
+    body: &[u8],
+    crop: Crop,
+    style: &MarkdownStyle,
+) -> Result<Transcript, OcrError> {
     if !(200..300).contains(&status) {
         return Err(match serde_json::from_slice::<ErrorResponse>(body) {
             Ok(err) => OcrError::Api {
@@ -345,15 +351,12 @@ pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript
         .ok_or_else(|| OcrError::Parse("no text in the response".to_owned()))?;
     let mut answer: Answer =
         serde_json::from_str(text).map_err(|e| OcrError::Parse(e.to_string()))?;
-    tidy(
-        &mut answer.lines,
-        &mut answer.uncertain,
-        &MarkdownStyle::default(),
-    );
+    tidy(&mut answer.lines, &mut answer.uncertain, style);
     let mut transcript = Transcript {
         lines: answer.lines,
         uncertain: answer.uncertain,
         crop,
+        style: style.clone(),
         model: response.model,
         usage: response.usage,
         from_cache: false,

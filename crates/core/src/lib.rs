@@ -10,6 +10,7 @@ pub mod markdown_style;
 pub mod ocr;
 pub mod page;
 pub mod reframe;
+pub mod settings;
 pub mod transcript;
 
 pub use clean::{

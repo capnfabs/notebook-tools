@@ -27,3 +27,4 @@ In the order they were finished.
 - [x] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [x] [Markdown conversion improvements](markdown-cleanup.md)
 - [x] [Correction UI improvements](correction-ui.md)
+- [x] [Settings dialog](settings-dialog.md)

@@ -1,12 +1,16 @@
 //! Turns Claude's markup into the user's markdown. The prompt asks for HTML tags, which can't be
 //! mistaken for what's written on the page; they're converted here, on every parse, so cached
 //! transcripts follow the current [`MarkdownStyle`] too. See
-//! `decisions/2026-10-30-markdown-from-html-tags.md`.
+//! `decisions/2026-10-30-markdown-from-html-tags.md`; the user picks the style in Settings
+//! (`decisions/2026-10-30-settings-dialog.md`).
+
+use serde::{Deserialize, Serialize};
 
 use crate::transcript::{Line, Uncertain};
 
 /// How Claude's markup is written in the transcript.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MarkdownStyle {
     /// Wraps underlined text, e.g. `_` for `_word_`.
     pub underline: String,

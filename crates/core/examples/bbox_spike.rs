@@ -23,6 +23,7 @@ use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_hollow_rect_mut;
 use imageproc::rect::Rect;
 use notebook_core::llm_model::Model;
+use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::ocr::{self, Credentials};
 use notebook_core::transcript::{Bbox, Span, Transcript};
 use notebook_core::{CleanParams, Crop, crop_to_page, decode};
@@ -201,6 +202,7 @@ fn run(photos: &[PathBuf], only: Option<&str>, out: &Path) {
                                         status,
                                         &body,
                                         Crop::whole(run.sent_size.0, run.sent_size.1),
+                                        &MarkdownStyle::default(),
                                     );
                                     run.error = parsed.err().map(|e| e.to_string());
                                 }
@@ -251,6 +253,7 @@ fn draw(dir: &Path, photos: &Path, out: &Path) {
             run.status.unwrap(),
             &body,
             Crop::whole(run.sent_size.0, run.sent_size.1),
+            &MarkdownStyle::default(),
         )
         .unwrap();
         let raw: Value = serde_json::from_slice(&body).unwrap();

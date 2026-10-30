@@ -2,12 +2,13 @@
 //!
 //! See `decisions/2026-10-24-model-selector.md` and `decisions/2026-10-24-sonnet-quality.md`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Which Claude transcribes. Both see images at the same resolution, so [`crate::ocr::MAX_IMAGE_PIXELS`]
 /// suits
 /// either.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Model {
     #[default]
     Opus,

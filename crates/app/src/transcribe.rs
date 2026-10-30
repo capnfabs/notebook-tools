@@ -3,10 +3,12 @@
 //! Claude at once, the rest wait in a queue. Finished transcripts come out of
 //! [`Transcriptions::next`]; failures are kept by page name until retried.
 //!
-//! Pages are sent to the [`Model`] selected at the time. A page cached by any model isn't sent
-//! unless forced.
+//! Pages are sent to the [`Model`] selected at the time, and parsed in the
+//! [`notebook_core::markdown_style::MarkdownStyle`]
+//! selected then. A page cached by any model isn't sent unless forced.
 //!
-//! See `decisions/2026-10-24-confirm-before-transcribing.md`.
+//! See `decisions/2026-10-24-confirm-before-transcribing.md` and
+//! `decisions/2026-10-30-settings-dialog.md`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -16,6 +18,7 @@ use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::ocr::{Fetched, OcrError, parse_response};
 use notebook_core::page::Page;
+use notebook_core::settings::Settings;
 use notebook_core::transcript::Transcript;
 use notebook_core::{CleanParams, Quad};
 
@@ -62,7 +65,7 @@ impl Transcriber {
     /// The page's transcript for `job`, through `cache` if there is one. Without a cache, every
     /// page is sent to Claude.
     fn run(&self, job: &Job, cache: Option<&Cache>) -> Result<Ran, OcrError> {
-        let (bytes, model) = (&*job.bytes, job.model);
+        let (bytes, model, style) = (&*job.bytes, job.settings.model, &job.settings.markdown);
         let mut elapsed = None;
         let mut fetch = || {
             let started = Instant::now();
@@ -71,11 +74,11 @@ impl Transcriber {
             fetched
         };
         let transcript = match cache {
-            Some(cache) if job.kind == Kind::Force => cache.refresh(bytes, model, fetch)?,
-            Some(cache) => cache.transcript_or(bytes, model, fetch)?,
+            Some(cache) if job.kind == Kind::Force => cache.refresh(bytes, model, style, fetch)?,
+            Some(cache) => cache.transcript_or(bytes, model, style, fetch)?,
             None => {
                 let Fetched { status, body, crop } = fetch()?;
-                parse_response(status, &body, crop)?
+                parse_response(status, &body, crop, style)?
             }
         };
         if let Some(on_transcribe_completed) = &self.on_transcribe_completed
@@ -101,6 +104,8 @@ struct Ran {
 enum Kind {
     /// Looks the page up in the cache, without sending it.
     Lookup,
+    /// Reads the page's transcript from the cache again, in another style.
+    Restyle,
     /// Uses the cache, else sends the page.
     Transcribe,
     /// Sends the page even if it's cached, replacing the entry.
@@ -115,7 +120,7 @@ struct Job {
     /// Where the user put the page's corners, if they did.
     corners: Option<Quad>,
     kind: Kind,
-    model: Model,
+    settings: Settings,
 }
 
 /// A page that finished transcribing.
@@ -124,6 +129,8 @@ pub struct Done {
     pub transcript: Transcript,
     /// Retranscribed on request, so it replaces the page's transcript, corrections and all.
     pub forced: bool,
+    /// The page's transcript read again in another style, for [`Transcriptions::restyle`].
+    pub restyled: bool,
     /// How long Claude took, if the page was sent rather than found in the cache.
     pub elapsed: Option<Duration>,
 }
@@ -149,8 +156,8 @@ pub struct Transcriptions {
     checking: HashSet<String>,
     /// Why the last attempt failed, by page name.
     errors: HashMap<String, String>,
-    /// Pages are sent to it from now on.
-    model: Model,
+    /// Pages are sent to its model, and parsed in its style, from now on.
+    settings: Settings,
 }
 
 impl Default for Transcriptions {
@@ -169,7 +176,7 @@ impl Transcriptions {
             running: HashSet::new(),
             checking: HashSet::new(),
             errors: HashMap::new(),
-            model: Model::default(),
+            settings: Settings::default(),
         }
     }
 
@@ -183,14 +190,16 @@ impl Transcriptions {
         self.jobs.set_waker(waker);
     }
 
-    /// Which model pages are sent to, and preferred in the cache.
-    pub fn model(&self) -> Model {
-        self.model
+    /// Which model pages are sent to, and preferred in the cache, and the style they're parsed
+    /// in.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
     }
 
-    /// Sends pages to `model` from now on. Pages already queued or transcribed are unaffected.
-    pub fn set_model(&mut self, model: Model) {
-        self.model = model;
+    /// Sends and parses pages with `settings` from now on. Pages already queued or transcribed are
+    /// unaffected: see [`Self::restyle`].
+    pub fn set_settings(&mut self, settings: Settings) {
+        self.settings = settings;
     }
 
     /// Whether pages can be sent to Claude.
@@ -201,13 +210,30 @@ impl Transcriptions {
     /// Looks the page named `name` up in the cache, which can be done straight away: nothing is
     /// sent. A hit comes out of [`Self::next`].
     pub fn look_up(&mut self, name: &str, bytes: Arc<[u8]>) {
+        if self.cache.is_none() {
+            return;
+        }
+        self.checking.insert(name.to_owned());
+        let model = self.settings.model;
+        self.read_cache(name, Kind::Lookup, bytes, model);
+    }
+
+    /// Reads the page named `name` from the cache again, in the current style, preferring
+    /// `model`'s entry. The transcript comes out of [`Self::next`], marked
+    /// [`Done::restyled`]; nothing comes out if the page isn't cached.
+    pub fn restyle(&mut self, name: &str, bytes: Arc<[u8]>, model: Model) {
+        self.read_cache(name, Kind::Restyle, bytes, model);
+    }
+
+    /// Looks the page named `name` up in the cache, preferring `model`'s entry, for a job of
+    /// `kind`.
+    fn read_cache(&mut self, name: &str, kind: Kind, bytes: Arc<[u8]>, model: Model) {
         let Some(cache) = self.cache.clone() else {
             return;
         };
-        self.checking.insert(name.to_owned());
-        let model = self.model;
-        self.spawn((name.to_owned(), Kind::Lookup), move || {
-            Ok(cache.find(&bytes, model).map(|transcript| Ran {
+        let style = self.settings.markdown.clone();
+        self.spawn((name.to_owned(), kind), move || {
+            Ok(cache.find(&bytes, model, &style).map(|transcript| Ran {
                 transcript,
                 elapsed: None,
             }))
@@ -243,7 +269,7 @@ impl Transcriptions {
             params,
             corners: page.corners,
             kind,
-            model: self.model,
+            settings: self.settings.clone(),
         };
         if first {
             self.queue.push_front(job);
@@ -261,7 +287,11 @@ impl Transcriptions {
         while self.running.len() < MAX_CONCURRENT
             && let Some(job) = self.queue.pop_front()
         {
-            log::info!("{}: transcribing with {}", job.name, job.model.id());
+            log::info!(
+                "{}: transcribing with {}",
+                job.name,
+                job.settings.model.id()
+            );
             self.running.insert(job.name.clone());
             let (transcriber, cache) = (transcriber.clone(), self.cache.clone());
             self.spawn((job.name.clone(), job.kind), move || {
@@ -284,11 +314,15 @@ impl Transcriptions {
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
     pub fn next(&mut self) -> Option<Done> {
         while let Some(((name, kind), result)) = self.jobs.next() {
-            if kind == Kind::Lookup {
-                self.checking.remove(&name);
-            } else {
-                self.running.remove(&name);
-                self.send_queued();
+            match kind {
+                Kind::Lookup => {
+                    self.checking.remove(&name);
+                }
+                Kind::Restyle => {}
+                Kind::Transcribe | Kind::Force => {
+                    self.running.remove(&name);
+                    self.send_queued();
+                }
             }
             match result {
                 Ok(None) => {}
@@ -297,6 +331,7 @@ impl Transcriptions {
                         name,
                         transcript: ran.transcript,
                         forced: kind == Kind::Force,
+                        restyled: kind == Kind::Restyle,
                         elapsed: ran.elapsed,
                     });
                 }

@@ -16,7 +16,9 @@ use notebook_app::{
 use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
+use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::ocr::{Fetched, OcrError};
+use notebook_core::settings::Settings;
 use notebook_core::{CleanParams, Crop, Loaded, Quad, decode, is_page_shaped};
 use tempfile::TempDir;
 
@@ -975,13 +977,7 @@ fn controls_without_a_transcriber() {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
-    for label in [
-        "Transcribed",
-        "Transcription model",
-        "Transcribe all",
-        "Re-export",
-        "Export",
-    ] {
+    for label in ["Transcribed", "Transcribe all", "Re-export", "Export"] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
@@ -1257,31 +1253,15 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     let mut harness = harness_with_cache(transcriber, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    // Its label, then the dropdown (named by the label), then Sort by name, in a row.
-    let label = harness
-        .query_all_by_role(Role::Label)
-        .find(|n| n.value().as_deref() == Some("Transcription model"))
-        .expect("label")
-        .accesskit_node()
-        .bounding_box()
-        .unwrap();
-    let bounds = |label| {
-        let node = harness.get_by_label(label);
-        node.accesskit_node().bounding_box().unwrap()
-    };
-    let (combo, sort) = (bounds("Transcription model"), bounds("Sort by name"));
     assert!(
-        label.x1 <= combo.x0 && combo.x1 <= sort.x0,
-        "{label:?} {combo:?} {sort:?}"
-    );
-    assert!(
-        label.y0 < combo.y1 && combo.y0 < label.y1,
-        "{label:?} {combo:?}"
+        harness.query_by_label("Transcription model").is_none(),
+        "it's in Settings, not the toolbar"
     );
 
-    harness.get_by_label("Transcription model").click();
-    settle(&mut harness);
+    press_command(&mut harness, egui::Key::Comma);
     harness.get_by_label("Sonnet").click();
+    settle(&mut harness);
+    harness.get_by_label("Save").click();
     settle(&mut harness);
     harness.get_by_label("Force retranscription").click();
     step_until(&mut harness, "by claude-sonnet-5-5");
@@ -1300,8 +1280,9 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     );
     let cache = Cache::new(dir.path());
     let photo = page_photo();
-    assert!(cache.get(&photo, Model::Opus).is_some());
-    assert!(cache.get(&photo, Model::Sonnet).is_some());
+    let style = MarkdownStyle::default();
+    assert!(cache.get(&photo, Model::Opus, &style).is_some());
+    assert!(cache.get(&photo, Model::Sonnet, &style).is_some());
 
     // Either entry will do for a new page, which isn't sent.
     let (fetch, calls) = counting_fetch();
@@ -2075,6 +2056,124 @@ fn dialogs_put_the_affirmative_button_last() {
     harness.get_by_label("Delete").click();
     settle(&mut harness);
     assert!(left(&harness, "Cancel") < left(&harness, "Delete page"));
+    harness.get_by_label("Cancel").click();
+    settle(&mut harness);
+
+    press_command(&mut harness, egui::Key::Comma);
+    assert!(left(&harness, "Cancel") < left(&harness, "Save"));
+}
+
+/// Whether the radio button or checkbox labelled `label` is on.
+fn checked(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
+    harness.get_by_label(label).accesskit_node().toggled() == Some(Toggled::True)
+}
+
+#[test]
+fn settings_open_without_pages_and_cancelling_keeps_them() {
+    let mut harness = harness();
+    press_command(&mut harness, egui::Key::Comma);
+    assert!(checked(&harness, "Opus"));
+
+    harness.get_by_label("Sonnet").click();
+    press(&mut harness, egui::Modifiers::NONE, egui::Key::Escape);
+    assert!(harness.query_by_label("Save").is_none(), "closed");
+    press_command(&mut harness, egui::Key::Comma);
+    assert!(checked(&harness, "Opus"), "Escape kept Opus");
+
+    harness.get_by_label("Sonnet").click();
+    settle(&mut harness);
+    harness.get_by_label("Cancel").click();
+    settle(&mut harness);
+    press_command(&mut harness, egui::Key::Comma);
+    assert!(checked(&harness, "Opus"), "Cancel kept Opus");
+}
+
+#[test]
+fn saved_settings_are_kept_for_next_time() {
+    let dir = test_dir("settings_file");
+    let path = dir.path().join("settings.json");
+    let app = || harness_for(NotebookApp::default().with_settings_file(path.clone()));
+
+    let mut harness = app();
+    press_command(&mut harness, egui::Key::Comma);
+    harness.get_by_label("Sonnet").click();
+    settle(&mut harness);
+    harness.get_by_label("Save").click();
+    settle(&mut harness);
+    assert!(harness.query_by_label("Save").is_none(), "closed");
+    assert_eq!(Settings::load(&path).model, Model::Sonnet);
+
+    let mut harness = app();
+    press_command(&mut harness, egui::Key::Comma);
+    assert!(checked(&harness, "Sonnet"));
+}
+
+/// A new markdown style reaches transcripts the user hasn't corrected, read again from the cache,
+/// and corrected ones once they're reset; none is sent again.
+#[test]
+fn a_new_markdown_style_restyles_unedited_transcripts() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetch: Fetch = {
+        let calls = calls.clone();
+        Arc::new(move |_, _, _, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let recorded = recorded();
+            let body = String::from_utf8(recorded.body)
+                .unwrap()
+                .replace("buy eggs", "buy <u>eggs</u>");
+            Ok(Fetched {
+                body: body.into_bytes(),
+                ..recorded
+            })
+        })
+    };
+    let dir = test_dir("restyle");
+    let mut harness = cached_harness(fetch, dir.path());
+    drop_files(
+        &mut harness,
+        &[("a.png", page_photo()), ("b.png", page_photo())],
+    );
+    show_transcript(&mut harness);
+    harness.get_by_label("b.png").click();
+    settle(&mut harness);
+    // From the cache, which a.png's transcription filled.
+    harness.get_by_label("Transcribe").click();
+    step_until(&mut harness, "buy _eggs_");
+    correct_plumber(&mut harness);
+
+    press_command(&mut harness, egui::Key::Comma);
+    harness.get_by_label("Underlines").click();
+    settle(&mut harness);
+    harness.get_by_label("*asterisks*").click();
+    settle(&mut harness);
+    harness.get_by_label("Save").click();
+    settle(&mut harness);
+
+    harness.get_by_label("a.png").click();
+    step_until(&mut harness, "buy *eggs*");
+    harness.get_by_label("b.png").click();
+    settle(&mut harness);
+    harness.get_by_label_contains("buy _eggs_");
+    harness.get_by_label("plumbers");
+
+    harness.get_by_label("Reset Transcript").click();
+    settle(&mut harness);
+    harness.get_by_label("Reset").click();
+    step_until(&mut harness, "buy *eggs*");
+    harness.get_by_label("plumber");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let transcribed = events(&harness)
+        .into_iter()
+        .filter(|e| e.starts_with("transcribed"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        transcribed,
+        [
+            "transcribed from_cache=false",
+            "transcribed from_cache=true"
+        ]
+    );
 }
 
 #[test]

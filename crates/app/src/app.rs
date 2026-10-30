@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -10,6 +11,7 @@ use egui::{
 use jiff::tz::TimeZone;
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
+use notebook_core::settings::Settings;
 use notebook_core::transcript::Transcript;
 use notebook_core::{
     CleanParams, Page, Pages, Quad, RgbaImage, decode, photo_corners, shrink_to_fit,
@@ -24,6 +26,7 @@ use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions, Waker};
 use crate::ui::corners::Corners;
 use crate::ui::dialog::{self, Action, Choice};
+use crate::ui::settings::SettingsDialog;
 use crate::ui::split::{self, Split};
 use crate::ui::thumbnails::{self, Thumbnails};
 use crate::ui::transcript_view::{self, TranscriptView};
@@ -31,10 +34,6 @@ use crate::ui::transcript_view::{self, TranscriptView};
 /// Why the Transcribed view is unavailable.
 const NO_TRANSCRIBER_HINT: &str =
     "Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app";
-
-/// What the model selector changes.
-const MODEL_HINT: &str = "Model for new and forced transcriptions. Cached transcripts by either \
-model are used; this one's is preferred.";
 
 /// The button that retranscribes a page, skipping the cache.
 const FORCE_LABEL: &str = "Force retranscription";
@@ -172,6 +171,9 @@ pub struct NotebookApp {
     confirm_force: Option<String>,
     /// The page whose corrections the user asked to drop, until they confirm.
     confirm_reset: Option<String>,
+    settings_dialog: SettingsDialog,
+    /// Where settings are saved. Without one, they last until the app quits.
+    settings_path: Option<PathBuf>,
     eval_log: EvalLog,
     input: Input,
     /// Commands to run next frame.
@@ -206,6 +208,15 @@ impl NotebookApp {
     pub fn with_file_picker(self, pick_files: PickFiles) -> Self {
         Self {
             pick_files: Some(pick_files),
+            ..self
+        }
+    }
+
+    /// Starts with the settings saved at `path`, and saves them there when they change.
+    pub fn with_settings_file(mut self, path: PathBuf) -> Self {
+        self.transcriptions.set_settings(Settings::load(&path));
+        Self {
+            settings_path: Some(path),
             ..self
         }
     }
@@ -266,6 +277,10 @@ impl NotebookApp {
         self.show_decoded(&ctx);
         self.export.poll(&ctx);
         while let Some(done) = self.transcriptions.next() {
+            if done.restyled {
+                self.restyled(done.name, done.transcript);
+                continue;
+            }
             let index = self.pages.position(&done.name);
             // The page may have been deleted meanwhile. Only a forced retranscription replaces a
             // transcript: a late cache hit mustn't undo the user's corrections.
@@ -278,6 +293,7 @@ impl NotebookApp {
                 if done.forced {
                     self.transcript_view = TranscriptView::default();
                 }
+                self.restyle_if_stale(&done.name);
             }
         }
 
@@ -286,6 +302,7 @@ impl NotebookApp {
         } else {
             self.viewer(ui);
         }
+        self.settings_dialog(&ctx);
         let states = self.command_states(&ctx);
         self.input.0.sync(&|c| states[c as usize]);
     }
@@ -298,6 +315,7 @@ impl NotebookApp {
         let can_transcribe = self.transcriptions.available();
         let can_export = can_transcribe && self.export.running().is_none();
         let possible = match command {
+            Command::Settings => true,
             Command::AddPages => self.pick_files.is_some(),
             Command::Export | Command::ExportAs => page.is_some() && can_export,
             Command::ViewOriginal | Command::ViewCleaned => page.is_some(),
@@ -350,6 +368,7 @@ impl NotebookApp {
             || self.confirm_reset.is_some()
             || self.confirm_transcribe_all
             || self.export.dialog_open()
+            || self.settings_dialog.is_open()
     }
 
     /// Runs the commands queued and given since the last frame.
@@ -369,6 +388,7 @@ impl NotebookApp {
         }
         let index = self.selected_index();
         match command {
+            Command::Settings => self.settings_dialog.open(self.transcriptions.settings()),
             Command::AddPages => self.add_picked(),
             Command::Export if self.export.can_reexport() => {
                 self.export.reexport(ctx, &self.pages, index);
@@ -678,6 +698,8 @@ impl NotebookApp {
                 page: name.clone(),
                 model: transcript.model.clone(),
             });
+            // Claude's transcription may be in an older style.
+            self.restyle_if_stale(&name);
         }
         if choice.is_some() {
             self.confirm_reset = None;
@@ -838,7 +860,6 @@ impl NotebookApp {
                     if sort.clicked() {
                         self.sort_pages();
                     }
-                    self.model_selector(ui);
                 });
             });
         });
@@ -921,27 +942,66 @@ impl NotebookApp {
         }
     }
 
-    /// Which model new and forced transcriptions use.
-    fn model_selector(&mut self, ui: &mut egui::Ui) {
-        let available = self.transcriptions.available();
-        let mut model = self.transcriptions.model();
-        ui.add_enabled_ui(available, |ui| {
-            // In the toolbar's right-to-left layout, so the label comes out on the left.
-            let combo = egui::ComboBox::from_id_salt("transcription model")
-                .selected_text(model.label())
-                .show_ui(ui, |ui| {
-                    for m in Model::ALL {
-                        ui.selectable_value(&mut model, m, m.label());
-                    }
-                })
-                .response;
-            let label = ui.label("Transcription model");
-            combo
-                .labelled_by(label.id)
-                .on_hover_text(MODEL_HINT)
-                .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+    /// The Settings dialog, if it's open. Saved settings apply from now on, and restyle the
+    /// transcripts the user hasn't corrected.
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let Some(settings) = self.settings_dialog.show(ctx) else {
+            return;
+        };
+        if let Some(path) = &self.settings_path
+            && let Err(err) = settings.save(path)
+        {
+            log::warn!("couldn't save settings to {}: {err}", path.display());
+            self.errors.push(format!("Couldn't save settings: {err}"));
+        }
+        self.transcriptions.set_settings(settings);
+        let names: Vec<String> = self.pages.iter().map(|p| p.name.clone()).collect();
+        for name in names {
+            self.restyle_if_stale(&name);
+        }
+    }
+
+    /// Reads the page named `name`'s transcript from the cache again if it's in another style than
+    /// the settings', unless the user has corrected it: that would lose their corrections.
+    fn restyle_if_stale(&mut self, name: &str) {
+        let style = &self.transcriptions.settings().markdown;
+        let Some(page) = self.pages.position(name).and_then(|i| self.pages.get(i)) else {
+            return;
+        };
+        let Some(transcript) = &page.transcript else {
+            return;
+        };
+        if transcript.corrected() || transcript.style == *style {
+            return;
+        }
+        let model = Model::from_id(&transcript.model).unwrap_or_default();
+        let bytes = page.bytes.clone();
+        self.transcriptions.restyle(name, bytes, model);
+    }
+
+    /// Puts `transcript`, read again in the settings' style, in place of the page named `name`'s,
+    /// unless the user corrected it meanwhile or the style changed again.
+    fn restyled(&mut self, name: String, transcript: Transcript) {
+        let style = &self.transcriptions.settings().markdown;
+        let Some(page) = self
+            .pages
+            .position(&name)
+            .and_then(|i| self.pages.get_mut(i))
+        else {
+            return;
+        };
+        let Some(old) = &page.transcript else {
+            return;
+        };
+        if old.corrected() || transcript.style != *style {
+            return;
+        }
+        // Where it came from is still where the page's transcript came from.
+        page.transcript = Some(Transcript {
+            from_cache: old.from_cache,
+            ..transcript
         });
-        self.transcriptions.set_model(model);
+        self.transcript_view = TranscriptView::default();
     }
 
     /// The selected page's photo.

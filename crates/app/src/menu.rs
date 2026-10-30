@@ -164,6 +164,7 @@ fn accelerator(shortcut: KeyboardShortcut) -> Accelerator {
         Key::ArrowLeft => Code::ArrowLeft,
         Key::ArrowRight => Code::ArrowRight,
         Key::Backspace => Code::Backspace,
+        Key::Comma => Code::Comma,
         Key::Num1 => Code::Digit1,
         Key::Num2 => Code::Digit2,
         Key::Num3 => Code::Digit3,

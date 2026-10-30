@@ -1,5 +1,6 @@
 use notebook_app::NotebookApp;
 use notebook_core::cache::Cache;
+use notebook_core::settings::Settings;
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -11,6 +12,10 @@ fn main() -> eframe::Result {
             let app = NotebookApp::with_transcription(transcriber, cache)
                 .with_save_path(save_dialog())
                 .with_file_picker(file_picker());
+            let app = match Settings::default_path() {
+                Some(path) => app.with_settings_file(path),
+                None => app,
+            };
             #[cfg(target_os = "macos")]
             let app = app.with_frontend(Box::new(notebook_app::menu::NativeMenu::install(
                 &cc.egui_ctx,

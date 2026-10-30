@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer};
 
 use crate::clean::Crop;
 use crate::llm_model::Usage;
+use crate::markdown_style::MarkdownStyle;
 
 /// How many lines either side of its claimed line an uncertain word is looked for in.
 /// See `decisions/2026-10-23-uncertain-words-nearby-lines.md`.
@@ -29,6 +30,8 @@ pub struct Transcript {
     /// Where the image sent was cut from the photo, and its size, which the boxes are measured in.
     /// [`crate::reframe`] maps them onto another crop.
     pub crop: Crop,
+    /// The style Claude's markup was converted to when it was parsed.
+    pub style: MarkdownStyle,
     /// The model that answered; differs from the one asked for if a fallback ran.
     pub model: String,
     /// What the request cost; for a cached transcript, what it cost when it was made.
@@ -430,6 +433,7 @@ impl Transcript {
             lines,
             uncertain,
             crop: Crop::whole(100, 100),
+            style: MarkdownStyle::default(),
             model: crate::llm_model::Model::Opus.id().to_owned(),
             usage: Usage::default(),
             from_cache: false,

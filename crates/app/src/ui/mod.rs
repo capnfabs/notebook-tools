@@ -3,6 +3,7 @@
 
 pub mod corners;
 pub mod dialog;
+pub mod settings;
 pub mod split;
 pub mod thumbnails;
 pub mod transcript_view;

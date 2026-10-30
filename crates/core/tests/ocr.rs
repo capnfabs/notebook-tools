@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use image::{Rgba, RgbaImage};
 use notebook_core::Crop;
 use notebook_core::llm_model::Model;
+use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::ocr::{
     Credentials, EFFORT, OcrError, encode_jpeg, parse_response, request_body,
 };
@@ -28,7 +29,12 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 fn parse(name: &str) -> Result<Transcript, OcrError> {
-    parse_response(200, &fixture(name), Crop::whole(1200, 900))
+    parse_response(
+        200,
+        &fixture(name),
+        Crop::whole(1200, 900),
+        &MarkdownStyle::default(),
+    )
 }
 
 /// Panics if any of `transcript`'s boxes isn't ordered or inside the image sent. Boxes tend to sit
@@ -128,7 +134,12 @@ fn parses_bbox_spike_responses() {
         let Some(status) = run.status else { continue };
         let body = std::fs::read(dir.join(format!("{name}.json"))).unwrap();
         match (
-            parse_response(status, &body, Crop::whole(run.sent_size.0, run.sent_size.1)),
+            parse_response(
+                status,
+                &body,
+                Crop::whole(run.sent_size.0, run.sent_size.1),
+                &MarkdownStyle::default(),
+            ),
             run.error,
         ) {
             (Ok(transcript), None) => {
@@ -181,16 +192,24 @@ fn truncated_answer_is_an_error() {
 #[test]
 fn api_error_status() {
     assert_eq!(
-        parse_response(529, &fixture("api_error"), Crop::whole(1, 1)),
+        parse_response(
+            529,
+            &fixture("api_error"),
+            Crop::whole(1, 1),
+            &MarkdownStyle::default()
+        ),
         Err(OcrError::Api {
             status: 529,
             kind: "overloaded_error".into(),
             message: "Overloaded".into(),
         })
     );
-    let Err(OcrError::Api { status, kind, .. }) =
-        parse_response(502, b"<html>Bad gateway", Crop::whole(1, 1))
-    else {
+    let Err(OcrError::Api { status, kind, .. }) = parse_response(
+        502,
+        b"<html>Bad gateway",
+        Crop::whole(1, 1),
+        &MarkdownStyle::default(),
+    ) else {
         panic!("expected an API error");
     };
     assert_eq!((status, kind.as_str()), (502, "unknown"));
@@ -202,7 +221,12 @@ fn non_json_answer_is_a_parse_error() {
         .unwrap()
         .replace(r#""text": "{"#, r#""text": "not json {"#);
     assert!(matches!(
-        parse_response(200, body.as_bytes(), Crop::whole(1, 1)),
+        parse_response(
+            200,
+            body.as_bytes(),
+            Crop::whole(1, 1),
+            &MarkdownStyle::default()
+        ),
         Err(OcrError::Parse(_))
     ));
 }
@@ -236,7 +260,7 @@ fn live_transcribes_fixture_photo() {
     std::fs::write(&out, &body).unwrap();
     eprintln!("response saved to {}", out.display());
 
-    let transcript = parse_response(status, &body, crop).unwrap();
+    let transcript = parse_response(status, &body, crop, &MarkdownStyle::default()).unwrap();
     eprintln!(
         "{} {:?}\n{}",
         transcript.model,

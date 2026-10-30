@@ -8,6 +8,7 @@ use image::{ImageFormat, Rgba, RgbaImage};
 use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
+use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::ocr::{Fetched, OcrError};
 use notebook_core::transcript::Transcript;
 use notebook_core::{CleanParams, Crop, decode, detect_outline, photo_corners};
@@ -56,14 +57,19 @@ fn transcribe_with(
     fixture_name: &str,
     fetches: &Cell<u32>,
 ) -> Result<Transcript, OcrError> {
-    cache.transcript_or(photo, model, || -> Result<Fetched, OcrError> {
-        fetches.set(fetches.get() + 1);
-        Ok(Fetched {
-            status,
-            body: fixture(fixture_name),
-            crop: CROP,
-        })
-    })
+    cache.transcript_or(
+        photo,
+        model,
+        &MarkdownStyle::default(),
+        || -> Result<Fetched, OcrError> {
+            fetches.set(fetches.get() + 1);
+            Ok(Fetched {
+                status,
+                body: fixture(fixture_name),
+                crop: CROP,
+            })
+        },
+    )
 }
 
 #[test]
@@ -135,9 +141,42 @@ fn entries_keep_when_they_were_stored() {
     let stored_at = fresh.stored_at.expect("stored");
     assert!(stored_at >= before && stored_at <= SystemTime::now());
     assert_eq!(
-        cache.get(PHOTO, Model::Opus).unwrap().stored_at,
+        cache
+            .get(PHOTO, Model::Opus, &MarkdownStyle::default())
+            .unwrap()
+            .stored_at,
         Some(stored_at)
     );
+}
+
+#[test]
+fn entries_are_read_in_the_style_asked_for() {
+    let (_dir, cache) = cache("style");
+    let underlined = String::from_utf8(fixture("success"))
+        .unwrap()
+        .replace("# Thurs 23 Oct", "<u>Thurs 23 Oct</u>")
+        .replace("buy eggs", "buy <u>eggs</u>");
+    let fetch = || -> Result<Fetched, OcrError> {
+        Ok(Fetched {
+            status: 200,
+            body: underlined.into_bytes(),
+            crop: CROP,
+        })
+    };
+    let fresh = cache
+        .transcript_or(PHOTO, Model::Opus, &MarkdownStyle::default(), fetch)
+        .unwrap();
+    assert_eq!(fresh.lines[0].text_md, "## Thurs 23 Oct");
+    assert_eq!(fresh.lines[2].text_md, "- [x] buy _eggs_");
+
+    let style = MarkdownStyle {
+        underline: "*".to_owned(),
+        underlined_line_heading: 3,
+    };
+    let restyled = cache.get(PHOTO, Model::Opus, &style).unwrap();
+    assert_eq!(restyled.lines[0].text_md, "### Thurs 23 Oct");
+    assert_eq!(restyled.lines[2].text_md, "- [x] buy *eggs*");
+    assert_eq!(restyled.style, style);
 }
 
 #[test]
@@ -146,18 +185,26 @@ fn refresh_fetches_and_replaces_the_entry() {
     let fetches = Cell::new(0);
     let first = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     let refreshed = cache
-        .refresh(PHOTO, Model::Opus, || -> Result<Fetched, OcrError> {
-            Ok(Fetched {
-                status: 200,
-                body: fixture("fallback"),
-                crop: CROP,
-            })
-        })
+        .refresh(
+            PHOTO,
+            Model::Opus,
+            &MarkdownStyle::default(),
+            || -> Result<Fetched, OcrError> {
+                Ok(Fetched {
+                    status: 200,
+                    body: fixture("fallback"),
+                    crop: CROP,
+                })
+            },
+        )
         .unwrap();
     assert!(!refreshed.from_cache);
     assert_ne!(refreshed.model, first.model);
     assert_eq!(
-        cache.get(PHOTO, Model::Opus).unwrap().model,
+        cache
+            .get(PHOTO, Model::Opus, &MarkdownStyle::default())
+            .unwrap()
+            .model,
         refreshed.model
     );
 }
@@ -168,13 +215,18 @@ fn failed_refresh_keeps_the_entry() {
     let fetches = Cell::new(0);
     transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     let before = std::fs::read(cache.entry_path(PHOTO, Model::Opus)).unwrap();
-    let failed = cache.refresh(PHOTO, Model::Opus, || -> Result<Fetched, OcrError> {
-        Ok(Fetched {
-            status: 529,
-            body: fixture("api_error"),
-            crop: CROP,
-        })
-    });
+    let failed = cache.refresh(
+        PHOTO,
+        Model::Opus,
+        &MarkdownStyle::default(),
+        || -> Result<Fetched, OcrError> {
+            Ok(Fetched {
+                status: 529,
+                body: fixture("api_error"),
+                crop: CROP,
+            })
+        },
+    );
     assert!(failed.is_err());
     assert_eq!(
         std::fs::read(cache.entry_path(PHOTO, Model::Opus)).unwrap(),
@@ -185,13 +237,18 @@ fn failed_refresh_keeps_the_entry() {
 /// Answers `refresh` with the `fallback` fixture, whose model differs from `success`'s.
 fn refresh_with(cache: &Cache, model: Model) -> Transcript {
     cache
-        .refresh(PHOTO, model, || -> Result<Fetched, OcrError> {
-            Ok(Fetched {
-                status: 200,
-                body: fixture("fallback"),
-                crop: CROP,
-            })
-        })
+        .refresh(
+            PHOTO,
+            model,
+            &MarkdownStyle::default(),
+            || -> Result<Fetched, OcrError> {
+                Ok(Fetched {
+                    status: 200,
+                    body: fixture("fallback"),
+                    crop: CROP,
+                })
+            },
+        )
         .unwrap()
 }
 
@@ -211,16 +268,35 @@ fn the_preferred_models_entry_wins() {
     let (_dir, cache) = cache("preferred");
     let fetches = Cell::new(0);
     let opus = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
-    assert_eq!(cache.find(PHOTO, Model::Sonnet).unwrap().model, opus.model);
+    assert_eq!(
+        cache
+            .find(PHOTO, Model::Sonnet, &MarkdownStyle::default())
+            .unwrap()
+            .model,
+        opus.model
+    );
 
     let sonnet = refresh_with(&cache, Model::Sonnet);
     assert_ne!(sonnet.model, opus.model);
     assert_eq!(
-        cache.find(PHOTO, Model::Sonnet).unwrap().model,
+        cache
+            .find(PHOTO, Model::Sonnet, &MarkdownStyle::default())
+            .unwrap()
+            .model,
         sonnet.model
     );
-    assert_eq!(cache.find(PHOTO, Model::Opus).unwrap().model, opus.model);
-    assert!(cache.find(b"another photo", Model::Opus).is_none());
+    assert_eq!(
+        cache
+            .find(PHOTO, Model::Opus, &MarkdownStyle::default())
+            .unwrap()
+            .model,
+        opus.model
+    );
+    assert!(
+        cache
+            .find(b"another photo", Model::Opus, &MarkdownStyle::default())
+            .is_none()
+    );
 }
 
 #[test]
@@ -306,7 +382,9 @@ fn old_entries_get_the_detected_corners() {
     let path = write_legacy_entry(&cache, &photo);
     assert_eq!(stored_corners(&path), None);
 
-    let transcript = cache.get(&photo, Model::Opus).unwrap();
+    let transcript = cache
+        .get(&photo, Model::Opus, &MarkdownStyle::default())
+        .unwrap();
     assert_eq!(
         transcript.crop,
         Crop {
@@ -315,7 +393,12 @@ fn old_entries_get_the_detected_corners() {
         }
     );
     assert!(stored_corners(&path).is_some(), "written back");
-    assert_eq!(cache.get(&photo, Model::Opus).unwrap(), transcript);
+    assert_eq!(
+        cache
+            .get(&photo, Model::Opus, &MarkdownStyle::default())
+            .unwrap(),
+        transcript
+    );
 }
 
 #[test]
@@ -324,7 +407,11 @@ fn old_entries_without_an_outline_get_the_photos_corners() {
     let photo = png(RgbaImage::from_pixel(400, 300, Rgba([128, 128, 128, 255])));
     write_legacy_entry(&cache, &photo);
     assert_eq!(
-        cache.get(&photo, Model::Opus).unwrap().crop.corners,
+        cache
+            .get(&photo, Model::Opus, &MarkdownStyle::default())
+            .unwrap()
+            .crop
+            .corners,
         photo_corners(400, 300)
     );
 }
@@ -333,7 +420,11 @@ fn old_entries_without_an_outline_get_the_photos_corners() {
 fn old_entries_for_undecodable_photos_are_fetched_again() {
     let (_dir, cache) = cache("backfill_undecodable");
     write_legacy_entry(&cache, PHOTO);
-    assert!(cache.get(PHOTO, Model::Opus).is_none());
+    assert!(
+        cache
+            .get(PHOTO, Model::Opus, &MarkdownStyle::default())
+            .is_none()
+    );
     let fetches = Cell::new(0);
     let transcript = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     assert_eq!(fetches.get(), 1);
