@@ -26,3 +26,4 @@ In the order they were finished.
 - [x] [Flaky: `settle` during a transcription](flaky-command-tests.md)
 - [x] [Manual page detection x caching](manual-page-detection-x-caching.md)
 - [x] [Markdown conversion improvements](markdown-cleanup.md)
+- [x] [Correction UI improvements](correction-ui.md)

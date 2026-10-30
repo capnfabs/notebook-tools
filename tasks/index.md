@@ -6,7 +6,6 @@ See [done/index.md](done/index.md).
 ## features
 
 ## polish
-- [ ] [Correction UI improvements](correction-ui.md)
 - [ ] [Settings dialog](settings-dialog.md)
 - [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)

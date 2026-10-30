@@ -95,9 +95,15 @@ impl Transcript {
     pub fn reframed(&self, to: Crop) -> Transcript {
         let reframe = Reframe::new(self.crop, to);
         let mut transcript = self.clone();
-        let boxes = transcript.lines.iter_mut().map(|l| &mut l.bbox);
-        for bbox in boxes.chain(transcript.uncertain.iter_mut().map(|u| &mut u.bbox)) {
-            *bbox = bbox.map(|b| reframe.bbox(b));
+        let original = transcript.original.as_deref_mut();
+        let texts = [(&mut transcript.lines, &mut transcript.uncertain)]
+            .into_iter()
+            .chain(original.map(|o| (&mut o.lines, &mut o.uncertain)));
+        for (lines, uncertain) in texts {
+            let boxes = lines.iter_mut().map(|l| &mut l.bbox);
+            for bbox in boxes.chain(uncertain.iter_mut().map(|u| &mut u.bbox)) {
+                *bbox = bbox.map(|b| reframe.bbox(b));
+            }
         }
         transcript.crop = to;
         transcript
@@ -328,6 +334,7 @@ mod tests {
                 bbox: Some([10.0, 150.0, 60.0, 200.0]),
                 alternatives: vec![],
                 resolved: false,
+                deleted: None,
             }],
             ..lined(from)
         };

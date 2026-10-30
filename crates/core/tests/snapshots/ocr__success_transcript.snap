@@ -70,6 +70,7 @@ Transcript {
                 "plunber",
             ],
             resolved: false,
+            deleted: None,
         },
         Uncertain {
             line: 4,
@@ -86,6 +87,7 @@ Transcript {
                 "with",
             ],
             resolved: false,
+            deleted: None,
         },
     ],
     crop: Crop {
@@ -120,5 +122,5 @@ Transcript {
     },
     from_cache: false,
     stored_at: None,
-    edited: false,
+    original: None,
 }

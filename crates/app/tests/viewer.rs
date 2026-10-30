@@ -284,6 +284,7 @@ fn events(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
                 uncertain, unfound, ..
             } => format!("all resolved {uncertain} unfound={unfound}"),
             Event::LineEdited { line, from, to, .. } => format!("line {line} {from}->{to}"),
+            Event::Reset { .. } => "reset".to_owned(),
         })
         .collect()
 }
@@ -1041,7 +1042,7 @@ fn transcribed_view_transcribes_once() {
 
     harness.get_by_label("Transcribed").click();
     step_until(&mut harness, "# Thurs 23 Oct");
-    harness.get_by_label_contains("~~tap~~ shower");
+    harness.get_by_label("~~tap~~");
 
     harness.get_by_label("Original").click();
     settle(&mut harness);
@@ -1621,6 +1622,237 @@ fn double_clicking_a_line_edits_it() {
     settle(&mut harness);
     harness.get_by_label("# Thurs 23 Oct 2026");
     assert_eq!(events(&harness).len(), 2, "escaped edit not logged");
+}
+
+/// A harness whose frames are short enough for double-clicks: each click takes a few frames, so
+/// the default quarter-second frames are too slow.
+fn quick_harness() -> Harness<'static, NotebookApp> {
+    Harness::builder().with_step_dt(1.0 / 60.0).build_ui_state(
+        |ui, app: &mut NotebookApp| app.ui(ui),
+        NotebookApp::with_transcription(Some(transcriber()), None),
+    )
+}
+
+/// Double-clicks the line labelled `label` to edit it.
+fn edit_line(harness: &mut Harness<'_, NotebookApp>, label: &str) {
+    // Far enough after any earlier click that the double-click isn't a triple.
+    harness.run_steps(30);
+    let line = harness.get_by_label(label);
+    line.click();
+    line.click();
+    harness.run_ok();
+}
+
+#[test]
+fn clicking_another_correction_keeps_its_popup_open() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    // The lower word first: its popup opens below it, clear of the other.
+    harness.get_by_label("w/").click();
+    settle(&mut harness);
+    harness.get_by_label("Keep \"w/\"");
+    harness.get_by_label("plumber").click();
+    settle(&mut harness);
+    harness.get_by_label("Keep \"plumber\"");
+    assert!(harness.query_by_label("Keep \"w/\"").is_none());
+
+    // And from the page.
+    harness.get_by_label("Box: w/").click();
+    settle(&mut harness);
+    harness.get_by_label("Keep \"w/\"");
+    assert!(harness.query_by_label("Keep \"plumber\"").is_none());
+}
+
+#[test]
+fn clicking_a_box_scrolls_the_transcript_to_its_word() {
+    // Too short for the whole transcript.
+    const HEIGHT: f32 = 110.0;
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(800.0, HEIGHT))
+        .build_ui_state(
+            |ui, app: &mut NotebookApp| app.ui(ui),
+            NotebookApp::with_transcription(Some(transcriber()), None),
+        );
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    let top =
+        |harness: &Harness<'_, NotebookApp>, label: &str| harness.get_by_label(label).rect().top();
+    let (heading, word) = (top(&harness, "# Thurs 23 Oct"), top(&harness, "w/"));
+    assert!(word > HEIGHT, "w/ starts out of sight at {word}");
+
+    harness.get_by_label("Box: w/").click();
+    settle(&mut harness);
+    let scrolled = heading - top(&harness, "# Thurs 23 Oct");
+    assert!(scrolled > 0.0, "scrolled {scrolled}");
+    assert!(top(&harness, "w/") < HEIGHT);
+    harness.get_by_label("Keep \"w/\"");
+}
+
+#[test]
+fn hovering_a_line_highlights_its_box() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    // Line 1's box, as Claude put it: 130..980 of 1200 across, 190..250 of 900 down.
+    let page = harness.get_by_label("Current: a.png (cleaned)").rect();
+    let expected = egui::Rect::from_min_max(
+        page.min + egui::vec2(130.0 / 1200.0, 190.0 / 900.0) * page.size(),
+        page.min + egui::vec2(980.0 / 1200.0, 250.0 / 900.0) * page.size(),
+    );
+    // Painted as a rect, or a quad if the page was cut elsewhere, with a 1pt outline outside.
+    let outlined = |harness: &Harness<'_, NotebookApp>| {
+        harness.output().shapes.iter().any(|clipped| {
+            let painted = clipped.shape.visual_bounding_rect();
+            (painted.min - expected.min).length() < 3.0
+                && (painted.max - expected.max).length() < 3.0
+        })
+    };
+    assert!(!outlined(&harness));
+
+    harness.get_by_label(" shower").hover();
+    harness.run_ok();
+    assert!(outlined(&harness));
+    harness.get_by_label("# Thurs 23 Oct").hover();
+    harness.run_ok();
+    assert!(!outlined(&harness), "only the hovered line");
+}
+
+#[test]
+fn a_single_click_hints_at_double_click() {
+    const HINT: &str = "Double-click to edit this line";
+    let mut harness = quick_harness();
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.run_steps(30);
+    harness.get_by_label("# Thurs 23 Oct").click();
+    harness.run_steps(5);
+    assert!(
+        harness.query_by_label(HINT).is_none(),
+        "not while it could be a double-click"
+    );
+    harness.run_steps(30);
+    harness.get_by_label(HINT);
+    // Gone once the pointer moves away.
+    harness.get_by_label("Box: plumber").hover();
+    harness.run_steps(2);
+    assert!(harness.query_by_label(HINT).is_none());
+
+    edit_line(&mut harness, "# Thurs 23 Oct");
+    harness.run_steps(30);
+    harness.get_by_role(Role::TextInput);
+    assert!(
+        harness.query_by_label(HINT).is_none(),
+        "not for a double-click"
+    );
+}
+
+#[test]
+fn struck_text_can_be_deleted() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("~~tap~~").click();
+    settle(&mut harness);
+    harness.get_by_label("Delete struck text").click();
+    settle(&mut harness);
+
+    harness.get_by_label(" re: shower");
+    assert!(harness.query_by_label("~~tap~~").is_none());
+    assert_eq!(
+        events(&harness)[1..],
+        ["line 1 - ring the plumber re: ~~tap~~ shower->- ring the plumber re: shower"]
+    );
+}
+
+#[test]
+fn struck_uncertain_words_can_be_deleted_and_put_back() {
+    // Claude unsure of "tap" in "~~tap~~", rather than of "plumber".
+    let fetch: Fetch = Arc::new(|_, _, _, _| {
+        let mut fetched = recorded();
+        let body = String::from_utf8(fetched.body)
+            .unwrap()
+            .replace(r#"\"plumber\", \"bbox\""#, r#"\"tap\", \"bbox\""#)
+            .replace(r#"[\"plumbers\", \"plunber\"]"#, r#"[\"top\"]"#);
+        fetched.body = body.into_bytes();
+        Ok(fetched)
+    });
+    let mut harness = harness_with(Transcriber::new(fetch));
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    harness.get_by_label("~~tap~~").click();
+    settle(&mut harness);
+    harness.get_by_label("~~top~~");
+    harness.get_by_label("Keep \"~~tap~~\"");
+    harness.get_by_label("Delete struck text").click();
+    settle(&mut harness);
+    harness.get_by_label("- ring the plumber re: shower");
+
+    harness.get_by_label("Box: ~~tap~~").click();
+    settle(&mut harness);
+    assert!(
+        harness.query_by_label_contains("Keep").is_none(),
+        "nothing to keep"
+    );
+    harness.get_by_label("~~top~~").click();
+    settle(&mut harness);
+    harness.get_by_label("- ring the plumber re: ");
+    harness.get_by_label("~~top~~");
+    harness.get_by_label(" shower");
+    assert_eq!(
+        events(&harness)[1..],
+        [
+            "corrected 0 ~~tap~~-> DeleteStruck",
+            "corrected 0 ->~~top~~ Alternative(1)",
+        ]
+    );
+}
+
+#[test]
+fn unfound_boxes_say_why() {
+    let mut harness = quick_harness();
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    edit_line(&mut harness, " shower");
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.get_by_role(Role::TextInput).type_text("- call Sam");
+    harness.run_ok();
+    harness.key_press(egui::Key::Enter);
+    settle(&mut harness);
+    harness.get_by_label("- call Sam");
+
+    harness.get_by_label("Box: plumber").hover();
+    harness.run_steps(60);
+    harness.get_by_label_contains("\"plumber\" was edited out of its line");
+}
+
+#[test]
+fn reset_asks_then_restores_the_transcript() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    assert!(disabled(&harness, "Reset Transcript"));
+
+    correct_plumber(&mut harness);
+    harness.get_by_label("Reset Transcript").click();
+    settle(&mut harness);
+    harness.get_by_label("Cancel").click();
+    settle(&mut harness);
+    harness.get_by_label("plumbers");
+
+    harness.get_by_label("Reset Transcript").click();
+    settle(&mut harness);
+    harness.get_by_label("Reset").click();
+    settle(&mut harness);
+    harness.get_by_label("plumber");
+    assert!(harness.query_by_label("plumbers").is_none());
+    assert!(disabled(&harness, "Reset Transcript"));
+    assert_eq!(events(&harness).last().map(String::as_str), Some("reset"));
 }
 
 #[test]

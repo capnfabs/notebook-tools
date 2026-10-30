@@ -186,6 +186,7 @@ mod tests {
             bbox: None,
             alternatives: alternatives.iter().map(|&a| a.to_owned()).collect(),
             resolved: false,
+            deleted: None,
         }
     }
 

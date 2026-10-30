@@ -66,6 +66,7 @@ mod tests {
             bbox: None,
             alternatives: Vec::new(),
             resolved: false,
+            deleted: None,
         };
         Transcript::for_test(
             lines.iter().map(line).collect(),

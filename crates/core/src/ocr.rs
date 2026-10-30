@@ -350,7 +350,7 @@ pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript
         &mut answer.uncertain,
         &MarkdownStyle::default(),
     );
-    Ok(Transcript {
+    let mut transcript = Transcript {
         lines: answer.lines,
         uncertain: answer.uncertain,
         crop,
@@ -358,8 +358,10 @@ pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript
         usage: response.usage,
         from_cache: false,
         stored_at: None,
-        edited: false,
-    })
+        original: None,
+    };
+    transcript.widen_to_strikes();
+    Ok(transcript)
 }
 
 /// Posts `body` to the Messages API, returning the status and response body.

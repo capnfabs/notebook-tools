@@ -23,6 +23,8 @@ pub enum Command {
     NextPage,
     Transcribe,
     ForceRetranscribe,
+    /// Drops the user's corrections to the page's transcript.
+    ResetTranscript,
     TranscribeAll,
     MoveLeft,
     MoveRight,
@@ -64,7 +66,7 @@ const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const COMMAND_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 
 impl Command {
-    pub const ALL: [Command; 17] = [
+    pub const ALL: [Command; 18] = [
         Self::AddPages,
         Self::Export,
         Self::ExportAs,
@@ -75,6 +77,7 @@ impl Command {
         Self::NextPage,
         Self::Transcribe,
         Self::ForceRetranscribe,
+        Self::ResetTranscript,
         Self::TranscribeAll,
         Self::MoveLeft,
         Self::MoveRight,
@@ -136,6 +139,7 @@ impl Command {
                 keys(COMMAND_SHIFT, Key::T),
                 false,
             ),
+            Self::ResetTranscript => ("reset-transcript", "Reset Transcript", None, false),
             Self::TranscribeAll => (
                 "transcribe-all",
                 "Transcribe All",
@@ -257,6 +261,7 @@ pub const MENUS: &[Menu] = {
             items: &[
                 Do(C::Transcribe),
                 Do(C::ForceRetranscribe),
+                Do(C::ResetTranscript),
                 Do(C::TranscribeAll),
                 Sep,
                 Do(C::MoveLeft),

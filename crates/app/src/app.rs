@@ -170,6 +170,8 @@ pub struct NotebookApp {
     confirm_transcribe_all: bool,
     /// The corrected page the user asked to retranscribe, until they confirm.
     confirm_force: Option<String>,
+    /// The page whose corrections the user asked to drop, until they confirm.
+    confirm_reset: Option<String>,
     eval_log: EvalLog,
     input: Input,
     /// Commands to run next frame.
@@ -308,6 +310,10 @@ impl NotebookApp {
                         p.transcript.is_some() && !self.transcriptions.queued_or_running(&p.name)
                     })
             }
+            Command::ResetTranscript => page.is_some_and(|p| {
+                p.transcript.as_ref().is_some_and(Transcript::corrected)
+                    && !self.transcriptions.queued_or_running(&p.name)
+            }),
             Command::TranscribeAll => can_transcribe && !self.untranscribed().is_empty(),
             Command::PreviousPage | Command::MoveLeft => page.is_some() && index > 0,
             Command::NextPage | Command::MoveRight => index + 1 < self.pages.len(),
@@ -341,6 +347,7 @@ impl NotebookApp {
     fn dialog_open(&self) -> bool {
         self.confirm_delete.is_some()
             || self.confirm_force.is_some()
+            || self.confirm_reset.is_some()
             || self.confirm_transcribe_all
             || self.export.dialog_open()
     }
@@ -376,6 +383,10 @@ impl NotebookApp {
             Command::ForceRetranscribe => {
                 self.set_view(View::Transcribed);
                 self.request_force(index);
+            }
+            Command::ResetTranscript => {
+                self.set_view(View::Transcribed);
+                self.request_reset(index);
             }
             Command::TranscribeAll => self.request_transcribe_all(),
             Command::MoveLeft => self.move_page(index, index - 1),
@@ -641,6 +652,38 @@ impl NotebookApp {
         }
     }
 
+    /// Drops page `index`'s corrections, once the user confirms.
+    fn request_reset(&mut self, index: usize) {
+        self.confirm_reset = self.pages.get(index).map(|p| p.name.clone());
+    }
+
+    fn reset_dialog(&mut self, ctx: &egui::Context) {
+        let Some(name) = self.confirm_reset.clone() else {
+            return;
+        };
+        let choice = dialog::show(ctx, "confirm reset", 320.0, |ui| {
+            ui.label(format!(
+                "Reset {name} to Claude's transcription? Your corrections will be lost."
+            ));
+            dialog::buttons(ui, "Reset", Action::Dangerous, true)
+        });
+        if choice == Some(Choice::Affirmative)
+            && let Some(transcript) = self
+                .pages
+                .position(&name)
+                .and_then(|i| self.pages.get_mut(i)?.transcript.as_mut())
+        {
+            transcript.reset();
+            self.eval_log.record(Event::Reset {
+                page: name.clone(),
+                model: transcript.model.clone(),
+            });
+        }
+        if choice.is_some() {
+            self.confirm_reset = None;
+        }
+    }
+
     /// Transcribes the selected page, unless it's transcribed, being transcribed, or failed
     /// (which waits for Retry).
     fn transcribe_selected(&mut self) {
@@ -857,6 +900,7 @@ impl NotebookApp {
         self.delete_dialog(ui.ctx());
         self.transcribe_all_dialog(ui.ctx());
         self.force_dialog(ui.ctx());
+        self.reset_dialog(ui.ctx());
         self.export
             .dialog(ui.ctx(), &self.pages, self.selected_index());
 
@@ -1077,12 +1121,13 @@ impl NotebookApp {
         }
     }
 
-    /// Where page `index`'s transcript came from, or why retranscribing it failed, and a button to
-    /// retranscribe it, at the bottom of `rect`. Returns where it went, if the page has a
+    /// Where page `index`'s transcript came from, or why retranscribing it failed, and buttons to
+    /// reset or retranscribe it, at the bottom of `rect`. Returns where it went, if the page has a
     /// transcript.
     fn transcript_status(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) -> Option<Rect> {
         let page = self.pages.get(index)?;
         let transcript = page.transcript.as_ref()?;
+        let corrected = transcript.corrected();
         let when = when_and_by(transcript, &TimeZone::system());
         let error = self.transcriptions.error(&page.name);
         let mut text = match error {
@@ -1121,24 +1166,41 @@ impl NotebookApp {
         // Bottom up, so the row sits at the bottom however many lines the text wraps to.
         let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
             ui.horizontal(|ui| {
-                // Long text wraps in the room left of the button.
-                let force = WidgetText::from(FORCE_LABEL).into_galley(
-                    ui,
-                    Some(TextWrapMode::Extend),
-                    f32::INFINITY,
-                    TextStyle::Button,
-                );
-                let button_width = force.size().x + 2.0 * ui.spacing().button_padding.x;
-                let text_width = ui.available_width() - button_width - ui.spacing().item_spacing.x;
+                // Long text wraps in the room left of the buttons.
+                let reset_label = Command::ResetTranscript.spec().label;
+                let buttons_width: f32 = [reset_label, FORCE_LABEL]
+                    .map(|label| {
+                        let galley = WidgetText::from(label).into_galley(
+                            ui,
+                            Some(TextWrapMode::Extend),
+                            f32::INFINITY,
+                            TextStyle::Button,
+                        );
+                        galley.size().x
+                            + 2.0 * ui.spacing().button_padding.x
+                            + ui.spacing().item_spacing.x
+                    })
+                    .iter()
+                    .sum();
+                let text_width = ui.available_width() - buttons_width;
                 ui.scope(|ui| {
                     ui.set_max_width(text_width);
                     ui.add(Label::new(text).wrap());
                 });
-                with_shortcut(ui.button(FORCE_LABEL), Command::ForceRetranscribe).clicked()
+                let reset = ui
+                    .add_enabled(corrected, egui::Button::new(reset_label))
+                    .clicked();
+                let force =
+                    with_shortcut(ui.button(FORCE_LABEL), Command::ForceRetranscribe).clicked();
+                (reset, force)
             })
             .inner
         });
-        if scope.inner {
+        let (reset, force) = scope.inner;
+        if reset {
+            self.request_reset(index);
+        }
+        if force {
             self.request_force(index);
         }
         Some(scope.response.rect)

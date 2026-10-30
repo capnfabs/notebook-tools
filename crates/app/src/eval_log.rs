@@ -84,6 +84,8 @@ pub enum Event {
         from: String,
         to: String,
     },
+    /// The user dropped their corrections to a page, back to Claude's transcription.
+    Reset { page: String, model: String },
 }
 
 /// How the user picked a reading for an uncertain word.
@@ -95,6 +97,8 @@ pub enum Via {
     Keep,
     /// One of the user's own.
     Custom,
+    /// Took out the word's struck-through text, perhaps all of it.
+    DeleteStruck,
 }
 
 impl Event {
@@ -116,7 +120,8 @@ impl Event {
             Self::Transcribed { page, .. }
             | Self::Corrected { page, .. }
             | Self::AllResolved { page, .. }
-            | Self::LineEdited { page, .. } => page,
+            | Self::LineEdited { page, .. }
+            | Self::Reset { page, .. } => page,
         }
     }
 }
@@ -203,6 +208,7 @@ impl EvalLog {
                     Via::Alternative(i) => format!("alternative#{i}"),
                     Via::Keep => "keep".to_owned(),
                     Via::Custom => "custom".to_owned(),
+                    Via::DeleteStruck => "delete-struck".to_owned(),
                 }
             ),
             Event::AllResolved {
@@ -214,8 +220,9 @@ impl EvalLog {
                 let t = self.tally(page);
                 format!(
                     "corrections done page={page:?} model={model} uncertain={uncertain} \
-                     kept={} alternative={} custom={} unfound={unfound} line_edits={}",
-                    t.kept, t.alternative, t.custom, t.line_edits
+                     kept={} alternative={} custom={} struck_deleted={} unfound={unfound} \
+                     line_edits={}",
+                    t.kept, t.alternative, t.custom, t.struck_deleted, t.line_edits
                 )
             }
             Event::LineEdited {
@@ -227,16 +234,19 @@ impl EvalLog {
             } => {
                 format!("line edit page={page:?} model={model} line={line} from={from:?} to={to:?}")
             }
+            Event::Reset { page, model } => format!("reset page={page:?} model={model}"),
         }
     }
 
     /// How `page`'s current transcript was corrected: each word's last reading, and line edits,
-    /// since it was transcribed.
+    /// since it was transcribed or reset.
     fn tally(&self, page: &str) -> Tally {
         let since = self
             .events
             .iter()
-            .rposition(|e| matches!(e, Event::Transcribed { page: p, .. } if p == page))
+            .rposition(|e| {
+                matches!(e, Event::Transcribed { page: p, .. } | Event::Reset { page: p, .. } if p == page)
+            })
             .map_or(0, |i| i + 1);
         let mut words = HashMap::new();
         let mut tally = Tally::default();
@@ -254,6 +264,7 @@ impl EvalLog {
                 Via::Alternative(_) => tally.alternative += 1,
                 Via::Keep => tally.kept += 1,
                 Via::Custom => tally.custom += 1,
+                Via::DeleteStruck => tally.struck_deleted += 1,
             }
         }
         tally
@@ -265,6 +276,7 @@ struct Tally {
     kept: usize,
     alternative: usize,
     custom: usize,
+    struck_deleted: usize,
     line_edits: usize,
 }
 
@@ -394,7 +406,27 @@ mod tests {
         assert_eq!(
             log.line(&all_resolved()),
             "corrections done page=\"p1\" model=claude-opus-5-5 uncertain=4 kept=1 \
-             alternative=1 custom=1 unfound=1 line_edits=1"
+             alternative=1 custom=1 struck_deleted=0 unfound=1 line_edits=1"
+        );
+    }
+
+    #[test]
+    fn done_tallies_since_the_last_reset() {
+        let mut log = EvalLog::default();
+        log.record(transcribed("p1", OPUS, false));
+        log.record(corrected(0, Via::Custom));
+        log.record(line_edited("p1"));
+        let reset = Event::Reset {
+            page: "p1".to_owned(),
+            model: OPUS.to_owned(),
+        };
+        assert_eq!(log.line(&reset), "reset page=\"p1\" model=claude-opus-5-5");
+        log.record(reset);
+        log.record(corrected(0, Via::DeleteStruck));
+        assert_eq!(
+            log.line(&all_resolved()),
+            "corrections done page=\"p1\" model=claude-opus-5-5 uncertain=4 kept=0 \
+             alternative=0 custom=0 struck_deleted=1 unfound=1 line_edits=0"
         );
     }
 }
