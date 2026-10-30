@@ -205,6 +205,13 @@ mod tests {
     }
 
     #[test]
+    fn plain_text_drops_tidied_markup() {
+        assert_eq!(plain_text("## Sat 26<sup>th</sup>"), "Sat 26th");
+        assert_eq!(plain_text("I am _so excited_"), "I am so excited");
+        assert_eq!(plain_text("---"), "");
+    }
+
+    #[test]
     fn plain_text_keeps_what_isnt_markup() {
         assert_eq!(plain_text("snake_case"), "snake_case");
         assert_eq!(plain_text("2*3 = 6"), "2*3 = 6");

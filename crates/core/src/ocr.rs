@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use crate::clean::Crop;
 use crate::llm_model::{Model, Usage};
+use crate::markdown_style::{MarkdownStyle, tidy};
 use crate::page::max_side_within;
 use crate::transcript::{Line, Transcript, Uncertain};
 
@@ -42,11 +43,13 @@ pub const MAX_IMAGE_BASE64_BYTES: usize = 5 * 1024 * 1024;
 /// and `decisions/2026-10-23-bbox-accuracy.md`.
 pub const MAX_IMAGE_PIXELS: u32 = 3_600_000;
 
+/// Asks for HTML tags where markdown could be ambiguous; [`crate::markdown_style`] converts them.
 pub const PROMPT: &str = "\
 Transcribe this photo of a handwritten notebook page.
 - Write exactly what's on the page: keep the author's spelling, abbreviations and line breaks. Don't correct or complete anything.
 - One `lines` entry per handwritten line, top to bottom, with its markdown and box. Use markdown only for structure the page shows (headings, bullets, numbered lists, checkboxes). An empty `text_md` with a null box marks a paragraph break.
-- Crossed-out text: ~~strikethrough~~. Drawings: `[drawing: short description]`.
+- Underlined text, even a whole underlined line: <u>text</u>. Superscript: <sup>th</sup>. Crossed-out text: ~~strikethrough~~. Drawings: `[drawing: short description]`.
+- A line holding only a dash or short rule: `---`, with its box.
 - Add an `uncertain` entry for each word or phrase you're unsure of: line index (0-based), the text exactly as it appears in that line, its box, and 1–3 other likely readings.
 - Boxes are [x0, y0, x1, y1] in pixels of this image.";
 
@@ -340,7 +343,13 @@ pub fn parse_response(status: u16, body: &[u8], crop: Crop) -> Result<Transcript
         .find(|b| b.kind == "text")
         .and_then(|b| b.text.as_deref())
         .ok_or_else(|| OcrError::Parse("no text in the response".to_owned()))?;
-    let answer: Answer = serde_json::from_str(text).map_err(|e| OcrError::Parse(e.to_string()))?;
+    let mut answer: Answer =
+        serde_json::from_str(text).map_err(|e| OcrError::Parse(e.to_string()))?;
+    tidy(
+        &mut answer.lines,
+        &mut answer.uncertain,
+        &MarkdownStyle::default(),
+    );
     Ok(Transcript {
         lines: answer.lines,
         uncertain: answer.uncertain,

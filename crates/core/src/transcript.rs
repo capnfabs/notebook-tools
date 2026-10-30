@@ -68,10 +68,23 @@ pub struct Span {
 }
 
 impl Transcript {
-    /// The page as markdown: one line per handwritten line.
+    /// The page as markdown: one line per handwritten line, plus a blank line before a rule that
+    /// follows text, which would otherwise make the text a heading.
     pub fn markdown(&self) -> String {
-        let lines: Vec<&str> = self.lines.iter().map(|l| l.text_md.as_str()).collect();
-        lines.join("\n")
+        let mut markdown = String::new();
+        let mut previous: Option<&str> = None;
+        for line in &self.lines {
+            let text = line.text_md.as_str();
+            if let Some(previous) = previous {
+                markdown.push('\n');
+                if !previous.trim().is_empty() && is_setext_underline(text) {
+                    markdown.push('\n');
+                }
+            }
+            markdown.push_str(text);
+            previous = Some(text);
+        }
+        markdown
     }
 
     /// Where each [`Uncertain`] is, in the same order. Its text is looked for in the lines whose
@@ -167,6 +180,12 @@ impl Transcript {
     }
 }
 
+/// Only `-`s or only `=`s, which right under text make it a heading.
+fn is_setext_underline(text: &str) -> bool {
+    let text = text.trim();
+    !text.is_empty() && (text.chars().all(|c| c == '-') || text.chars().all(|c| c == '='))
+}
+
 /// A box that isn't exactly four numbers becomes `None` rather than failing the whole page.
 fn lenient_bbox<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Bbox>, D::Error> {
     let bbox = Option::<Vec<f32>>::deserialize(d)?;
@@ -234,6 +253,12 @@ mod tests {
     fn markdown_joins_lines_with_paragraph_breaks() {
         let t = transcript(&["# Monday", "- eggs", "", "Call Sam"], vec![]);
         assert_eq!(t.markdown(), "# Monday\n- eggs\n\nCall Sam");
+    }
+
+    #[test]
+    fn markdown_keeps_rules_from_making_headings() {
+        let t = transcript(&["---", "Fri", "---", "", "---", "Sat", "==="], vec![]);
+        assert_eq!(t.markdown(), "---\nFri\n\n---\n\n---\nSat\n\n===");
     }
 
     #[test]

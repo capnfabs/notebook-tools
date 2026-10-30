@@ -6,13 +6,11 @@ See [done/index.md](done/index.md).
 ## features
 
 ## polish
-- [ ] [Markdown conversion improvements](markdown-cleanup.md)
 - [ ] [Correction UI improvements](correction-ui.md)
-
+- [ ] [Settings dialog](settings-dialog.md)
 - [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [Prune the transcription cache](prune-cache.md)
-- [ ] [Multi-model handling](multi-model.md)
 - [ ] [Cached transcripts without credentials](cache-without-credentials.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)

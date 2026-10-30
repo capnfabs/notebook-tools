@@ -6,6 +6,7 @@ pub mod compare;
 pub mod decode;
 pub mod export;
 pub mod llm_model;
+pub mod markdown_style;
 pub mod ocr;
 pub mod page;
 pub mod reframe;
