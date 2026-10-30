@@ -15,6 +15,7 @@ use notebook_core::export::PdfPage;
 use notebook_core::transcript::Transcript;
 use notebook_core::{Page, Pages};
 
+use crate::t;
 use crate::ui::dialog::{self, Action, Choice};
 
 /// Asks where to save a file, given a suggested file name. `None` if the user cancelled.
@@ -123,7 +124,7 @@ impl Export {
         let result = match running.done.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err("Couldn't export: it crashed".to_owned()),
+            Err(TryRecvError::Disconnected) => Err(t!("export-crashed")),
         };
         let settings = running.settings;
         self.running = None;
@@ -147,27 +148,25 @@ impl Export {
         }
         let settings = &mut self.settings;
         let choice = dialog::show(ctx, "export dialog", 360.0, |ui| {
-            ui.heading("Export");
-            ui.radio_value(&mut settings.scope, Scope::Everything, "Everything");
-            ui.radio_value(&mut settings.scope, Scope::Current, "Current page");
+            ui.heading(t!("export-title"));
+            let everything = t!("export-everything");
+            ui.radio_value(&mut settings.scope, Scope::Everything, everything);
+            let current = t!("export-current-page");
+            ui.radio_value(&mut settings.scope, Scope::Current, current);
             ui.add_space(4.0);
-            ui.label("as");
-            ui.radio_value(
-                &mut settings.format,
-                Format::MarkdownClipboard,
-                "Markdown to clipboard",
-            );
-            ui.radio_value(
-                &mut settings.format,
-                Format::MarkdownFile,
-                "Markdown to file",
-            );
-            ui.radio_value(&mut settings.format, Format::Pdf, "PDF");
+            ui.label(t!("export-as"));
+            for (format, label) in [
+                (Format::MarkdownClipboard, t!("export-markdown-clipboard")),
+                (Format::MarkdownFile, t!("export-markdown-file")),
+                (Format::Pdf, t!("export-pdf")),
+            ] {
+                ui.radio_value(&mut settings.format, format, label);
+            }
             let blocked = in_scope(pages, selected, settings.scope).err();
             if let Some(blocked) = &blocked {
                 ui.colored_label(ui.visuals().warn_fg_color, blocked);
             }
-            dialog::buttons(ui, "Go", Action::Default, blocked.is_none())
+            dialog::buttons(ui, &t!("export-go"), Action::Default, blocked.is_none())
         });
         if choice.is_some() {
             self.dialog_open = false;
@@ -200,7 +199,7 @@ impl Export {
         let in_scope = match in_scope(pages, selected, settings.scope) {
             Ok(in_scope) => in_scope,
             Err(blocked) => {
-                self.status = Some(Err(format!("Couldn't export. {blocked}")));
+                self.status = Some(Err(t!("export-blocked", reasons = blocked)));
                 return;
             }
         };
@@ -220,17 +219,12 @@ impl Export {
                 path
             }
         };
-        let what = match in_scope.as_slice() {
-            [page] => page.name.clone(),
-            pages => format!("{} pages", pages.len()),
-        };
         let ctx = ctx.clone();
         let (tx, done) = mpsc::channel();
         let pages = in_scope.len();
         std::thread::spawn(move || {
             // The UI may have gone, and with it the receiver.
-            tx.send(export(settings.format, &in_scope, path, &what))
-                .ok();
+            tx.send(export(settings.format, &in_scope, path)).ok();
             ctx.request_repaint();
         });
         self.status = None;
@@ -251,14 +245,10 @@ struct Snapshot {
     transcript: Transcript,
 }
 
-/// Exports `pages` as `format` to `path`, or for the clipboard if there's no path. `what` names
-/// the pages.
-fn export(
-    format: Format,
-    pages: &[Snapshot],
-    path: Option<PathBuf>,
-    what: &str,
-) -> Result<Done, String> {
+/// Exports `pages` as `format` to `path`, or for the clipboard if there's no path.
+fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<Done, String> {
+    // Messages name the page when there's one.
+    let (count, name) = (pages.len(), pages.first().map_or("", |p| p.name.as_str()));
     let by_name: Vec<(&str, &Transcript)> = pages
         .iter()
         .map(|p| (p.name.as_str(), &p.transcript))
@@ -266,7 +256,7 @@ fn export(
     let markdown = || notebook_core::export::markdown(&by_name);
     let Some(path) = path else {
         return Ok(Done {
-            message: format!("Copied {what} to the clipboard"),
+            message: t!("export-copied", count = count, name = name),
             path: None,
             clipboard: Some(markdown()),
         });
@@ -285,17 +275,26 @@ fn export(
             let markdown_name = path.with_extension("md");
             let markdown_name = markdown_name.file_name().unwrap_or_default();
             notebook_core::export::pdf(&pdf_pages, &markdown_name.to_string_lossy())
-                .map_err(|err| format!("Couldn't export: {err}"))?
+                .map_err(|err| t!("export-failed", error = crate::i18n::pdf_error(&err)))?
         }
         Format::MarkdownFile | Format::MarkdownClipboard => markdown().into_bytes(),
     };
     match std::fs::write(&path, contents) {
         Ok(()) => Ok(Done {
-            message: format!("Exported {what} to {}", path.display()),
+            message: t!(
+                "export-saved",
+                count = count,
+                name = name,
+                path = path.display().to_string()
+            ),
             path: Some(path),
             clipboard: None,
         }),
-        Err(err) => Err(format!("Couldn't write {}: {err}", path.display())),
+        Err(err) => Err(t!(
+            "export-write-failed",
+            path = path.display().to_string(),
+            error = err.to_string()
+        )),
     }
 }
 
@@ -313,13 +312,16 @@ fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot
     let loading = names(|p| p.loaded.is_none());
     let mut blocked = Vec::new();
     if !untranscribed.is_empty() {
-        blocked.push(format!("Not transcribed yet: {}", untranscribed.join(", ")));
+        blocked.push(t!(
+            "export-not-transcribed",
+            names = untranscribed.join(", ")
+        ));
     }
     if !loading.is_empty() {
-        blocked.push(format!("Still loading: {}", loading.join(", ")));
+        blocked.push(t!("export-still-loading", names = loading.join(", ")));
     }
     if covered.is_empty() {
-        blocked.push("No pages to export".to_owned());
+        blocked.push(t!("export-no-pages"));
     }
     if !blocked.is_empty() {
         return Err(blocked.join(". "));
@@ -351,6 +353,6 @@ fn suggested_name(pages: &[Snapshot], scope: Scope, format: Format) -> String {
             let stem = Path::new(&page.name).file_stem().unwrap_or_default();
             format!("{}.{extension}", stem.to_string_lossy())
         }
-        _ => format!("notebook.{extension}"),
+        _ => format!("{}.{extension}", t!("export-default-name")),
     }
 }

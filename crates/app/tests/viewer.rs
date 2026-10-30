@@ -10,8 +10,10 @@ use eframe::egui::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
+use notebook_app::i18n::ocr_error;
 use notebook_app::{
-    Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath, Transcriber,
+    Command, Event, Fetch, Load, NotebookApp, OnTranscribeCompleted, PickFiles, SavePath,
+    Transcriber, t,
 };
 use notebook_core::cache::Cache;
 use notebook_core::compare;
@@ -116,37 +118,42 @@ fn cached_harness(fetch: Fetch, cache_dir: &Path) -> Harness<'static, NotebookAp
 
 /// Opens the Transcribed view of the selected page and waits for its transcript.
 fn show_transcript(harness: &mut Harness<'_, NotebookApp>) {
-    harness.get_by_label("Transcribed").click();
+    harness
+        .get_by_label(&Command::ViewTranscribed.label())
+        .click();
     step_until(harness, "# Thurs 23 Oct");
 }
 
 /// Opens the export dialog, picks `options` in order, and clicks Go.
 fn export(harness: &mut Harness<'_, NotebookApp>, options: &[&str]) {
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(harness);
     for option in options {
         harness.get_by_label(option).click();
         settle(harness);
     }
-    harness.get_by_label("Go").click();
+    harness.get_by_label(&t!("export-go")).click();
 }
 
 /// Exports everything to the clipboard as markdown, the dialog's defaults, returning what was
 /// copied.
 fn export_to_clipboard(harness: &mut Harness<'_, NotebookApp>) -> String {
     export(harness, &[]);
-    // Copied in the frame that says it was.
-    step_until(harness, "to the clipboard");
-    let copied: Vec<String> = harness
-        .output()
-        .platform_output
-        .commands
-        .iter()
-        .filter_map(|c| match c {
-            egui::OutputCommand::CopyText(text) => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut copied: Vec<String> = Vec::new();
+    wait_for("the export to be copied", || {
+        harness.step();
+        copied = harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        !copied.is_empty()
+    });
     assert_eq!(copied.len(), 1, "{copied:?}");
     copied.into_iter().next().unwrap()
 }
@@ -194,16 +201,31 @@ fn step_until(harness: &mut Harness<'_, NotebookApp>, text: &str) {
     });
 }
 
+/// Stands in for a message's argument, to find the message whatever it's given: see
+/// [`before_mark`].
+const MARK: &str = "\u{1}";
+
+/// `text` up to the first [`MARK`] in it.
+fn before_mark(text: String) -> String {
+    text.split(MARK).next().unwrap_or_default().to_owned()
+}
+
+/// Says a transcript was made by `model`, whenever that was.
+fn by(model: &str) -> String {
+    t!("transcribed-when", at = "none", time = "", model = model)
+}
+
+/// Says `count` pages, or the page `name`, were exported, wherever to.
+fn exported(count: usize, name: &str) -> String {
+    before_mark(t!("export-saved", count = count, name = name, path = MARK))
+}
+
 /// Steps frames until nothing is being transcribed. The first one acts on any click.
 fn step_until_transcribed(harness: &mut Harness<'_, NotebookApp>) {
     harness.step();
     wait_for("transcription to finish", || {
         harness.step();
-        // The status line and, in the Transcribed view, the page's progress.
-        harness
-            .query_all_by_label_contains("Transcribing")
-            .next()
-            .is_none()
+        !harness.state().transcribing()
     });
 }
 
@@ -296,7 +318,7 @@ fn thumbnails(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
     harness
         .query_all_by_role(Role::Image)
         .filter_map(|node| node.accesskit_node().label())
-        .filter(|label| !label.starts_with("Current: "))
+        .filter(|label| !label.starts_with(&before_mark(t!("current-page", name = MARK))))
         .collect()
 }
 
@@ -405,7 +427,7 @@ fn selected_thumbnails(harness: &Harness<'_, NotebookApp>) -> Vec<String> {
 #[test]
 fn starts_with_drop_zone() {
     let harness = harness();
-    harness.get_by_label("Drop image files here");
+    harness.get_by_label(&t!("drop-zone-title"));
 }
 
 #[test]
@@ -413,9 +435,9 @@ fn shows_dropped_images_in_filename_order() {
     let mut harness = harness();
     drop_files(&mut harness, &[("b.png", png()), ("a.png", png())]);
 
-    assert!(harness.query_by_label("Drop image files here").is_none());
+    assert!(harness.query_by_label(&t!("drop-zone-title")).is_none());
     assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
 }
 
 #[test]
@@ -426,7 +448,7 @@ fn clicking_a_thumbnail_selects_it() {
     harness.get_by_label("b.png").click();
     settle(&mut harness);
 
-    harness.get_by_label("Current: b.png");
+    harness.get_by_label(&t!("current-page", name = "b.png"));
 }
 
 #[test]
@@ -442,7 +464,7 @@ fn later_drops_merge_in_order_and_keep_selection() {
     );
 
     assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png", "d.png"]);
-    harness.get_by_label("Current: d.png");
+    harness.get_by_label(&t!("current-page", name = "d.png"));
 }
 
 #[test]
@@ -450,8 +472,12 @@ fn reports_files_that_are_not_images() {
     let mut harness = harness();
     drop_files(&mut harness, &[("notes.txt", b"hello".to_vec())]);
 
-    harness.get_by_label("Drop image files here");
-    harness.get_by_label("Couldn't open notes.txt: not a JPEG, PNG or HEIC image");
+    harness.get_by_label(&t!("drop-zone-title"));
+    harness.get_by_label(&t!(
+        "open-failed",
+        name = "notes.txt",
+        error = t!("decode-unrecognized")
+    ));
 }
 
 #[test]
@@ -467,9 +493,17 @@ fn files_that_are_not_images_drop_out_of_the_strip() {
     );
 
     assert_eq!(thumbnails(&harness), ["a.png", "c.png"]);
-    harness.get_by_label_contains("Couldn't open b.txt");
-    harness.get_by_label_contains("Couldn't open d.txt");
-    harness.get_by_label("Current: c.png");
+    harness.get_by_label(&t!(
+        "open-failed",
+        name = "b.txt",
+        error = t!("decode-unrecognized")
+    ));
+    harness.get_by_label(&t!(
+        "open-failed",
+        name = "d.txt",
+        error = t!("decode-unrecognized")
+    ));
+    harness.get_by_label(&t!("current-page", name = "c.png"));
 }
 
 #[test]
@@ -486,19 +520,24 @@ fn pages_hold_their_place_while_loading() {
     start_dropping(&mut harness, &[("d.png", png()), ("c.png", png())]);
     harness.step();
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png", "d.png"]);
-    harness.get_by_label("Loading 2…");
+    harness.get_by_label(&t!("status-loading", count = 2));
     // A page that's loading can be selected, but there's nothing to show yet.
     harness.get_by_label("c.png").click();
     harness.step();
     harness.step();
     assert_eq!(selected_thumbnails(&harness), ["c.png"]);
-    assert!(harness.query_by_label_contains("Current: c.png").is_none());
+    assert!(
+        harness
+            .query_by_label_contains(&t!("current-page", name = "c.png"))
+            .is_none()
+    );
 
     drop(held);
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png", "d.png"]);
-    assert!(harness.query_by_label_contains("Loading").is_none());
-    harness.get_by_label("Current: c.png");
+    let loading = before_mark(t!("status-loading", count = MARK));
+    assert!(harness.query_by_label_contains(&loading).is_none());
+    harness.get_by_label(&t!("current-page", name = "c.png"));
 }
 
 #[test]
@@ -509,15 +548,15 @@ fn the_viewer_shows_the_thumbnail_until_the_page_is_decoded() {
     harness.get_by_label("b.png").click();
     // Decoded off the UI thread, so not in the frame the click lands in.
     harness.step();
-    harness.get_by_label("Current: b.png (loading)");
+    harness.get_by_label(&t!("current-page-loading", name = "b.png"));
     settle(&mut harness);
-    harness.get_by_label("Current: b.png");
+    harness.get_by_label(&t!("current-page", name = "b.png"));
 
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     harness.step();
-    harness.get_by_label("Current: b.png (cleaned, loading)");
+    harness.get_by_label(&t!("current-page-cleaned-loading", name = "b.png"));
     settle(&mut harness);
-    harness.get_by_label("Current: b.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "b.png"));
 }
 
 #[test]
@@ -525,26 +564,26 @@ fn cleaned_view_shows_the_cleaned_page() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Current: a.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));
 
-    harness.get_by_label("Original").click();
+    harness.get_by_label(&Command::ViewOriginal.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
 }
 
 #[test]
 fn view_stays_when_selecting_another_page() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(&mut harness);
 
     harness.get_by_label("b.png").click();
     settle(&mut harness);
 
-    harness.get_by_label("Current: b.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "b.png"));
 }
 
 /// The page's corners are drawn relative to the image's rect, so that rect must be where the image
@@ -554,7 +593,8 @@ fn image_rect_matches_the_drawn_image() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
-    let node = harness.get_by_label("Current: a.png");
+    let label = t!("current-page", name = "a.png");
+    let node = harness.get_by_label(&label);
     let bounds = node.accesskit_node().bounding_box().unwrap();
     let aspect = bounds.width() / bounds.height();
     assert!((aspect - 200.0 / 150.0).abs() < 0.02, "{bounds:?}");
@@ -563,13 +603,14 @@ fn image_rect_matches_the_drawn_image() {
 /// `page_photo` in the Cleaned view, cleaned.
 fn cleaned_view(harness: &mut Harness<'_, NotebookApp>) {
     drop_files(harness, &[("a.png", page_photo())]);
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(harness);
 }
 
 /// Where pixel `(x, y)` of `page_photo`, 200 x 150, is on screen in a.png's photo.
 fn on_photo(harness: &Harness<'_, NotebookApp>, x: f32, y: f32) -> egui::Pos2 {
-    let bounds = harness.get_by_label("Current: a.png");
+    let label = t!("current-page", name = "a.png");
+    let bounds = harness.get_by_label(&label);
     let bounds = bounds.accesskit_node().bounding_box().unwrap();
     egui::pos2(
         (bounds.x0 + bounds.width() * f64::from(x) / 200.0) as f32,
@@ -579,7 +620,8 @@ fn on_photo(harness: &Harness<'_, NotebookApp>, x: f32, y: f32) -> egui::Pos2 {
 
 /// Width over height of a.png's cleaned image.
 fn cleaned_aspect(harness: &Harness<'_, NotebookApp>) -> f64 {
-    let image = harness.get_by_label("Current: a.png (cleaned)");
+    let label = t!("current-page-cleaned", name = "a.png");
+    let image = harness.get_by_label(&label);
     let bounds = image.accesskit_node().bounding_box().unwrap();
     bounds.width() / bounds.height()
 }
@@ -598,7 +640,7 @@ fn disabled(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
 /// Drags the bottom-right corner to `(x, y)` on the photo, and waits for the page to be cleaned
 /// again.
 fn move_bottom_right(harness: &mut Harness<'_, NotebookApp>, x: f32, y: f32) {
-    let from = centre(harness, "Bottom-right corner");
+    let from = centre(harness, &t!("corner-bottom-right"));
     let to = on_photo(harness, x, y);
     drag(harness, from, to);
     settle(harness);
@@ -608,26 +650,26 @@ fn move_bottom_right(harness: &mut Harness<'_, NotebookApp>, x: f32, y: f32) {
 fn cleaned_view_shows_the_photo_with_its_corners_beside_the_cleaned_page() {
     let mut harness = harness();
     cleaned_view(&mut harness);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
     // The page is 120 x 110.
     assert_near(cleaned_aspect(&harness), 120.0 / 110.0, 0.1);
-    let corner = centre(&harness, "Top-left corner");
+    let corner = centre(&harness, &t!("corner-top-left"));
     assert!(
         corner.distance(on_photo(&harness, 40.0, 20.0)) < 8.0,
         "{corner:?}"
     );
     for label in [
-        "Top-right corner",
-        "Bottom-right corner",
-        "Bottom-left corner",
+        &t!("corner-top-right"),
+        &t!("corner-bottom-right"),
+        &t!("corner-bottom-left"),
     ] {
         harness.get_by_label(label);
     }
-    assert!(disabled(&harness, "Reset Corners"));
+    assert!(disabled(&harness, &Command::ResetCorners.label()));
 
-    harness.get_by_label("Original").click();
+    harness.get_by_label(&Command::ViewOriginal.label()).click();
     settle(&mut harness);
-    assert!(harness.query_by_label("Top-left corner").is_none());
+    assert!(harness.query_by_label(&t!("corner-top-left")).is_none());
 }
 
 #[test]
@@ -637,7 +679,7 @@ fn dragging_a_corner_cleans_the_page_again() {
     let before = cleaned_aspect(&harness);
 
     move_bottom_right(&mut harness, 160.0, 75.0);
-    let corner = centre(&harness, "Bottom-right corner");
+    let corner = centre(&harness, &t!("corner-bottom-right"));
     assert!(
         corner.distance(on_photo(&harness, 160.0, 75.0)) < 2.0,
         "{corner:?}"
@@ -645,10 +687,10 @@ fn dragging_a_corner_cleans_the_page_again() {
     // Straightened to the average of opposite sides: (120 + 132) / 2 by (110 + 55) / 2.
     assert_near(cleaned_aspect(&harness), 126.0 / 82.5, 0.1);
 
-    harness.get_by_label("Reset Corners").click();
+    harness.get_by_label(&Command::ResetCorners.label()).click();
     settle(&mut harness);
     assert_near(cleaned_aspect(&harness), before, 0.01);
-    assert!(disabled(&harness, "Reset Corners"));
+    assert!(disabled(&harness, &Command::ResetCorners.label()));
 }
 
 #[test]
@@ -657,7 +699,7 @@ fn corners_show_they_can_be_dragged() {
     cleaned_view(&mut harness);
     let cursor = |harness: &Harness<'_, NotebookApp>| harness.output().platform_output.cursor_icon;
 
-    let corner = centre(&harness, "Top-left corner");
+    let corner = centre(&harness, &t!("corner-top-left"));
     harness.hover_at(corner);
     harness.step();
     assert_eq!(cursor(&harness), egui::CursorIcon::Grab);
@@ -671,10 +713,10 @@ fn placing_corners_takes_four_clicks_in_any_order() {
     let mut harness = harness();
     cleaned_view(&mut harness);
 
-    harness.get_by_label("Place Corners").click();
+    harness.get_by_label(&Command::PlaceCorners.label()).click();
     settle(&mut harness);
-    harness.get_by_label_contains("Click the page's four corners");
-    assert!(harness.query_by_label("Top-left corner").is_none());
+    harness.get_by_label(&t!("corners-placing-prompt"));
+    assert!(harness.query_by_label(&t!("corner-top-left")).is_none());
     for (x, y) in [(160.0, 75.0), (40.0, 20.0), (40.0, 75.0), (160.0, 20.0)] {
         let at = on_photo(&harness, x, y);
         click_at(&mut harness, at);
@@ -683,12 +725,12 @@ fn placing_corners_takes_four_clicks_in_any_order() {
 
     // The top half of the page, 120 x 55.
     assert_near(cleaned_aspect(&harness), 120.0 / 55.0, 0.1);
-    let corner = centre(&harness, "Top-left corner");
+    let corner = centre(&harness, &t!("corner-top-left"));
     assert!(
         corner.distance(on_photo(&harness, 40.0, 20.0)) < 2.0,
         "{corner:?}"
     );
-    assert!(!disabled(&harness, "Reset Corners"));
+    assert!(!disabled(&harness, &Command::ResetCorners.label()));
 }
 
 #[test]
@@ -697,7 +739,7 @@ fn escape_stops_placing_corners() {
     cleaned_view(&mut harness);
     let before = cleaned_aspect(&harness);
 
-    harness.get_by_label("Place Corners").click();
+    harness.get_by_label(&Command::PlaceCorners.label()).click();
     settle(&mut harness);
     for (x, y) in [(40.0, 20.0), (160.0, 20.0)] {
         let at = on_photo(&harness, x, y);
@@ -705,14 +747,14 @@ fn escape_stops_placing_corners() {
     }
     press(&mut harness, egui::Modifiers::NONE, egui::Key::Escape);
 
-    harness.get_by_label("Top-left corner");
+    harness.get_by_label(&t!("corner-top-left"));
     assert!(
         harness
-            .query_by_label_contains("Click the page's four corners")
+            .query_by_label(&t!("corners-placing-prompt"))
             .is_none()
     );
     assert_near(cleaned_aspect(&harness), before, 0.01);
-    assert!(disabled(&harness, "Reset Corners"));
+    assert!(disabled(&harness, &Command::ResetCorners.label()));
 }
 
 /// Where the corners' handles were painted last frame.
@@ -732,10 +774,10 @@ fn painted_handles(harness: &Harness<'_, NotebookApp>) -> Vec<egui::Pos2> {
 /// both ways, so its shape is the outline's.
 fn handles(harness: &Harness<'_, NotebookApp>) -> Quad {
     let labels = [
-        "Top-left corner",
-        "Top-right corner",
-        "Bottom-right corner",
-        "Bottom-left corner",
+        &t!("corner-top-left"),
+        &t!("corner-top-right"),
+        &t!("corner-bottom-right"),
+        &t!("corner-bottom-left"),
     ];
     labels.map(|label| {
         let at = centre(harness, label);
@@ -747,7 +789,7 @@ fn handles(harness: &Harness<'_, NotebookApp>) -> Quad {
 fn a_corner_stays_where_its_let_go() {
     let mut harness = harness();
     cleaned_view(&mut harness);
-    let from = centre(&harness, "Bottom-right corner");
+    let from = centre(&harness, &t!("corner-bottom-right"));
     let to = on_photo(&harness, 160.0, 75.0);
     hold(&mut harness, from, to);
     // Only the frame it's let go in, before the page has its new corners: `drop_at` would run
@@ -776,7 +818,7 @@ fn corners_cant_be_dragged_out_of_a_page_shape() {
     for (x, y) in [(130.0, 100.0), (190.0, 145.0)] {
         let mut harness = harness();
         cleaned_view(&mut harness);
-        let from = centre(&harness, "Top-left corner");
+        let from = centre(&harness, &t!("corner-top-left"));
         let to = on_photo(&harness, x, y);
         // In one jump, so it has to find the limit rather than stop short of it.
         harness.hover_at(from);
@@ -793,9 +835,9 @@ fn corners_cant_be_dragged_out_of_a_page_shape() {
             handles(&harness)
         );
         // Stopped at the limit, not sent back where it was.
-        let moved = centre(&harness, "Top-left corner").distance(from);
+        let moved = centre(&harness, &t!("corner-top-left")).distance(from);
         assert!(moved > 20.0, "moved only {moved}");
-        harness.get_by_label("Current: a.png (cleaned)");
+        harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));
     }
 }
 
@@ -803,7 +845,7 @@ fn corners_cant_be_dragged_out_of_a_page_shape() {
 fn a_fourth_corner_that_spoils_the_outline_is_refused() {
     let mut harness = harness();
     cleaned_view(&mut harness);
-    harness.get_by_label("Place Corners").click();
+    harness.get_by_label(&Command::PlaceCorners.label()).click();
     settle(&mut harness);
     // The fourth is inside the triangle of the other three.
     for (x, y) in [(40.0, 20.0), (160.0, 20.0), (40.0, 130.0), (70.0, 50.0)] {
@@ -811,8 +853,8 @@ fn a_fourth_corner_that_spoils_the_outline_is_refused() {
         click_at(&mut harness, at);
     }
     settle(&mut harness);
-    harness.get_by_label_contains("Those corners don't outline a page");
-    assert!(harness.query_by_label("Top-left corner").is_none());
+    harness.get_by_label(&t!("corners-refused-prompt"));
+    assert!(harness.query_by_label(&t!("corner-top-left")).is_none());
 
     let at = on_photo(&harness, 160.0, 130.0);
     click_at(&mut harness, at);
@@ -830,12 +872,12 @@ fn only_the_latest_corners_are_kept() {
 
     let held = gate.write().unwrap();
     for y in [75.0, 40.0] {
-        let from = centre(&harness, "Bottom-right corner");
+        let from = centre(&harness, &t!("corner-bottom-right"));
         let to = on_photo(&harness, 160.0, y);
         drag(&mut harness, from, to);
     }
     // The old cleaned page stays up while the new one is made.
-    harness.get_by_label("Current: a.png (cleaned, loading)");
+    harness.get_by_label(&t!("current-page-cleaned-loading", name = "a.png"));
 
     drop(held);
     settle(&mut harness);
@@ -860,14 +902,16 @@ fn transcription_uses_the_users_corners() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(&mut harness);
     move_bottom_right(&mut harness, 160.0, 75.0);
     show_transcript(&mut harness);
-    harness.get_by_label("Force retranscription").click();
+    harness
+        .get_by_label(&Command::ForceRetranscribe.label())
+        .click();
     step_until_transcribed(&mut harness);
     step_until(&mut harness, "# Thurs 23 Oct");
-    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
+    assert!(!warns_lines_outside(&harness));
     let sent = sent.lock().unwrap();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0], None);
@@ -879,16 +923,26 @@ fn transcription_uses_the_users_corners() {
     );
 }
 
-/// The end of the warning that transcribed lines are outside the page's bounds.
-const OUTSIDE: &str = "outside this page's new bounds";
-/// Part of the warning that much of the page wasn't transcribed.
-const MISSED: &str = "retranscribe to ensure you've got all text";
+/// Whether the transcript's status warns that some of its lines are outside the page's bounds.
+fn warns_lines_outside(harness: &Harness<'_, NotebookApp>) -> bool {
+    // The test page has fewer lines than this.
+    (1..=20).any(|count| {
+        let warning = t!("transcript-lines-cut-off", count = count);
+        harness.query_by_label_contains(&warning).is_some()
+    })
+}
+
+/// Whether the transcript's status warns that much of the page wasn't transcribed.
+fn warns_missed_page(harness: &Harness<'_, NotebookApp>) -> bool {
+    let warning = t!("transcript-missed-page");
+    harness.query_by_label_contains(&warning).is_some()
+}
 
 /// Places a.png's corners at `corners` in the Cleaned view, then goes back to its transcript.
 fn recrop(harness: &mut Harness<'_, NotebookApp>, corners: [(f32, f32); 4]) {
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(harness);
-    harness.get_by_label("Place Corners").click();
+    harness.get_by_label(&Command::PlaceCorners.label()).click();
     settle(harness);
     for (x, y) in corners {
         let at = on_photo(harness, x, y);
@@ -901,7 +955,8 @@ fn recrop(harness: &mut Harness<'_, NotebookApp>, corners: [(f32, f32); 4]) {
 /// Where the box labelled `label` is on a.png's cleaned page, as fractions of its width and height:
 /// `[x0, y0, x1, y1]`.
 fn on_page(harness: &Harness<'_, NotebookApp>, label: &str) -> [f64; 4] {
-    let page = harness.get_by_label("Current: a.png (cleaned)");
+    let page_label = t!("current-page-cleaned", name = "a.png");
+    let page = harness.get_by_label(&page_label);
     let page = page.accesskit_node().bounding_box().unwrap();
     let node = harness.get_by_label(label);
     let b = node.accesskit_node().bounding_box().unwrap();
@@ -919,7 +974,7 @@ fn boxes_follow_the_page_when_its_corners_move() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     // As Claude put it: 330..520 of 1200 across, 190..250 of 900 down.
-    let before = on_page(&harness, "Box: plumber");
+    let before = on_page(&harness, &t!("uncertain-box", word = "plumber"));
     for (b, e) in before.iter().zip([0.275, 0.211, 0.433, 0.278]) {
         assert_near(*b, e, 0.02);
     }
@@ -929,12 +984,12 @@ fn boxes_follow_the_page_when_its_corners_move() {
         &mut harness,
         [(40.0, 20.0), (160.0, 20.0), (160.0, 75.0), (40.0, 75.0)],
     );
-    let after = on_page(&harness, "Box: plumber");
+    let after = on_page(&harness, &t!("uncertain-box", word = "plumber"));
     for (a, e) in after.iter().zip([0.275, 0.422, 0.433, 0.556]) {
         assert_near(*a, e, 0.03);
     }
-    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
-    assert!(harness.query_by_label_contains(MISSED).is_none());
+    assert!(!warns_lines_outside(&harness));
+    assert!(!warns_missed_page(&harness));
 }
 
 #[test]
@@ -947,8 +1002,8 @@ fn cropping_lines_off_the_page_warns() {
         &mut harness,
         [(40.0, 20.0), (160.0, 20.0), (160.0, 45.0), (40.0, 45.0)],
     );
-    harness.get_by_label_contains(&format!("3 transcribed lines fall {OUTSIDE}"));
-    assert!(harness.query_by_label_contains(MISSED).is_none());
+    harness.get_by_label_contains(&t!("transcript-lines-cut-off", count = 3));
+    assert!(!warns_missed_page(&harness));
 }
 
 #[test]
@@ -961,10 +1016,8 @@ fn growing_the_crop_asks_for_retranscription() {
         &mut harness,
         [(5.0, 5.0), (195.0, 5.0), (195.0, 145.0), (5.0, 145.0)],
     );
-    harness.get_by_label_contains(&format!(
-        "The bounds of this page have changed since last transcription; {MISSED}"
-    ));
-    assert!(harness.query_by_label_contains(OUTSIDE).is_none());
+    assert!(warns_missed_page(&harness));
+    assert!(!warns_lines_outside(&harness));
 }
 
 /// Without a transcriber (no credentials), there's nothing to transcribe or export.
@@ -973,11 +1026,20 @@ fn controls_without_a_transcriber() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png())]);
 
-    for label in ["Original", "Cleaned", "Delete"] {
+    for label in [
+        &Command::ViewOriginal.label(),
+        &Command::ViewCleaned.label(),
+        &Command::Delete.label(),
+    ] {
         let node = harness.get_by_label(label);
         assert!(!node.accesskit_node().is_disabled(), "{label} is disabled");
     }
-    for label in ["Transcribed", "Transcribe all", "Re-export", "Export"] {
+    for label in [
+        &Command::ViewTranscribed.label(),
+        &Command::TranscribeAll.label(),
+        &t!("command-reexport"),
+        &Command::ExportAs.label(),
+    ] {
         let node = harness.get_by_label(label);
         assert!(node.accesskit_node().is_disabled(), "{label} is enabled");
     }
@@ -993,20 +1055,20 @@ fn delete_selects_the_next_page() {
     harness.get_by_label("b.png").click();
     settle(&mut harness);
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["a.png", "c.png"]);
-    harness.get_by_label("Current: c.png");
+    harness.get_by_label(&t!("current-page", name = "c.png"));
 
     // The last page selects the one before it.
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["a.png"]);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Drop image files here");
+    harness.get_by_label(&t!("drop-zone-title"));
 }
 
 #[test]
@@ -1015,18 +1077,18 @@ fn deleting_a_transcribed_page_asks_first() {
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Delete a.png and its transcript?");
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("confirm-delete", name = "a.png"));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Delete page").click();
+    harness.get_by_label(&t!("confirm-delete-button")).click();
     settle(&mut harness);
-    harness.get_by_label("b.png isn't transcribed yet.");
+    harness.get_by_label(&t!("not-transcribed-yet", name = "b.png"));
     assert_eq!(thumbnails(&harness), ["b.png"]);
 }
 
@@ -1036,14 +1098,18 @@ fn transcribed_view_transcribes_once() {
     let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
-    harness.get_by_label("Transcribed").click();
+    harness
+        .get_by_label(&Command::ViewTranscribed.label())
+        .click();
     step_until(&mut harness, "# Thurs 23 Oct");
     harness.get_by_label("~~tap~~");
 
-    harness.get_by_label("Original").click();
+    harness.get_by_label(&Command::ViewOriginal.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Current: a.png");
-    harness.get_by_label("Transcribed").click();
+    harness.get_by_label(&t!("current-page", name = "a.png"));
+    harness
+        .get_by_label(&Command::ViewTranscribed.label())
+        .click();
     settle(&mut harness);
     harness.get_by_label_contains("# Thurs 23 Oct");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1062,22 +1128,22 @@ fn failed_transcription_can_be_retried() {
     let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
-    harness.get_by_label("Transcribed").click();
-    step_until(
-        &mut harness,
-        "Couldn't transcribe a.png: Claude API error 529",
+    harness
+        .get_by_label(&Command::ViewTranscribed.label())
+        .click();
+    let failed = t!(
+        "transcribe-failed",
+        name = "a.png",
+        error = ocr_error(&overloaded())
     );
+    step_until(&mut harness, &failed);
     // A failure isn't retried by itself.
     settle(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    harness.get_by_label("Retry").click();
+    harness.get_by_label(&t!("transcribe-retry")).click();
     step_until(&mut harness, "# Thurs 23 Oct");
-    assert!(
-        harness
-            .query_by_label_contains("Couldn't transcribe")
-            .is_none()
-    );
+    assert!(harness.query_by_label(&failed).is_none());
 }
 
 #[test]
@@ -1089,10 +1155,10 @@ fn selecting_another_page_asks_before_transcribing() {
 
     harness.get_by_label("b.png").click();
     settle(&mut harness);
-    harness.get_by_label("b.png isn't transcribed yet.");
+    harness.get_by_label(&t!("not-transcribed-yet", name = "b.png"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    harness.get_by_label("Transcribe").click();
+    harness.get_by_label(&Command::Transcribe.label()).click();
     step_until(&mut harness, "# Thurs 23 Oct");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -1103,12 +1169,14 @@ fn switching_to_transcribed_transcribes_the_shown_page() {
     let mut harness = harness_with(Transcriber::new(fetch));
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     harness.get_by_label("b.png").click();
-    harness.get_by_label("Cleaned").click();
+    harness.get_by_label(&Command::ViewCleaned.label()).click();
     settle(&mut harness);
 
-    harness.get_by_label("Transcribed").click();
+    harness
+        .get_by_label(&Command::ViewTranscribed.label())
+        .click();
     step_until(&mut harness, "# Thurs 23 Oct");
-    harness.get_by_label("Current: b.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "b.png"));
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -1128,10 +1196,14 @@ fn cached_pages_show_straight_away() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     harness.get_by_label("b.png").click();
     step_until(&mut harness, "# Thurs 23 Oct");
-    assert!(harness.query_by_label("Transcribe").is_none());
+    assert!(
+        harness
+            .query_by_label(&Command::Transcribe.label())
+            .is_none()
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 1, "b.png not sent");
-    harness.get_by_label_contains("From cache: transcribed 20");
-    harness.get_by_label_contains(" by claude-opus-5-5");
+    harness.get_by_label_contains(&before_mark(t!("transcript-from-cache", when = MARK)));
+    harness.get_by_label_contains(&by("claude-opus-5-5"));
 }
 
 #[test]
@@ -1175,7 +1247,8 @@ fn answering(answers: Vec<Result<Fetched, OcrError>>) -> (Fetch, Arc<AtomicUsize
 fn force_beside(harness: &Harness<'_, NotebookApp>, status: &str) {
     let text = harness.get_by_label_contains(status);
     let text = text.accesskit_node().bounding_box().unwrap();
-    let button = harness.get_by_label("Force retranscription");
+    let label = Command::ForceRetranscribe.label();
+    let button = harness.get_by_label(&label);
     let button = button.accesskit_node().bounding_box().unwrap();
     assert!(
         button.y0 < text.y1 && text.y0 < button.y1,
@@ -1203,19 +1276,28 @@ fn force_retranscribes_without_asking_if_uncorrected() {
     let mut harness = cached_harness(gated_fetch(fetch, gate.clone()), dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    force_beside(&harness, "Transcribed 20");
+    force_beside(
+        &harness,
+        &before_mark(t!("transcript-from-claude", when = MARK)),
+    );
 
     let held = gate.write().unwrap();
-    harness.get_by_label("Force retranscription").click();
+    harness
+        .get_by_label(&Command::ForceRetranscribe.label())
+        .click();
     harness.step();
     harness.step();
     // Progress replaces the old transcript meanwhile.
-    harness.get_by_label("Transcribing a.png…");
+    harness.get_by_label(&t!("transcribing-page", name = "a.png"));
     assert!(harness.query_by_label("# Thurs 23 Oct").is_none());
-    assert!(harness.query_by_label("Force retranscription").is_none());
+    assert!(
+        harness
+            .query_by_label(&Command::ForceRetranscribe.label())
+            .is_none()
+    );
 
     drop(held);
-    step_until(&mut harness, "by claude-opus-4-8");
+    step_until(&mut harness, &by("claude-opus-4-8"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
@@ -1254,17 +1336,19 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     assert!(
-        harness.query_by_label("Transcription model").is_none(),
+        harness.query_by_label(&t!("settings-model")).is_none(),
         "it's in Settings, not the toolbar"
     );
 
     press_command(&mut harness, egui::Key::Comma);
-    harness.get_by_label("Sonnet").click();
+    harness.get_by_label(&t!("model-sonnet")).click();
     settle(&mut harness);
-    harness.get_by_label("Save").click();
+    harness.get_by_label(&t!("settings-save")).click();
     settle(&mut harness);
-    harness.get_by_label("Force retranscription").click();
-    step_until(&mut harness, "by claude-sonnet-5-5");
+    harness
+        .get_by_label(&Command::ForceRetranscribe.label())
+        .click();
+    step_until(&mut harness, &by("claude-sonnet-5-5"));
     let sent_so_far = std::mem::take(&mut *sent.lock().unwrap());
     let a = || "a.png".to_owned();
     assert_eq!(
@@ -1305,13 +1389,19 @@ fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
     show_transcript(&mut harness);
     correct_plumber(&mut harness);
 
-    harness.get_by_label("Force retranscription").click();
+    harness
+        .get_by_label(&Command::ForceRetranscribe.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
-    harness.get_by_label("Retranscribe").click();
-    step_until(&mut harness, "Retranscription failed: Claude API error 529");
-    harness.get_by_label_contains("Using the cached version, transcribed 20");
-    force_beside(&harness, "Retranscription failed");
+    harness.get_by_label(&t!("confirm-force", name = "a.png"));
+    harness.get_by_label(&t!("confirm-force-button")).click();
+    let failed = before_mark(t!(
+        "transcript-retranscribe-failed",
+        error = ocr_error(&overloaded()),
+        when = MARK
+    ));
+    step_until(&mut harness, &failed);
+    force_beside(&harness, &failed);
     harness.get_by_label("plumbers");
 
     // The cached answer is still Claude's.
@@ -1332,11 +1422,15 @@ fn transcribe_all_starts_straight_away_for_a_few_pages() {
         &[("a.png", png()), ("b.png", png()), ("c.png", png())],
     );
 
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     step_until_transcribed(&mut harness);
-    assert!(harness.query_by_label_contains("pages?").is_none());
+    let ask = t!("confirm-transcribe-all", count = 3);
+    assert!(harness.query_by_label(&ask).is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    let all = harness.get_by_label("Transcribe all");
+    let label = Command::TranscribeAll.label();
+    let all = harness.get_by_label(&label);
     assert!(all.accesskit_node().is_disabled(), "nothing left");
 }
 
@@ -1365,17 +1459,23 @@ fn transcribe_all_asks_first_and_sends_four_at_a_time() {
     let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
     drop_files(&mut harness, &files);
 
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Transcribe 6 pages?");
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("confirm-transcribe-all", count = 6));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     settle(&mut harness);
     let held = gate.write().unwrap();
-    harness.get_by_label("Transcribe").click();
+    harness
+        .get_by_label(&t!("confirm-transcribe-all-button"))
+        .click();
     wait_for("four pages to be sent", || {
         harness.step();
         running.load(Ordering::SeqCst) >= 4
@@ -1399,7 +1499,9 @@ fn transcribe_all_uses_the_cache() {
     let (fetch, calls) = counting_fetch();
     let mut harness = cached_harness(fetch, dir.path());
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     step_until_transcribed(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 1, "only b.png sent");
 }
@@ -1412,15 +1514,19 @@ fn deleting_a_queued_page_means_it_isnt_sent() {
     let names = ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png"];
     let files: Vec<_> = names.iter().map(|n| (*n, png())).collect();
     drop_files(&mut harness, &files);
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     settle(&mut harness);
     let held = gate.write().unwrap();
-    harness.get_by_label("Transcribe").click();
+    harness
+        .get_by_label(&t!("confirm-transcribe-all-button"))
+        .click();
     harness.step();
 
     harness.get_by_label("f.png").click();
     harness.step();
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     harness.step();
     drop(held);
     step_until_transcribed(&mut harness);
@@ -1434,12 +1540,13 @@ fn dragging_the_split_widens_the_page() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     let width = |harness: &Harness<'_, NotebookApp>| {
-        let image = harness.get_by_label("Current: a.png (cleaned)");
+        let label = t!("current-page-cleaned", name = "a.png");
+        let image = harness.get_by_label(&label);
         image.accesskit_node().bounding_box().unwrap().width()
     };
     let before = width(&harness);
 
-    let start = centre(&harness, "Resize the transcript");
+    let start = centre(&harness, &t!("resize-transcript"));
     drag(&mut harness, start, egui::pos2(start.x + 60.0, start.y));
     settle(&mut harness);
     assert!(
@@ -1455,10 +1562,10 @@ fn transcribed_view_shows_the_page_with_uncertain_words() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Current: a.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));
     for word in ["plumber", "w/"] {
         harness.get_by_label(word);
-        harness.get_by_label(&format!("Box: {word}"));
+        harness.get_by_label(&t!("uncertain-box", word = word));
     }
 }
 
@@ -1471,10 +1578,12 @@ fn corrections_are_logged() {
     correct_plumber(&mut harness);
     harness.get_by_label("w/").click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"w/\"").click();
+    harness.get_by_label(&t!("keep-word", word = "w/")).click();
     settle(&mut harness);
     // A word corrected again doesn't finish the page again.
-    harness.get_by_label("Box: plumbers").click();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "plumbers"))
+        .click();
     settle(&mut harness);
     let field = harness.get_by_role(Role::TextInput);
     field.focus();
@@ -1510,16 +1619,16 @@ fn picking_an_alternative_corrects_the_word() {
 
     correct_plumber(&mut harness);
     harness.get_by_label("plumbers");
-    harness.get_by_label("Box: plumbers");
+    harness.get_by_label(&t!("uncertain-box", word = "plumbers"));
     assert!(harness.query_by_label("plumber").is_none());
 
     // The replaced reading is still on offer.
     harness.get_by_label("plumbers").click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"plumbers\"");
+    harness.get_by_label(&t!("keep-word", word = "plumbers"));
     harness.get_by_label("plumber").click();
     settle(&mut harness);
-    harness.get_by_label("Box: plumber");
+    harness.get_by_label(&t!("uncertain-box", word = "plumber"));
 }
 
 #[test]
@@ -1528,7 +1637,9 @@ fn boxes_take_a_reading_of_your_own() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Box: plumber").click();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "plumber"))
+        .click();
     settle(&mut harness);
     let field = harness.get_by_role(Role::TextInput);
     field.focus();
@@ -1552,7 +1663,7 @@ fn keeping_a_reading_closes_the_popup() {
 
     harness.get_by_label("w/").click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"w/\"").click();
+    harness.get_by_label(&t!("keep-word", word = "w/")).click();
     settle(&mut harness);
 
     harness.get_by_label("w/");
@@ -1633,17 +1744,27 @@ fn clicking_another_correction_keeps_its_popup_open() {
     // The lower word first: its popup opens below it, clear of the other.
     harness.get_by_label("w/").click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"w/\"");
+    harness.get_by_label(&t!("keep-word", word = "w/"));
     harness.get_by_label("plumber").click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"plumber\"");
-    assert!(harness.query_by_label("Keep \"w/\"").is_none());
+    harness.get_by_label(&t!("keep-word", word = "plumber"));
+    assert!(
+        harness
+            .query_by_label(&t!("keep-word", word = "w/"))
+            .is_none()
+    );
 
     // And from the page.
-    harness.get_by_label("Box: w/").click();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "w/"))
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Keep \"w/\"");
-    assert!(harness.query_by_label("Keep \"plumber\"").is_none());
+    harness.get_by_label(&t!("keep-word", word = "w/"));
+    assert!(
+        harness
+            .query_by_label(&t!("keep-word", word = "plumber"))
+            .is_none()
+    );
 }
 
 #[test]
@@ -1663,12 +1784,14 @@ fn clicking_a_box_scrolls_the_transcript_to_its_word() {
     let (heading, word) = (top(&harness, "# Thurs 23 Oct"), top(&harness, "w/"));
     assert!(word > HEIGHT, "w/ starts out of sight at {word}");
 
-    harness.get_by_label("Box: w/").click();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "w/"))
+        .click();
     settle(&mut harness);
     let scrolled = heading - top(&harness, "# Thurs 23 Oct");
     assert!(scrolled > 0.0, "scrolled {scrolled}");
     assert!(top(&harness, "w/") < HEIGHT);
-    harness.get_by_label("Keep \"w/\"");
+    harness.get_by_label(&t!("keep-word", word = "w/"));
 }
 
 #[test]
@@ -1677,7 +1800,9 @@ fn hovering_a_line_highlights_its_box() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
     // Line 1's box, as Claude put it: 130..980 of 1200 across, 190..250 of 900 down.
-    let page = harness.get_by_label("Current: a.png (cleaned)").rect();
+    let page = harness
+        .get_by_label(&t!("current-page-cleaned", name = "a.png"))
+        .rect();
     let expected = egui::Rect::from_min_max(
         page.min + egui::vec2(130.0 / 1200.0, 190.0 / 900.0) * page.size(),
         page.min + egui::vec2(980.0 / 1200.0, 250.0 / 900.0) * page.size(),
@@ -1702,7 +1827,7 @@ fn hovering_a_line_highlights_its_box() {
 
 #[test]
 fn a_single_click_hints_at_double_click() {
-    const HINT: &str = "Double-click to edit this line";
+    let hint = t!("edit-hint");
     let mut harness = quick_harness();
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
@@ -1711,21 +1836,23 @@ fn a_single_click_hints_at_double_click() {
     harness.get_by_label("# Thurs 23 Oct").click();
     harness.run_steps(5);
     assert!(
-        harness.query_by_label(HINT).is_none(),
+        harness.query_by_label(&hint).is_none(),
         "not while it could be a double-click"
     );
     harness.run_steps(30);
-    harness.get_by_label(HINT);
+    harness.get_by_label(&hint);
     // Gone once the pointer moves away.
-    harness.get_by_label("Box: plumber").hover();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "plumber"))
+        .hover();
     harness.run_steps(2);
-    assert!(harness.query_by_label(HINT).is_none());
+    assert!(harness.query_by_label(&hint).is_none());
 
     edit_line(&mut harness, "# Thurs 23 Oct");
     harness.run_steps(30);
     harness.get_by_role(Role::TextInput);
     assert!(
-        harness.query_by_label(HINT).is_none(),
+        harness.query_by_label(&hint).is_none(),
         "not for a double-click"
     );
 }
@@ -1738,7 +1865,7 @@ fn struck_text_can_be_deleted() {
 
     harness.get_by_label("~~tap~~").click();
     settle(&mut harness);
-    harness.get_by_label("Delete struck text").click();
+    harness.get_by_label(&t!("delete-struck")).click();
     settle(&mut harness);
 
     harness.get_by_label(" re: shower");
@@ -1768,12 +1895,14 @@ fn struck_uncertain_words_can_be_deleted_and_put_back() {
     harness.get_by_label("~~tap~~").click();
     settle(&mut harness);
     harness.get_by_label("~~top~~");
-    harness.get_by_label("Keep \"~~tap~~\"");
-    harness.get_by_label("Delete struck text").click();
+    harness.get_by_label(&t!("keep-word", word = "~~tap~~"));
+    harness.get_by_label(&t!("delete-struck")).click();
     settle(&mut harness);
     harness.get_by_label("- ring the plumber re: shower");
 
-    harness.get_by_label("Box: ~~tap~~").click();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "~~tap~~"))
+        .click();
     settle(&mut harness);
     assert!(
         harness.query_by_label_contains("Keep").is_none(),
@@ -1807,9 +1936,11 @@ fn unfound_boxes_say_why() {
     settle(&mut harness);
     harness.get_by_label("- call Sam");
 
-    harness.get_by_label("Box: plumber").hover();
+    harness
+        .get_by_label(&t!("uncertain-box", word = "plumber"))
+        .hover();
     harness.run_steps(60);
-    harness.get_by_label_contains("\"plumber\" was edited out of its line");
+    harness.get_by_label(&t!("unfound-edited-out", word = "plumber"));
 }
 
 #[test]
@@ -1817,22 +1948,26 @@ fn reset_asks_then_restores_the_transcript() {
     let mut harness = harness_with(transcriber());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    assert!(disabled(&harness, "Reset Transcript"));
+    assert!(disabled(&harness, &Command::ResetTranscript.label()));
 
     correct_plumber(&mut harness);
-    harness.get_by_label("Reset Transcript").click();
+    harness
+        .get_by_label(&Command::ResetTranscript.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     harness.get_by_label("plumbers");
 
-    harness.get_by_label("Reset Transcript").click();
+    harness
+        .get_by_label(&Command::ResetTranscript.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Reset").click();
+    harness.get_by_label(&t!("confirm-reset-button")).click();
     settle(&mut harness);
     harness.get_by_label("plumber");
     assert!(harness.query_by_label("plumbers").is_none());
-    assert!(disabled(&harness, "Reset Transcript"));
+    assert!(disabled(&harness, &Command::ResetTranscript.label()));
     assert_eq!(events(&harness).last().map(String::as_str), Some("reset"));
 }
 
@@ -1842,17 +1977,28 @@ fn export_waits_for_every_page_in_scope() {
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Everything").click();
+    harness.get_by_label(&t!("export-everything")).click();
     settle(&mut harness);
-    harness.get_by_label("Not transcribed yet: b.png");
-    assert!(harness.get_by_label("Go").accesskit_node().is_disabled());
+    harness.get_by_label(&t!("export-not-transcribed", names = "b.png"));
+    assert!(
+        harness
+            .get_by_label(&t!("export-go"))
+            .accesskit_node()
+            .is_disabled()
+    );
 
-    harness.get_by_label("Current page").click();
+    harness.get_by_label(&t!("export-current-page")).click();
     settle(&mut harness);
-    assert!(harness.query_by_label_contains("Not transcribed").is_none());
-    assert!(!harness.get_by_label("Go").accesskit_node().is_disabled());
+    let blocked = before_mark(t!("export-not-transcribed", names = MARK));
+    assert!(harness.query_by_label_contains(&blocked).is_none());
+    assert!(
+        !harness
+            .get_by_label(&t!("export-go"))
+            .accesskit_node()
+            .is_disabled()
+    );
 }
 
 #[test]
@@ -1866,16 +2012,27 @@ fn export_waits_for_pages_to_load() {
     // Transcription works from the file, so it doesn't wait.
     show_transcript(&mut harness);
 
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     harness.step();
     harness.step();
-    harness.get_by_label("Still loading: a.png");
-    assert!(harness.get_by_label("Go").accesskit_node().is_disabled());
+    harness.get_by_label(&t!("export-still-loading", names = "a.png"));
+    assert!(
+        harness
+            .get_by_label(&t!("export-go"))
+            .accesskit_node()
+            .is_disabled()
+    );
 
     drop(held);
     settle(&mut harness);
-    assert!(harness.query_by_label_contains("Still loading").is_none());
-    assert!(!harness.get_by_label("Go").accesskit_node().is_disabled());
+    let blocked = before_mark(t!("export-still-loading", names = MARK));
+    assert!(harness.query_by_label_contains(&blocked).is_none());
+    assert!(
+        !harness
+            .get_by_label(&t!("export-go"))
+            .accesskit_node()
+            .is_disabled()
+    );
 }
 
 #[test]
@@ -1890,11 +2047,11 @@ fn exports_markdown_to_the_clipboard() {
         copied.starts_with("<!-- a.png -->\n# Thurs 23 Oct\n- ring the plumbers re:"),
         "{copied}"
     );
-    harness.get_by_label("Copied a.png to the clipboard");
+    harness.get_by_label(&t!("export-copied", count = 1, name = "a.png"));
     settle(&mut harness);
     assert!(
         !harness
-            .get_by_label("Re-export")
+            .get_by_label(&t!("command-reexport"))
             .accesskit_node()
             .is_disabled()
     );
@@ -1920,21 +2077,24 @@ fn reexport_overwrites_the_same_file() {
     show_transcript(&mut harness);
     assert!(
         harness
-            .get_by_label("Re-export")
+            .get_by_label(&t!("command-reexport"))
             .accesskit_node()
             .is_disabled()
     );
 
-    export(&mut harness, &["Current page", "Markdown to file"]);
-    step_until(&mut harness, "Exported a.png to ");
+    export(
+        &mut harness,
+        &[&t!("export-current-page"), &t!("export-markdown-file")],
+    );
+    step_until(&mut harness, &exported(1, "a.png"));
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumber re:"), "{written}");
 
     correct_plumber(&mut harness);
-    harness.get_by_label("Re-export").click();
+    harness.get_by_label(&t!("command-reexport")).click();
     // The frame that starts it still shows the first export's status.
     harness.step();
-    step_until(&mut harness, "Exported a.png to ");
+    step_until(&mut harness, &exported(1, "a.png"));
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumbers re:"), "{written}");
     assert_eq!(asked.load(Ordering::SeqCst), 1, "asked where to save once");
@@ -1959,15 +2119,18 @@ fn time_in_the_save_dialog_isnt_a_slow_frame() {
         "fast"
     );
 
-    export(&mut harness, &["Markdown to clipboard"]);
-    step_until(&mut harness, "Copied a.png");
+    export(&mut harness, &[&t!("export-markdown-clipboard")]);
+    step_until(
+        &mut harness,
+        &t!("export-copied", count = 1, name = "a.png"),
+    );
     assert_eq!(
         harness.state_mut().frame_time_for_logs(Some(0.2)),
         Some(0.2),
         "no dialog"
     );
 
-    export(&mut harness, &["Markdown to file"]);
+    export(&mut harness, &[&t!("export-markdown-file")]);
     settle(&mut harness);
     assert_eq!(harness.state_mut().frame_time_for_logs(Some(5.0)), None);
     assert_eq!(
@@ -1981,7 +2144,7 @@ fn time_in_the_save_dialog_isnt_a_slow_frame() {
 fn export_defaults_to_everything_as_markdown_on_the_clipboard() {
     let mut harness = harness_with(transcriber());
     drop_files(&mut harness, &[("a.png", page_photo())]);
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(&mut harness);
     let options: Vec<String> = harness
         .get_all_by_role(Role::RadioButton)
@@ -1994,11 +2157,11 @@ fn export_defaults_to_everything_as_markdown_on_the_clipboard() {
     assert_eq!(
         options,
         [
-            "* Everything",
-            "Current page",
-            "* Markdown to clipboard",
-            "Markdown to file",
-            "PDF",
+            format!("* {}", t!("export-everything")),
+            t!("export-current-page"),
+            format!("* {}", t!("export-markdown-clipboard")),
+            t!("export-markdown-file"),
+            t!("export-pdf"),
         ]
     );
 }
@@ -2010,7 +2173,7 @@ fn exports_a_pdf() {
     let save_path: SavePath = {
         let path = path.clone();
         Arc::new(move |suggested| {
-            assert_eq!(suggested, "notebook.pdf");
+            assert_eq!(suggested, format!("{}.pdf", t!("export-default-name")));
             Some(path.clone())
         })
     };
@@ -2021,16 +2184,18 @@ fn exports_a_pdf() {
         &mut harness,
         &[("a.png", page_photo()), ("b.png", page_photo())],
     );
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     step_until_transcribed(&mut harness);
 
-    export(&mut harness, &["Everything", "PDF"]);
-    step_until(&mut harness, "Exported 2 pages to ");
+    export(&mut harness, &[&t!("export-everything"), &t!("export-pdf")]);
+    step_until(&mut harness, &exported(2, ""));
     let written = std::fs::read(&path).unwrap();
     assert!(written.starts_with(b"%PDF"));
     assert!(
         !harness
-            .get_by_label("Re-export")
+            .get_by_label(&t!("command-reexport"))
             .accesskit_node()
             .is_disabled()
     );
@@ -2047,20 +2212,21 @@ fn dialogs_put_the_affirmative_button_last() {
         node.accesskit_node().bounding_box().unwrap().x0
     };
 
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(&mut harness);
-    assert!(left(&harness, "Cancel") < left(&harness, "Go"));
-    harness.get_by_label("Cancel").click();
+    let cancel = t!("dialog-cancel");
+    assert!(left(&harness, &cancel) < left(&harness, &t!("export-go")));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    assert!(left(&harness, "Cancel") < left(&harness, "Delete page"));
-    harness.get_by_label("Cancel").click();
+    assert!(left(&harness, &cancel) < left(&harness, &t!("confirm-delete-button")));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
 
     press_command(&mut harness, egui::Key::Comma);
-    assert!(left(&harness, "Cancel") < left(&harness, "Save"));
+    assert!(left(&harness, &cancel) < left(&harness, &t!("settings-save")));
 }
 
 /// Whether the radio button or checkbox labelled `label` is on.
@@ -2072,20 +2238,23 @@ fn checked(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
 fn settings_open_without_pages_and_cancelling_keeps_them() {
     let mut harness = harness();
     press_command(&mut harness, egui::Key::Comma);
-    assert!(checked(&harness, "Opus"));
+    assert!(checked(&harness, &t!("model-opus")));
 
-    harness.get_by_label("Sonnet").click();
+    harness.get_by_label(&t!("model-sonnet")).click();
     press(&mut harness, egui::Modifiers::NONE, egui::Key::Escape);
-    assert!(harness.query_by_label("Save").is_none(), "closed");
+    assert!(
+        harness.query_by_label(&t!("settings-save")).is_none(),
+        "closed"
+    );
     press_command(&mut harness, egui::Key::Comma);
-    assert!(checked(&harness, "Opus"), "Escape kept Opus");
+    assert!(checked(&harness, &t!("model-opus")), "Escape kept Opus");
 
-    harness.get_by_label("Sonnet").click();
+    harness.get_by_label(&t!("model-sonnet")).click();
     settle(&mut harness);
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     press_command(&mut harness, egui::Key::Comma);
-    assert!(checked(&harness, "Opus"), "Cancel kept Opus");
+    assert!(checked(&harness, &t!("model-opus")), "Cancel kept Opus");
 }
 
 #[test]
@@ -2096,16 +2265,19 @@ fn saved_settings_are_kept_for_next_time() {
 
     let mut harness = app();
     press_command(&mut harness, egui::Key::Comma);
-    harness.get_by_label("Sonnet").click();
+    harness.get_by_label(&t!("model-sonnet")).click();
     settle(&mut harness);
-    harness.get_by_label("Save").click();
+    harness.get_by_label(&t!("settings-save")).click();
     settle(&mut harness);
-    assert!(harness.query_by_label("Save").is_none(), "closed");
+    assert!(
+        harness.query_by_label(&t!("settings-save")).is_none(),
+        "closed"
+    );
     assert_eq!(Settings::load(&path).model, Model::Sonnet);
 
     let mut harness = app();
     press_command(&mut harness, egui::Key::Comma);
-    assert!(checked(&harness, "Sonnet"));
+    assert!(checked(&harness, &t!("model-sonnet")));
 }
 
 /// A new markdown style reaches transcripts the user hasn't corrected, read again from the cache,
@@ -2137,16 +2309,16 @@ fn a_new_markdown_style_restyles_unedited_transcripts() {
     harness.get_by_label("b.png").click();
     settle(&mut harness);
     // From the cache, which a.png's transcription filled.
-    harness.get_by_label("Transcribe").click();
+    harness.get_by_label(&Command::Transcribe.label()).click();
     step_until(&mut harness, "buy _eggs_");
     correct_plumber(&mut harness);
 
     press_command(&mut harness, egui::Key::Comma);
-    harness.get_by_label("Underlines").click();
+    harness.get_by_label(&t!("settings-underlines")).click();
     settle(&mut harness);
-    harness.get_by_label("*asterisks*").click();
+    harness.get_by_label(&t!("underline-asterisks")).click();
     settle(&mut harness);
-    harness.get_by_label("Save").click();
+    harness.get_by_label(&t!("settings-save")).click();
     settle(&mut harness);
 
     harness.get_by_label("a.png").click();
@@ -2156,9 +2328,11 @@ fn a_new_markdown_style_restyles_unedited_transcripts() {
     harness.get_by_label_contains("buy _eggs_");
     harness.get_by_label("plumbers");
 
-    harness.get_by_label("Reset Transcript").click();
+    harness
+        .get_by_label(&Command::ResetTranscript.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Reset").click();
+    harness.get_by_label(&t!("confirm-reset-button")).click();
     step_until(&mut harness, "buy *eggs*");
     harness.get_by_label("plumber");
 
@@ -2192,7 +2366,7 @@ fn dragging_a_thumbnail_moves_the_page() {
     drag_thumbnail(&mut harness, "c.png", before_b);
     assert_eq!(thumbnails(&harness), ["c.png", "b.png", "a.png"]);
     // The page shown before rearranging stays shown.
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
 }
 
 /// The drop marker shows wherever the page would go, even at the very start, and stays clear of
@@ -2224,7 +2398,7 @@ fn drop_marker_is_visible_beside_the_selected_page() {
             thumbnails(&harness).first().map(String::as_str),
             Some(if x < a { "c.png" } else { "a.png" })
         );
-        harness.get_by_label("Sort by name").click();
+        harness.get_by_label(&Command::SortByName.label()).click();
         settle(&mut harness);
     }
 }
@@ -2289,7 +2463,7 @@ fn sort_by_name_restores_filename_order() {
     drop_files(&mut harness, &[("a.png", png()), ("b.png", png())]);
     let sort = |harness: &Harness<'_, NotebookApp>| {
         !harness
-            .get_by_label("Sort by name")
+            .get_by_label(&Command::SortByName.label())
             .accesskit_node()
             .is_disabled()
     };
@@ -2299,11 +2473,11 @@ fn sort_by_name_restores_filename_order() {
     assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
     assert!(sort(&harness));
 
-    harness.get_by_label("Sort by name").click();
+    harness.get_by_label(&Command::SortByName.label()).click();
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
     assert!(!sort(&harness));
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
 }
 
 #[test]
@@ -2327,7 +2501,7 @@ fn command_arrows_move_the_selected_page() {
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
     press_command(&mut harness, egui::Key::ArrowLeft);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
-    harness.get_by_label("Current: b.png");
+    harness.get_by_label(&t!("current-page", name = "b.png"));
 }
 
 #[test]
@@ -2338,12 +2512,12 @@ fn active_page_is_marked_and_named() {
         &[("a.png", png()), ("b.png", png()), ("c.png", png())],
     );
     assert_eq!(selected_thumbnails(&harness), ["a.png"]);
-    harness.get_by_label("a.png · 1 of 3");
+    harness.get_by_label(&t!("page-position", name = "a.png", number = 1, count = 3));
 
     harness.get_by_label("c.png").click();
     settle(&mut harness);
     assert_eq!(selected_thumbnails(&harness), ["c.png"]);
-    harness.get_by_label("c.png · 3 of 3");
+    harness.get_by_label(&t!("page-position", name = "c.png", number = 3, count = 3));
 }
 
 #[test]
@@ -2379,8 +2553,8 @@ fn export_follows_page_order() {
     show_transcript(&mut harness);
     harness.get_by_label("b.png").click();
     settle(&mut harness);
-    harness.get_by_label("Transcribe").click();
-    step_until(&mut harness, "Current: b.png");
+    harness.get_by_label(&Command::Transcribe.label()).click();
+    step_until(&mut harness, &t!("current-page", name = "b.png"));
     step_until(&mut harness, "# Thurs 23 Oct");
 
     press_command(&mut harness, egui::Key::ArrowLeft);
@@ -2402,13 +2576,13 @@ fn arrows_select_the_previous_and_next_page() {
 
     // Already first.
     press(&mut harness, none, egui::Key::ArrowLeft);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
     for _ in 0..3 {
         press(&mut harness, none, egui::Key::ArrowRight);
     }
-    harness.get_by_label("Current: c.png");
+    harness.get_by_label(&t!("current-page", name = "c.png"));
     press(&mut harness, none, egui::Key::ArrowLeft);
-    harness.get_by_label("Current: b.png");
+    harness.get_by_label(&t!("current-page", name = "b.png"));
     assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png"]);
 }
 
@@ -2419,9 +2593,9 @@ fn command_numbers_switch_the_view() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     press_command(&mut harness, egui::Key::Num2);
-    harness.get_by_label("Current: a.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));
     press_command(&mut harness, egui::Key::Num1);
-    harness.get_by_label("Current: a.png");
+    harness.get_by_label(&t!("current-page", name = "a.png"));
     press_command(&mut harness, egui::Key::Num3);
     step_until(&mut harness, "# Thurs 23 Oct");
 
@@ -2444,13 +2618,13 @@ fn command_backspace_deletes_the_page() {
     // A transcribed page asks first, and nothing else happens until it's answered.
     show_transcript(&mut harness);
     press_command(&mut harness, egui::Key::Backspace);
-    harness.get_by_label("Delete b.png and its transcript?");
+    harness.get_by_label(&t!("confirm-delete", name = "b.png"));
     press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
     press_command(&mut harness, egui::Key::Num1);
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     assert_eq!(thumbnails(&harness), ["b.png", "c.png"]);
-    harness.get_by_label("Current: b.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "b.png"));
 }
 
 #[test]
@@ -2464,15 +2638,12 @@ fn command_t_transcribes_or_says_how_to_retranscribe() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     press_command(&mut harness, egui::Key::T);
-    harness.get_by_label_contains("a.png is already transcribed.");
+    let hint = before_mark(t!("already-transcribed", name = "a.png", shortcut = MARK));
+    harness.get_by_label_contains(&hint);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     // It goes after a few seconds.
     harness.run_steps(20);
-    assert!(
-        harness
-            .query_by_label_contains("already transcribed")
-            .is_none()
-    );
+    assert!(harness.query_by_label_contains(&hint).is_none());
 }
 
 #[test]
@@ -2483,7 +2654,12 @@ fn command_t_retries_a_failed_page() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
 
     press_command(&mut harness, egui::Key::T);
-    step_until(&mut harness, "Couldn't transcribe a.png");
+    let failed = t!(
+        "transcribe-failed",
+        name = "a.png",
+        error = ocr_error(&overloaded())
+    );
+    step_until(&mut harness, &failed);
     press_command(&mut harness, egui::Key::T);
     step_until(&mut harness, "# Thurs 23 Oct");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
@@ -2499,14 +2675,14 @@ fn command_shift_t_forces_retranscription() {
     show_transcript(&mut harness);
 
     press(&mut harness, COMMAND_SHIFT, egui::Key::T);
-    step_until(&mut harness, "by claude-opus-4-8");
+    step_until(&mut harness, &by("claude-opus-4-8"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 
     // A corrected page asks first.
     correct_plumber(&mut harness);
     press(&mut harness, COMMAND_SHIFT, egui::Key::T);
-    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label(&t!("confirm-force", name = "a.png"));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
@@ -2531,23 +2707,27 @@ fn command_e_exports_then_reexports() {
 
     // Nothing to repeat yet, so it asks.
     press_command(&mut harness, egui::Key::E);
-    for option in ["Current page", "Markdown to file", "Go"] {
-        harness.get_by_label(option).click();
+    for option in [
+        t!("export-current-page"),
+        t!("export-markdown-file"),
+        t!("export-go"),
+    ] {
+        harness.get_by_label(&option).click();
         settle(&mut harness);
     }
-    step_until(&mut harness, "Exported a.png to ");
+    step_until(&mut harness, &exported(1, "a.png"));
 
     correct_plumber(&mut harness);
     press_command(&mut harness, egui::Key::E);
-    assert!(harness.query_by_label("Go").is_none());
-    step_until(&mut harness, "Exported a.png to ");
+    assert!(harness.query_by_label(&t!("export-go")).is_none());
+    step_until(&mut harness, &exported(1, "a.png"));
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(written.contains("ring the plumbers re:"), "{written}");
     assert_eq!(asked.load(Ordering::SeqCst), 1);
 
     // Export… always asks.
     press(&mut harness, COMMAND_SHIFT, egui::Key::E);
-    harness.get_by_label("Go");
+    harness.get_by_label(&t!("export-go"));
 }
 
 #[test]
@@ -2583,7 +2763,7 @@ fn editing_keys_stay_with_the_text_field() {
     press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
     press_command(&mut harness, egui::Key::Backspace);
     assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
-    harness.get_by_label("Current: a.png (cleaned)");
+    harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));
     harness.get_by_role(Role::TextInput);
 }
 
@@ -2600,9 +2780,11 @@ fn enter_picks_the_affirmative_button() {
         settle(harness);
     };
 
-    harness.get_by_label("Transcribe all").click();
+    harness
+        .get_by_label(&Command::TranscribeAll.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Transcribe 6 pages?");
+    harness.get_by_label(&t!("confirm-transcribe-all", count = 6));
     enter(&mut harness);
     step_until_transcribed(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 6);
@@ -2610,21 +2792,23 @@ fn enter_picks_the_affirmative_button() {
     // Dangerous ones too.
     show_transcript(&mut harness);
     correct_plumber(&mut harness);
-    harness.get_by_label("Force retranscription").click();
+    harness
+        .get_by_label(&Command::ForceRetranscribe.label())
+        .click();
     settle(&mut harness);
-    harness.get_by_label("Retranscribe a.png? Your corrections will be lost.");
+    harness.get_by_label(&t!("confirm-force", name = "a.png"));
     enter(&mut harness);
     step_until_transcribed(&mut harness);
     assert_eq!(calls.load(Ordering::SeqCst), 7);
 
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(&mut harness);
     enter(&mut harness);
-    step_until(&mut harness, "Copied 6 pages to the clipboard");
+    step_until(&mut harness, &t!("export-copied", count = 6, name = ""));
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Delete a.png and its transcript?");
+    harness.get_by_label(&t!("confirm-delete", name = "a.png"));
     enter(&mut harness);
     assert_eq!(thumbnails(&harness), &names[1..]);
 }
@@ -2635,13 +2819,14 @@ fn enter_does_nothing_while_the_affirmative_button_is_disabled() {
     drop_files(&mut harness, &[("a.png", page_photo()), ("b.png", png())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Export").click();
+    harness.get_by_label(&Command::ExportAs.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Not transcribed yet: b.png");
+    harness.get_by_label(&t!("export-not-transcribed", names = "b.png"));
     harness.key_press(egui::Key::Enter);
     settle(&mut harness);
-    harness.get_by_label("Go");
-    assert!(harness.query_by_label_contains("Copied").is_none());
+    harness.get_by_label(&t!("export-go"));
+    let copied = before_mark(t!("export-copied", count = MARK, name = MARK));
+    assert!(harness.query_by_label_contains(&copied).is_none());
 }
 
 #[test]
@@ -2650,12 +2835,13 @@ fn enter_is_the_focused_widgets() {
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
 
-    harness.get_by_label("Delete").click();
+    harness.get_by_label(&Command::Delete.label()).click();
     settle(&mut harness);
-    harness.get_by_label("Cancel").focus();
+    harness.get_by_label(&t!("dialog-cancel")).focus();
     settle(&mut harness);
     harness.key_press(egui::Key::Enter);
     settle(&mut harness);
-    assert!(harness.query_by_label_contains("Delete a.png").is_none());
+    let ask = t!("confirm-delete", name = "a.png");
+    assert!(harness.query_by_label(&ask).is_none());
     assert_eq!(thumbnails(&harness), ["a.png"]);
 }

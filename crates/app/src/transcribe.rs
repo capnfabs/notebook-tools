@@ -307,7 +307,7 @@ impl Transcriptions {
         work: impl FnOnce() -> Result<Option<Ran>, OcrError> + Send + 'static,
     ) {
         self.jobs
-            .spawn(key, move || work().map_err(|e| e.to_string()));
+            .spawn(key, move || work().map_err(|e| crate::i18n::ocr_error(&e)));
     }
 
     /// The next page that finished transcribing, if any, sending the next queued page in its

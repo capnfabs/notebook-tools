@@ -28,3 +28,4 @@ In the order they were finished.
 - [x] [Markdown conversion improvements](markdown-cleanup.md)
 - [x] [Correction UI improvements](correction-ui.md)
 - [x] [Settings dialog](settings-dialog.md)
+- [x] [Centralise UI strings](centralise-strings.md)

@@ -1,11 +1,11 @@
-use notebook_app::NotebookApp;
+use notebook_app::{NotebookApp, t};
 use notebook_core::cache::Cache;
 use notebook_core::settings::Settings;
 
 fn main() -> eframe::Result {
     env_logger::init();
     eframe::run_native(
-        "notebook-tools",
+        &t!("app-name"),
         eframe::NativeOptions::default(),
         Box::new(|cc| {
             let (transcriber, cache) = transcription();
@@ -33,9 +33,9 @@ fn save_dialog() -> notebook_app::SavePath {
             .unwrap_or_default()
             .to_string_lossy();
         let kind = if extension == "pdf" {
-            "PDF"
+            t!("file-type-pdf")
         } else {
-            "Markdown"
+            t!("file-type-markdown")
         };
         rfd::FileDialog::new()
             .add_filter(kind, &[&*extension])
@@ -48,7 +48,10 @@ fn save_dialog() -> notebook_app::SavePath {
 fn file_picker() -> notebook_app::PickFiles {
     std::sync::Arc::new(|| {
         rfd::FileDialog::new()
-            .add_filter("Photos", &["jpg", "jpeg", "png", "heic", "heif"])
+            .add_filter(
+                t!("file-type-photos"),
+                &["jpg", "jpeg", "png", "heic", "heif"],
+            )
             .pick_files()
             .unwrap_or_default()
     })

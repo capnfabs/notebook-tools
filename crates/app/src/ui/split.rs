@@ -41,7 +41,7 @@ impl Split {
         rect: Rect,
         gap: f32,
         limits: Limits,
-        label: &'static str,
+        label: &str,
     ) -> (Rect, Rect) {
         if rect.width() < SIDE_BY_SIDE_MIN_WIDTH {
             let (page, text) = rect.split_top_bottom_at_fraction(0.5);

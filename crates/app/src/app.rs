@@ -22,6 +22,7 @@ use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
 use crate::ingest::{Ingest, Load, PickFiles, Received};
 use crate::jobs::Jobs;
+use crate::t;
 use crate::timing::timed;
 use crate::transcribe::{Transcriber, Transcriptions, Waker};
 use crate::ui::corners::Corners;
@@ -31,13 +32,6 @@ use crate::ui::split::{self, Split};
 use crate::ui::thumbnails::{self, Thumbnails};
 use crate::ui::transcript_view::{self, TranscriptView};
 
-/// Why the Transcribed view is unavailable.
-const NO_TRANSCRIBER_HINT: &str =
-    "Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app";
-
-/// The button that retranscribes a page, skipping the cache.
-const FORCE_LABEL: &str = "Force retranscription";
-
 /// Frames taking longer than this, in seconds, are logged.
 const SLOW_FRAME_SECS: f32 = 0.05;
 
@@ -46,10 +40,6 @@ const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 
 /// How long a hint stays in the status line, in seconds.
 const HINT_SECS: f64 = 4.0;
-
-/// Under a transcript whose crop leaves out much of the page's now.
-const MISSED_PAGE: &str = "The bounds of this page have changed since last transcription; \
-    retranscribe to ensure you've got all text.";
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -242,6 +232,11 @@ impl NotebookApp {
         }
     }
 
+    /// Whether any page is waiting to be transcribed or being transcribed.
+    pub fn transcribing(&self) -> bool {
+        self.transcriptions.pending() > 0
+    }
+
     /// Whether any page is loading, or any image is being decoded for the viewer.
     pub fn loading(&self) -> bool {
         self.ingest.pending() > 0 || self.decodes.jobs.running() > 0
@@ -304,7 +299,7 @@ impl NotebookApp {
         }
         self.settings_dialog(&ctx);
         let states = self.command_states(&ctx);
-        self.input.0.sync(&|c| states[c as usize]);
+        self.input.0.sync(&|c| states[c as usize].clone());
     }
 
     /// What `command` can do right now. Menus, key presses and [`Self::queue`] all go by this.
@@ -346,8 +341,8 @@ impl NotebookApp {
             _ => None,
         };
         let title = match command {
-            Command::Export if self.export.can_reexport() => "Re-export",
-            _ => spec.label,
+            Command::Export if self.export.can_reexport() => t!("command-reexport"),
+            _ => command.label(),
         };
         CommandState {
             enabled: possible && !typing && !self.dialog_open(),
@@ -375,7 +370,7 @@ impl NotebookApp {
     fn run_commands(&mut self, ctx: &egui::Context) {
         let states = self.command_states(ctx);
         let mut commands = std::mem::take(&mut self.queued);
-        commands.extend(self.input.0.poll(ctx, &|c| states[c as usize]));
+        commands.extend(self.input.0.poll(ctx, &|c| states[c as usize].clone()));
         for command in commands {
             self.run(ctx, command);
         }
@@ -465,7 +460,8 @@ impl NotebookApp {
             let bytes: Arc<[u8]> = match bytes {
                 Ok(bytes) => bytes.into(),
                 Err(err) => {
-                    self.errors.push(format!("Couldn't open {name}: {err}"));
+                    let error = t!("open-failed", name = name.as_str(), error = err);
+                    self.errors.push(error);
                     continue;
                 }
             };
@@ -517,7 +513,8 @@ impl NotebookApp {
                     self.thumbs.insert(name, thumbs);
                 }
                 Err(err) => {
-                    self.errors.push(format!("Couldn't open {name}: {err}"));
+                    let error = t!("open-failed", name = name.as_str(), error = err);
+                    self.errors.push(error);
                     self.delete_page(index);
                 }
             }
@@ -570,8 +567,8 @@ impl NotebookApp {
             return;
         };
         let choice = dialog::show(ctx, "confirm delete", 320.0, |ui| {
-            ui.label(format!("Delete {name} and its transcript?"));
-            dialog::buttons(ui, "Delete page", Action::Dangerous, true)
+            ui.label(t!("confirm-delete", name = name.as_str()));
+            dialog::buttons(ui, &t!("confirm-delete-button"), Action::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative) {
             let index = self.pages.position(&name);
@@ -622,8 +619,9 @@ impl NotebookApp {
         }
         let count = self.untranscribed().len();
         let choice = dialog::show(ctx, "confirm transcribe all", 320.0, |ui| {
-            ui.label(format!("Transcribe {count} pages?"));
-            dialog::buttons(ui, "Transcribe", Action::Default, count > 0)
+            ui.label(t!("confirm-transcribe-all", count = count));
+            let button = t!("confirm-transcribe-all-button");
+            dialog::buttons(ui, &button, Action::Default, count > 0)
         });
         if choice == Some(Choice::Affirmative) {
             self.transcribe_all();
@@ -659,10 +657,8 @@ impl NotebookApp {
             return;
         };
         let choice = dialog::show(ctx, "confirm force", 320.0, |ui| {
-            ui.label(format!(
-                "Retranscribe {name}? Your corrections will be lost."
-            ));
-            dialog::buttons(ui, "Retranscribe", Action::Dangerous, true)
+            ui.label(t!("confirm-force", name = name.as_str()));
+            dialog::buttons(ui, &t!("confirm-force-button"), Action::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative) {
             self.force(&name);
@@ -682,10 +678,8 @@ impl NotebookApp {
             return;
         };
         let choice = dialog::show(ctx, "confirm reset", 320.0, |ui| {
-            ui.label(format!(
-                "Reset {name} to Claude's transcription? Your corrections will be lost."
-            ));
-            dialog::buttons(ui, "Reset", Action::Dangerous, true)
+            ui.label(t!("confirm-reset", name = name.as_str()));
+            dialog::buttons(ui, &t!("confirm-reset-button"), Action::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative)
             && let Some(transcript) = self
@@ -731,9 +725,10 @@ impl NotebookApp {
         }
         if page.transcript.is_some() {
             let force = shortcut_text(ctx, Command::ForceRetranscribe);
-            let hint = format!(
-                "{} is already transcribed. {force} retranscribes it.",
-                page.name
+            let hint = t!(
+                "already-transcribed",
+                name = page.name.as_str(),
+                shortcut = force
             );
             self.show_hint(ctx, hint);
         } else {
@@ -817,8 +812,8 @@ impl NotebookApp {
 
             ui.vertical_centered(|ui| {
                 ui.add_space(rect.center().y - ui.min_rect().top() - 40.0);
-                ui.heading("Drop image files here");
-                ui.label("JPEG, PNG or HEIC");
+                ui.heading(t!("drop-zone-title"));
+                ui.label(t!("drop-zone-formats"));
                 self.status(ui);
             });
         });
@@ -833,10 +828,10 @@ impl NotebookApp {
                     (View::Transcribed, Command::ViewTranscribed),
                 ] {
                     let enabled = view != View::Transcribed || self.transcriptions.available();
-                    let button = egui::Button::selectable(self.view == view, command.spec().label);
+                    let button = egui::Button::selectable(self.view == view, command.label());
                     let button = ui
                         .add_enabled(enabled, button)
-                        .on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                        .on_disabled_hover_text(t!("no-transcriber-hint"));
                     if with_shortcut(button, command).clicked() {
                         self.set_view(view);
                     }
@@ -844,19 +839,20 @@ impl NotebookApp {
                 ui.separator();
                 let index = self.selected_index();
                 if let Some(page) = self.pages.get(index) {
-                    ui.label(format!(
-                        "{} · {} of {}",
-                        page.name,
-                        index + 1,
-                        self.pages.len()
+                    ui.label(t!(
+                        "page-position",
+                        name = page.name.as_str(),
+                        number = index + 1,
+                        count = self.pages.len()
                     ));
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if with_shortcut(ui.button("Delete"), Command::Delete).clicked() {
+                    let delete = ui.button(Command::Delete.label());
+                    if with_shortcut(delete, Command::Delete).clicked() {
                         self.request_delete();
                     }
-                    let sort =
-                        ui.add_enabled(!self.pages.is_sorted(), egui::Button::new("Sort by name"));
+                    let sort = egui::Button::new(Command::SortByName.label());
+                    let sort = ui.add_enabled(!self.pages.is_sorted(), sort);
                     if sort.clicked() {
                         self.sort_pages();
                     }
@@ -879,16 +875,17 @@ impl NotebookApp {
                     // Only transcribed pages can be exported, one export at a time.
                     let can_transcribe = self.transcriptions.available();
                     let can_export = can_transcribe && self.export.running().is_none();
-                    let mut export = ui.add_enabled(can_export, egui::Button::new("Export"));
+                    let export = egui::Button::new(Command::ExportAs.label());
+                    let mut export = ui.add_enabled(can_export, export);
                     if !can_transcribe {
-                        export = export.on_disabled_hover_text(NO_TRANSCRIBER_HINT);
+                        export = export.on_disabled_hover_text(t!("no-transcriber-hint"));
                     }
                     if with_shortcut(export, Command::ExportAs).clicked() {
                         self.export.open_dialog();
                     }
                     let reexport = ui.add_enabled(
                         can_export && self.export.can_reexport(),
-                        egui::Button::new("Re-export"),
+                        egui::Button::new(t!("command-reexport")),
                     );
                     if with_shortcut(reexport, Command::Export).clicked() {
                         self.export
@@ -898,12 +895,12 @@ impl NotebookApp {
                     let transcribe_all = ui
                         .add_enabled(
                             can_transcribe && untranscribed > 0,
-                            egui::Button::new("Transcribe all"),
+                            egui::Button::new(Command::TranscribeAll.label()),
                         )
                         .on_disabled_hover_text(if can_transcribe {
-                            "Every page is transcribed"
+                            t!("all-transcribed-hint")
                         } else {
-                            NO_TRANSCRIBER_HINT
+                            t!("no-transcriber-hint")
                         });
                     if with_shortcut(transcribe_all, Command::TranscribeAll).clicked() {
                         self.request_transcribe_all();
@@ -935,7 +932,7 @@ impl NotebookApp {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop to add pages",
+                t!("drop-overlay"),
                 egui::TextStyle::Heading.resolve(ui.style()),
                 egui::Color32::WHITE,
             );
@@ -952,7 +949,8 @@ impl NotebookApp {
             && let Err(err) = settings.save(path)
         {
             log::warn!("couldn't save settings to {}: {err}", path.display());
-            self.errors.push(format!("Couldn't save settings: {err}"));
+            let error = t!("settings-save-failed", error = err.to_string());
+            self.errors.push(error);
         }
         self.transcriptions.set_settings(settings);
         let names: Vec<String> = self.pages.iter().map(|p| p.name.clone()).collect();
@@ -1027,7 +1025,7 @@ impl NotebookApp {
         let limits = split::Limits::default();
         let (photo_rect, cleaned_rect) =
             self.cleaned_split
-                .show(ui, rect, gap, limits, "Resize the cleaned page");
+                .show(ui, rect, gap, limits, &t!("resize-cleaned"));
         let photo_rect = self.corner_buttons(ui, index, photo_rect);
         if let Some(showing) = self.current_texture(ui.ctx(), false)
             && let Some(image_rect) = self.show_page(ui, &name, &showing, photo_rect, false)
@@ -1050,7 +1048,7 @@ impl NotebookApp {
         let row = ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
             ui.horizontal(|ui| {
                 let button = |ui: &mut egui::Ui, enabled, command: Command| {
-                    let button = egui::Button::new(command.spec().label);
+                    let button = egui::Button::new(command.label());
                     ui.add_enabled(enabled, button).clicked()
                 };
                 let place = button(ui, can_place, Command::PlaceCorners);
@@ -1110,10 +1108,10 @@ impl NotebookApp {
             return None;
         };
         let alt_text = match (showing, cleaned) {
-            (Showing::Placeholder(_), false) => format!("Current: {name} (loading)"),
-            (Showing::Placeholder(_), true) => format!("Current: {name} (cleaned, loading)"),
-            (Showing::Full(_), true) => format!("Current: {name} (cleaned)"),
-            (Showing::Full(_), false) => format!("Current: {name}"),
+            (Showing::Placeholder(_), false) => t!("current-page-loading", name = name),
+            (Showing::Placeholder(_), true) => t!("current-page-cleaned-loading", name = name),
+            (Showing::Full(_), true) => t!("current-page-cleaned", name = name),
+            (Showing::Full(_), false) => t!("current-page", name = name),
         };
         let image = egui::Image::new(texture).shrink_to_fit().alt_text(alt_text);
         // Give the image exactly the rect it's drawn in. In a justified layout its response
@@ -1153,7 +1151,7 @@ impl NotebookApp {
         let gap = ui.spacing().item_spacing.x * 2.0;
         let (mut page_rect, text_rect) =
             self.split
-                .show(ui, rect, gap, limits, "Resize the transcript");
+                .show(ui, rect, gap, limits, &t!("resize-transcript"));
         if !transcribing && let Some(status) = self.transcript_status(ui, index, page_rect) {
             page_rect.max.y = status.top() - ui.spacing().item_spacing.y;
         }
@@ -1191,13 +1189,13 @@ impl NotebookApp {
         let when = when_and_by(transcript, &TimeZone::system());
         let error = self.transcriptions.error(&page.name);
         let mut text = match error {
-            Some(err) => {
-                format!(
-                    "Retranscription failed: {err}. Using the cached version, transcribed {when}."
-                )
-            }
-            None if transcript.from_cache => format!("From cache: transcribed {when}"),
-            None => format!("Transcribed {when}"),
+            Some(error) => t!(
+                "transcript-retranscribe-failed",
+                error = error,
+                when = when.as_str()
+            ),
+            None if transcript.from_cache => t!("transcript-from-cache", when = when.as_str()),
+            None => t!("transcript-from-claude", when = when.as_str()),
         };
         let fit = page
             .loaded
@@ -1205,15 +1203,12 @@ impl NotebookApp {
             .map(|l| transcript.fit(l.report.crop()));
         let lines_cut_off = fit.map_or(0, |f| f.lines_cut_off);
         if lines_cut_off > 0 {
-            let lines = match lines_cut_off {
-                1 => "1 transcribed line falls".to_owned(),
-                n => format!("{n} transcribed lines fall"),
-            };
-            text = format!("{text}\n{lines} outside this page's new bounds.");
+            let lines = t!("transcript-lines-cut-off", count = lines_cut_off);
+            text = format!("{text}\n{lines}");
         }
         let missed_page = fit.is_some_and(|f| f.missed_page());
         if missed_page {
-            text = format!("{text}\n{MISSED_PAGE}");
+            text = format!("{text}\n{}", t!("transcript-missed-page"));
         }
         let text = match error {
             Some(_) => RichText::new(text).color(ui.visuals().error_fg_color),
@@ -1227,10 +1222,11 @@ impl NotebookApp {
         let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
             ui.horizontal(|ui| {
                 // Long text wraps in the room left of the buttons.
-                let reset_label = Command::ResetTranscript.spec().label;
-                let buttons_width: f32 = [reset_label, FORCE_LABEL]
+                let reset_label = Command::ResetTranscript.label();
+                let force_label = Command::ForceRetranscribe.label();
+                let buttons_width: f32 = [&reset_label, &force_label]
                     .map(|label| {
-                        let galley = WidgetText::from(label).into_galley(
+                        let galley = WidgetText::from(label.as_str()).into_galley(
                             ui,
                             Some(TextWrapMode::Extend),
                             f32::INFINITY,
@@ -1251,7 +1247,7 @@ impl NotebookApp {
                     .add_enabled(corrected, egui::Button::new(reset_label))
                     .clicked();
                 let force =
-                    with_shortcut(ui.button(FORCE_LABEL), Command::ForceRetranscribe).clicked();
+                    with_shortcut(ui.button(force_label), Command::ForceRetranscribe).clicked();
                 (reset, force)
             })
             .inner
@@ -1273,20 +1269,21 @@ impl NotebookApp {
         };
         let name = &page.name;
         let start = if self.transcriptions.queued_or_running(name) {
-            spinner(ui, &format!("Transcribing {name}…"));
+            spinner(ui, &t!("transcribing-page", name = name.as_str()));
             false
         } else if let Some(err) = self.transcriptions.error(name) {
             ui.colored_label(
                 ui.visuals().error_fg_color,
-                format!("Couldn't transcribe {name}: {err}"),
+                t!("transcribe-failed", name = name.as_str(), error = err),
             );
-            with_shortcut(ui.button("Retry"), Command::Transcribe).clicked()
+            with_shortcut(ui.button(t!("transcribe-retry")), Command::Transcribe).clicked()
         } else if self.transcriptions.checking(name) {
-            spinner(ui, &format!("Looking for {name} in the cache…"));
+            spinner(ui, &t!("checking-cache", name = name.as_str()));
             false
         } else {
-            ui.label(format!("{name} isn't transcribed yet."));
-            with_shortcut(ui.button("Transcribe"), Command::Transcribe).clicked()
+            ui.label(t!("not-transcribed-yet", name = name.as_str()));
+            let transcribe = ui.button(Command::Transcribe.label());
+            with_shortcut(transcribe, Command::Transcribe).clicked()
         };
         if start {
             self.start_transcribing(index);
@@ -1297,17 +1294,14 @@ impl NotebookApp {
     /// did.
     fn status(&self, ui: &mut egui::Ui) {
         if self.ingest.pending() > 0 {
-            spinner(ui, &format!("Loading {}…", self.ingest.pending()));
+            spinner(ui, &t!("status-loading", count = self.ingest.pending()));
         }
         match self.transcriptions.pending() {
             0 => {}
-            1 => spinner(ui, "Transcribing 1 page…"),
-            n => spinner(ui, &format!("Transcribing {n} pages…")),
+            count => spinner(ui, &t!("status-transcribing", count = count)),
         }
-        match self.export.running() {
-            None => {}
-            Some(1) => spinner(ui, "Exporting 1 page…"),
-            Some(n) => spinner(ui, &format!("Exporting {n} pages…")),
+        if let Some(count) = self.export.running() {
+            spinner(ui, &t!("status-exporting", count = count));
         }
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -1413,20 +1407,22 @@ impl NotebookApp {
 /// When and by which model `transcript` was made: "2026-10-23 14:05 by claude-opus-5-5", in `tz`,
 /// or just "by …" if it wasn't cached.
 fn when_and_by(transcript: &Transcript, tz: &TimeZone) -> String {
-    match transcript.stored_at {
-        Some(at) => format!("{} by {}", format_time(at, tz), transcript.model),
-        None => format!("by {}", transcript.model),
+    let model = transcript.model.as_str();
+    match transcript.stored_at.map(|at| format_time(at, tz)) {
+        Some(Some(time)) => t!("transcribed-when", at = "time", time = time, model = model),
+        Some(None) => t!("transcribed-when", at = "unknown", time = "", model = model),
+        None => t!("transcribed-when", at = "none", time = "", model = model),
     }
 }
 
-fn format_time(time: SystemTime, tz: &TimeZone) -> String {
-    match jiff::Timestamp::try_from(time) {
-        Ok(at) => at
-            .to_zoned(tz.clone())
+/// `time` to the minute, in `tz`, if it can be shown.
+fn format_time(time: SystemTime, tz: &TimeZone) -> Option<String> {
+    let at = jiff::Timestamp::try_from(time).ok()?;
+    Some(
+        at.to_zoned(tz.clone())
             .strftime("%Y-%m-%d %H:%M")
             .to_string(),
-        Err(_) => "at an unknown time".to_owned(),
-    }
+    )
 }
 
 /// `command`'s shortcut, as the platform writes it: "⇧⌘T" on a Mac.
@@ -1479,8 +1475,8 @@ mod tests {
     #[test]
     fn times_are_shown_to_the_minute() {
         let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_761_225_959);
-        assert_eq!(format_time(at, &TimeZone::UTC), "2025-10-23 13:25");
+        assert_eq!(format_time(at, &TimeZone::UTC).unwrap(), "2025-10-23 13:25");
         let sydney = TimeZone::get("Australia/Sydney").unwrap();
-        assert_eq!(format_time(at, &sydney), "2025-10-24 00:25");
+        assert_eq!(format_time(at, &sydney).unwrap(), "2025-10-24 00:25");
     }
 }

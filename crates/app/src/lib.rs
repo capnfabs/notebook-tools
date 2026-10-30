@@ -2,6 +2,7 @@ pub mod app;
 pub mod command;
 pub mod eval_log;
 mod export;
+pub mod i18n;
 mod ingest;
 mod jobs;
 #[cfg(target_os = "macos")]

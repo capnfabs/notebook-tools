@@ -12,10 +12,8 @@ use muda::{
     Submenu,
 };
 
-use crate::command::{Command, CommandState, Frontend, Item, MENUS, SystemItem};
-
-/// The app's name, for the About panel.
-const APP_NAME: &str = "notebook-tools";
+use crate::command::{Command, CommandState, Frontend, Item, MENUS, MenuId, SystemItem};
+use crate::t;
 
 enum Entry {
     Plain(MenuItem),
@@ -46,17 +44,17 @@ impl NativeMenu {
         let menu = Menu::new();
         let mut entries = Vec::new();
         for spec in MENUS {
-            let submenu = Submenu::new(spec.title.unwrap_or(APP_NAME), true);
+            let submenu = Submenu::new(spec.id.title(), true);
             for item in spec.items {
                 let added: Box<dyn IsMenuItem> = match *item {
                     Item::Command(command) => {
                         let spec = command.spec();
-                        let id = spec.id;
+                        let (id, label) = (spec.id, command.label());
                         let keys = spec.shortcut.map(accelerator);
                         let entry = if spec.checkable {
-                            Entry::Check(CheckMenuItem::with_id(id, spec.label, true, false, keys))
+                            Entry::Check(CheckMenuItem::with_id(id, label, true, false, keys))
                         } else {
-                            Entry::Plain(MenuItem::with_id(id, spec.label, true, keys))
+                            Entry::Plain(MenuItem::with_id(id, label, true, keys))
                         };
                         let added: Box<dyn IsMenuItem> = match &entry {
                             Entry::Plain(item) => Box::new(item.clone()),
@@ -70,7 +68,7 @@ impl NativeMenu {
                 };
                 submenu.append(&*added).expect("menu item");
             }
-            if spec.title == Some("Window") {
+            if spec.id == MenuId::Window {
                 submenu.set_as_windows_menu_for_nsapp();
             }
             menu.append(&submenu).expect("menu");
@@ -107,7 +105,7 @@ impl Frontend for NativeMenu {
                         item.set_enabled(state.enabled);
                     }
                     if item.text() != state.title {
-                        item.set_text(state.title);
+                        item.set_text(&state.title);
                     }
                 }
                 Entry::Check(item) => {
@@ -128,7 +126,7 @@ fn predefined(item: SystemItem) -> PredefinedMenuItem {
     match item {
         SystemItem::About => {
             let about = AboutMetadata {
-                name: Some(APP_NAME.to_owned()),
+                name: Some(t!("app-name")),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
                 ..AboutMetadata::default()
             };

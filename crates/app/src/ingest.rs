@@ -82,7 +82,7 @@ impl Ingest {
         let load = self.load.clone();
         let key = (name.to_owned(), bytes.clone());
         self.jobs.spawn(key, move || {
-            load(&bytes, &params, corners).map_err(|e| e.to_string())
+            load(&bytes, &params, corners).map_err(|e| crate::i18n::decode_error(&e))
         });
     }
 

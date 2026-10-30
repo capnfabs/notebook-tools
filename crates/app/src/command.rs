@@ -1,13 +1,15 @@
 //! Everything the user can do from the menu bar or the keyboard, as data: each [`Command`]'s
-//! label and shortcut, and where it goes in the menus ([`MENUS`]). The app says what's possible
-//! right now ([`CommandState`]) and runs commands; a [`Frontend`] turns the user's input into
-//! commands, and shows their state. Exactly one frontend takes input: the native menu bar where
-//! there is one, else [`EguiKeys`].
+//! shortcut, its label ([`Command::label`], from `crate::i18n`), and where it goes in the menus
+//! ([`MENUS`]). The app says what's possible right now ([`CommandState`]) and runs commands; a
+//! [`Frontend`] turns the user's input into commands, and shows their state. Exactly one frontend
+//! takes input: the native menu bar where there is one, else [`EguiKeys`].
 //!
 //! See `decisions/2026-10-29-mac-menu.md`.
 
 use eframe::egui;
 use egui::{Key, KeyboardShortcut, Modifiers};
+
+use crate::t;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
@@ -41,7 +43,6 @@ pub enum Command {
 pub struct Spec {
     /// Stable, for frontends to name it by.
     pub id: &'static str,
-    pub label: &'static str,
     pub shortcut: Option<KeyboardShortcut>,
     /// Its shortcut is a text-editing key, so it's off while a text field has the keyboard.
     pub edits_text: bool,
@@ -50,13 +51,13 @@ pub struct Spec {
 }
 
 /// What a command can do right now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandState {
     pub enabled: bool,
     /// For commands that toggle or pick something; `None` for the rest.
     pub checked: Option<bool>,
     /// Usually the label, but it can depend on the state, as Export's does.
-    pub title: &'static str,
+    pub title: String,
 }
 
 const fn keys(modifiers: Modifiers, key: Key) -> Option<KeyboardShortcut> {
@@ -90,91 +91,34 @@ impl Command {
     ];
 
     pub const fn spec(self) -> Spec {
-        let (id, label, shortcut, edits_text) = match self {
-            Self::Settings => (
-                "settings",
-                "Settings…",
-                keys(Modifiers::COMMAND, Key::Comma),
-                false,
-            ),
-            Self::AddPages => (
-                "add-pages",
-                "Add Pages…",
-                keys(COMMAND_SHIFT, Key::I),
-                false,
-            ),
-            Self::Export => ("export", "Export", keys(Modifiers::COMMAND, Key::E), false),
-            Self::ExportAs => ("export-as", "Export…", keys(COMMAND_SHIFT, Key::E), false),
-            Self::ViewOriginal => (
-                "view-original",
-                "Original",
-                keys(Modifiers::COMMAND, Key::Num1),
-                false,
-            ),
-            Self::ViewCleaned => (
-                "view-cleaned",
-                "Cleaned",
-                keys(Modifiers::COMMAND, Key::Num2),
-                false,
-            ),
+        let (id, shortcut, edits_text) = match self {
+            Self::Settings => ("settings", keys(Modifiers::COMMAND, Key::Comma), false),
+            Self::AddPages => ("add-pages", keys(COMMAND_SHIFT, Key::I), false),
+            Self::Export => ("export", keys(Modifiers::COMMAND, Key::E), false),
+            Self::ExportAs => ("export-as", keys(COMMAND_SHIFT, Key::E), false),
+            Self::ViewOriginal => ("view-original", keys(Modifiers::COMMAND, Key::Num1), false),
+            Self::ViewCleaned => ("view-cleaned", keys(Modifiers::COMMAND, Key::Num2), false),
             Self::ViewTranscribed => (
                 "view-transcribed",
-                "Transcribed",
                 keys(Modifiers::COMMAND, Key::Num3),
                 false,
             ),
-            Self::PreviousPage => (
-                "previous-page",
-                "Previous Page",
-                keys(Modifiers::NONE, Key::ArrowLeft),
-                true,
-            ),
-            Self::NextPage => (
-                "next-page",
-                "Next Page",
-                keys(Modifiers::NONE, Key::ArrowRight),
-                true,
-            ),
-            Self::Transcribe => (
-                "transcribe",
-                "Transcribe",
-                keys(Modifiers::COMMAND, Key::T),
-                false,
-            ),
-            Self::ForceRetranscribe => (
-                "force-retranscribe",
-                "Force Retranscription",
-                keys(COMMAND_SHIFT, Key::T),
-                false,
-            ),
-            Self::ResetTranscript => ("reset-transcript", "Reset Transcript", None, false),
-            Self::TranscribeAll => (
-                "transcribe-all",
-                "Transcribe All",
-                keys(COMMAND_ALT, Key::T),
-                false,
-            ),
-            Self::MoveLeft => (
-                "move-left",
-                "Move Left",
-                keys(Modifiers::COMMAND, Key::ArrowLeft),
-                true,
-            ),
+            Self::PreviousPage => ("previous-page", keys(Modifiers::NONE, Key::ArrowLeft), true),
+            Self::NextPage => ("next-page", keys(Modifiers::NONE, Key::ArrowRight), true),
+            Self::Transcribe => ("transcribe", keys(Modifiers::COMMAND, Key::T), false),
+            Self::ForceRetranscribe => ("force-retranscribe", keys(COMMAND_SHIFT, Key::T), false),
+            Self::ResetTranscript => ("reset-transcript", None, false),
+            Self::TranscribeAll => ("transcribe-all", keys(COMMAND_ALT, Key::T), false),
+            Self::MoveLeft => ("move-left", keys(Modifiers::COMMAND, Key::ArrowLeft), true),
             Self::MoveRight => (
                 "move-right",
-                "Move Right",
                 keys(Modifiers::COMMAND, Key::ArrowRight),
                 true,
             ),
-            Self::SortByName => ("sort-by-name", "Sort by Name", None, false),
-            Self::PlaceCorners => ("place-corners", "Place Corners", None, false),
-            Self::ResetCorners => ("reset-corners", "Reset Corners", None, false),
-            Self::Delete => (
-                "delete",
-                "Delete",
-                keys(Modifiers::COMMAND, Key::Backspace),
-                true,
-            ),
+            Self::SortByName => ("sort-by-name", None, false),
+            Self::PlaceCorners => ("place-corners", None, false),
+            Self::ResetCorners => ("reset-corners", None, false),
+            Self::Delete => ("delete", keys(Modifiers::COMMAND, Key::Backspace), true),
         };
         let checkable = matches!(
             self,
@@ -182,10 +126,34 @@ impl Command {
         );
         Spec {
             id,
-            label,
             shortcut,
             edits_text,
             checkable,
+        }
+    }
+
+    /// What it's called in the menus, and on buttons that do the same.
+    pub fn label(self) -> String {
+        match self {
+            Self::Settings => t!("command-settings"),
+            Self::AddPages => t!("command-add-pages"),
+            Self::Export => t!("command-export"),
+            Self::ExportAs => t!("command-export-as"),
+            Self::ViewOriginal => t!("command-view-original"),
+            Self::ViewCleaned => t!("command-view-cleaned"),
+            Self::ViewTranscribed => t!("command-view-transcribed"),
+            Self::PreviousPage => t!("command-previous-page"),
+            Self::NextPage => t!("command-next-page"),
+            Self::Transcribe => t!("command-transcribe"),
+            Self::ForceRetranscribe => t!("command-force-retranscribe"),
+            Self::ResetTranscript => t!("command-reset-transcript"),
+            Self::TranscribeAll => t!("command-transcribe-all"),
+            Self::MoveLeft => t!("command-move-left"),
+            Self::MoveRight => t!("command-move-right"),
+            Self::SortByName => t!("command-sort-by-name"),
+            Self::PlaceCorners => t!("command-place-corners"),
+            Self::ResetCorners => t!("command-reset-corners"),
+            Self::Delete => t!("command-delete"),
         }
     }
 
@@ -216,9 +184,31 @@ pub enum Item {
     Separator,
 }
 
+/// Which menu a [`Menu`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuId {
+    /// Named after the app.
+    App,
+    File,
+    View,
+    Page,
+    Window,
+}
+
+impl MenuId {
+    pub fn title(self) -> String {
+        match self {
+            Self::App => t!("app-name"),
+            Self::File => t!("menu-file"),
+            Self::View => t!("menu-view"),
+            Self::Page => t!("menu-page"),
+            Self::Window => t!("menu-window"),
+        }
+    }
+}
+
 pub struct Menu {
-    /// `None` for the menu named after the app.
-    pub title: Option<&'static str>,
+    pub id: MenuId,
     pub items: &'static [Item],
 }
 
@@ -229,7 +219,7 @@ pub const MENUS: &[Menu] = {
     use SystemItem as S;
     &[
         Menu {
-            title: None,
+            id: MenuId::App,
             items: &[
                 Sys(S::About),
                 Sep,
@@ -245,7 +235,7 @@ pub const MENUS: &[Menu] = {
             ],
         },
         Menu {
-            title: Some("File"),
+            id: MenuId::File,
             items: &[
                 Do(C::AddPages),
                 Sep,
@@ -256,7 +246,7 @@ pub const MENUS: &[Menu] = {
             ],
         },
         Menu {
-            title: Some("View"),
+            id: MenuId::View,
             items: &[
                 Do(C::ViewOriginal),
                 Do(C::ViewCleaned),
@@ -267,7 +257,7 @@ pub const MENUS: &[Menu] = {
             ],
         },
         Menu {
-            title: Some("Page"),
+            id: MenuId::Page,
             items: &[
                 Do(C::Transcribe),
                 Do(C::ForceRetranscribe),
@@ -285,7 +275,7 @@ pub const MENUS: &[Menu] = {
             ],
         },
         Menu {
-            title: Some("Window"),
+            id: MenuId::Window,
             items: &[Sys(S::Minimize), Sys(S::Zoom), Sep, Sys(S::Fullscreen)],
         },
     ]
@@ -362,6 +352,18 @@ mod tests {
         }
     }
 
+    /// A missing message would show as its id.
+    #[test]
+    fn every_command_has_a_label() {
+        for c in Command::ALL {
+            let label = c.label();
+            assert!(
+                !label.is_empty() && !label.starts_with("command-"),
+                "{c:?}: {label}"
+            );
+        }
+    }
+
     /// The app keeps commands' states in an array indexed by `command as usize`.
     #[test]
     fn all_is_in_declaration_order() {
@@ -390,7 +392,7 @@ mod tests {
         CommandState {
             enabled: c != Command::Delete,
             checked: None,
-            title: c.spec().label,
+            title: c.label(),
         }
     }
 

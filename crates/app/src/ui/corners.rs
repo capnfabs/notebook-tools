@@ -10,27 +10,21 @@ use egui::accesskit::Role;
 use egui::{Color32, CursorIcon, Key, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo};
 use notebook_core::{Quad, is_page_shaped, order_corners};
 
-/// What each corner's handle is called, in [`Quad`] order.
-pub const LABELS: [&str; 4] = [
-    "Top-left corner",
-    "Top-right corner",
-    "Bottom-right corner",
-    "Bottom-left corner",
-];
+use crate::t;
 
-/// What the area clicked while placing corners is called.
-pub const PLACING_LABEL: &str = "Click the page's corners";
+/// What corner `i`'s handle is called, in [`Quad`] order.
+pub fn label(i: usize) -> String {
+    match i {
+        0 => t!("corner-top-left"),
+        1 => t!("corner-top-right"),
+        2 => t!("corner-bottom-right"),
+        _ => t!("corner-bottom-left"),
+    }
+}
 
 /// Radius of a corner's handle, in points. It can be grabbed a little further out.
 const HANDLE_RADIUS: f32 = 5.0;
 const GRAB_RADIUS: f32 = 10.0;
-
-/// Asks for the corners while they're being clicked in.
-const PLACING_PROMPT: &str = "Click the page's four corners. Esc cancels.";
-
-/// Says why a fourth corner was refused.
-const REFUSED_PROMPT: &str =
-    "Those corners don't outline a page. Click another fourth corner, or Esc to cancel.";
 
 /// How many times a dragged corner halves the distance to where the pointer is, looking for the
 /// furthest it can go without spoiling the outline.
@@ -69,13 +63,14 @@ impl Corners {
         });
     }
 
-    /// What to tell the user while new corners are being clicked in for the page named `name`.
-    pub fn prompt(&self, name: &str) -> Option<&'static str> {
+    /// What to tell the user while new corners are being clicked in for the page named `name`:
+    /// to click them, or why a fourth was refused.
+    pub fn prompt(&self, name: &str) -> Option<String> {
         let placing = self.placing.as_ref().filter(|p| p.name == name)?;
         Some(if placing.refused {
-            REFUSED_PROMPT
+            t!("corners-refused-prompt")
         } else {
-            PLACING_PROMPT
+            t!("corners-placing-prompt")
         })
     }
 
@@ -106,7 +101,7 @@ impl Corners {
         let placed = quad.map(to_screen);
         let mut corners = placed;
         let mut changed = None;
-        for (i, label) in LABELS.into_iter().enumerate() {
+        for i in 0..4 {
             let at = match self.drag {
                 Some(drag) if drag.corner == i => drag.at,
                 _ => corners[i],
@@ -116,7 +111,7 @@ impl Corners {
             let response = ui
                 .interact(handle, id, Sense::drag())
                 .on_hover_cursor(CursorIcon::Grab);
-            response.widget_info(|| WidgetInfo::labeled(Role::GraphicsObject, true, label));
+            response.widget_info(|| WidgetInfo::labeled(Role::GraphicsObject, true, label(i)));
             if response.dragged()
                 && let Some(pointer) = response.interact_pointer_pos()
             {
@@ -180,7 +175,8 @@ impl Corners {
                 Sense::click(),
             )
             .on_hover_cursor(CursorIcon::Crosshair);
-        response.widget_info(|| WidgetInfo::labeled(Role::Canvas, true, PLACING_LABEL));
+        response
+            .widget_info(|| WidgetInfo::labeled(Role::Canvas, true, t!("corners-placing-label")));
         if response.clicked()
             && let Some(pos) = response.interact_pointer_pos()
         {

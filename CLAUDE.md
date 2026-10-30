@@ -12,5 +12,6 @@
 
 # impl
 
+- user-facing text goes in `crates/app/i18n/en-US/notebook_app.ftl`, looked up with `t!` (`crates/app/src/i18n.rs`); tests use the same lookup. See `decisions/2026-10-30-strings-in-fluent.md`.
 - build dialogs with `crates/app/src/ui/dialog.rs` (macOS button order: affirmative rightmost); see `decisions/2026-10-23-dialog-buttons.md`.
 - transcriptions are cached by photo hash + `CACHE_VERSION` (`crates/core/src/ocr.rs`) + model family. A schema change must bump it (a test enforces this). After changing the prompt, model or the image sent (crop/straighten), ask whether to keep the cached transcriptions; bump only if not. `scripts/clear-cache.sh` empties the cache.

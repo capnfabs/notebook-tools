@@ -4,6 +4,8 @@
 //! over the line's box (`decisions/2026-10-23-line-level-pdf-text.md`). The markdown rides along as
 //! an embedded file. See `decisions/2026-10-28-pdf-text-layer.md`.
 
+use std::fmt;
+
 use krilla::Document;
 use krilla::embed::{AssociationKind, EmbeddedFile, MimeType};
 use krilla::geom::{Point, Size, Transform};
@@ -43,21 +45,53 @@ pub struct PdfPage<'a> {
     pub transcript: &'a Transcript,
 }
 
+/// Why a PDF couldn't be made. The app words it for the user.
+#[derive(Debug, PartialEq)]
+pub enum PdfError {
+    /// The page's image has no pixels.
+    EmptyImage {
+        page: String,
+    },
+    /// The page's image couldn't be embedded.
+    Embed {
+        page: String,
+        error: String,
+    },
+    Build(String),
+}
+
+impl fmt::Display for PdfError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyImage { page } => write!(f, "{page} is an empty image"),
+            Self::Embed { page, error } => write!(f, "couldn't embed {page}: {error}"),
+            Self::Build(error) => write!(f, "couldn't build the PDF: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PdfError {}
+
 /// `pages` as a searchable PDF, in order: each page's image under an invisible text layer. Their
 /// [`markdown`] is embedded as `markdown_name`.
-pub fn pdf(pages: &[PdfPage], markdown_name: &str) -> Result<Vec<u8>, String> {
+pub fn pdf(pages: &[PdfPage], markdown_name: &str) -> Result<Vec<u8>, PdfError> {
     let font = Font::new(FONT.into(), 0).expect("the bundled font parses");
     let face = ttf_parser::Face::parse(FONT, 0).expect("the bundled font parses");
     let mut document = Document::new();
     for page in pages {
         let (w, h) = page.size;
         let size = (w as f32 / PDF_DPI * 72.0, h as f32 / PDF_DPI * 72.0);
-        let settings = PageSettings::from_wh(size.0, size.1)
-            .ok_or_else(|| format!("{} is an empty image", page.name))?;
+        let settings =
+            PageSettings::from_wh(size.0, size.1).ok_or_else(|| PdfError::EmptyImage {
+                page: page.name.to_owned(),
+            })?;
         let mut pdf_page = document.start_page_with(settings);
         let mut surface = pdf_page.surface();
-        let image = Image::from_jpeg(page.jpeg.to_vec().into(), true)
-            .map_err(|err| format!("Couldn't embed {}: {err}", page.name))?;
+        let image =
+            Image::from_jpeg(page.jpeg.to_vec().into(), true).map_err(|err| PdfError::Embed {
+                page: page.name.to_owned(),
+                error: err.to_string(),
+            })?;
         surface.draw_image(image, Size::from_wh(size.0, size.1).expect("checked above"));
         surface.set_fill(Some(Fill {
             opacity: NormalizedF32::ZERO,
@@ -83,7 +117,7 @@ pub fn pdf(pages: &[PdfPage], markdown_name: &str) -> Result<Vec<u8>, String> {
     });
     document
         .finish()
-        .map_err(|err| format!("Couldn't build the PDF: {err:?}"))
+        .map_err(|err| PdfError::Build(format!("{err:?}")))
 }
 
 /// A line of a PDF page's text layer.

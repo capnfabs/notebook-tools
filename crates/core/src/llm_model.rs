@@ -34,13 +34,6 @@ impl Model {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Opus => "Opus",
-            Self::Sonnet => "Sonnet",
-        }
-    }
-
     /// The family of the model the API names `id`, which may be a fallback's.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL

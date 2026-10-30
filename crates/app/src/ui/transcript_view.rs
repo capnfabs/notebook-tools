@@ -20,13 +20,12 @@ use notebook_core::reframe::Reframe;
 use notebook_core::transcript::{Bbox, Span, Transcript, Unfound, struck_ranges};
 
 use crate::eval_log::{Event, Via};
+use crate::t;
 
 /// Room for corrections to lengthen lines, as a multiple of the longest line.
 const EDIT_ROOM: f32 = 1.2;
 
-/// Shown after a single click on a line.
-pub const EDIT_HINT: &str = "Double-click to edit";
-/// How long the hint stays, in seconds.
+/// How long the hint to double-click a line stays, in seconds.
 const HINT_SECONDS: f64 = 3.0;
 /// How far the pointer can move before the hint goes.
 const HINT_SLOP: f32 = 6.0;
@@ -256,7 +255,7 @@ impl TranscriptView {
                 text => text,
             };
             response.widget_info(|| {
-                WidgetInfo::labeled(Role::Button, correctable, format!("Box: {name}"))
+                WidgetInfo::labeled(Role::Button, correctable, t!("uncertain-box", word = name))
             });
 
             let response = if !correctable {
@@ -264,9 +263,7 @@ impl TranscriptView {
             } else if u.text.is_empty() {
                 response
                     .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(format!(
-                        "Deleted \"{name}\": click to put it back or change it"
-                    ))
+                    .on_hover_text(t!("deleted-word-hint", word = name))
             } else {
                 response.on_hover_cursor(CursorIcon::PointingHand)
             };
@@ -335,7 +332,7 @@ impl TranscriptView {
                 let response = ui.add(
                     TextEdit::singleline(text)
                         // Also names the field for screen readers.
-                        .hint_text("Empty line")
+                        .hint_text(t!("edit-empty-line"))
                         .font(TextStyle::Monospace)
                         .desired_width(f32::INFINITY),
                 );
@@ -451,7 +448,7 @@ impl TranscriptView {
             .request_repaint_after_secs((HINT_SECONDS - shown_for) as f32);
         let id = Id::unique("edit line hint");
         Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), id, at).show(|ui| {
-            ui.label(EDIT_HINT);
+            ui.label(t!("edit-hint"));
         });
     }
 
@@ -490,7 +487,7 @@ impl TranscriptView {
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             let Some(u) = word else {
-                if ui.button("Delete struck text").clicked() {
+                if ui.button(t!("delete-struck")).clicked() {
                     choice = Some(Choice::DeleteStruck);
                 }
                 return;
@@ -501,21 +498,22 @@ impl TranscriptView {
                 }
             }
             // A deleted word's reading is among its alternatives.
-            if !u.text.is_empty() && ui.button(format!("Keep \"{}\"", u.text)).clicked() {
+            if !u.text.is_empty() && ui.button(t!("keep-word", word = u.text.as_str())).clicked() {
                 choice = Some(Choice::Reading(u.text.clone(), Via::Keep));
             }
-            if !struck_ranges(&u.text).is_empty() && ui.button("Delete struck text").clicked() {
+            if !struck_ranges(&u.text).is_empty() && ui.button(t!("delete-struck")).clicked() {
                 choice = Some(Choice::DeleteStruck);
             }
             ui.horizontal(|ui| {
                 let edit = ui.add(
                     TextEdit::singleline(&mut c.custom)
-                        .hint_text("Something else")
+                        .hint_text(t!("custom-reading"))
                         .desired_width(160.0),
                 );
                 let custom = c.custom.trim();
                 let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                let ok = ui.add_enabled(!custom.is_empty(), egui::Button::new("OK"));
+                let ok = egui::Button::new(t!("custom-reading-ok"));
+                let ok = ui.add_enabled(!custom.is_empty(), ok);
                 if !custom.is_empty() && (ok.clicked() || entered) {
                     choice = Some(Choice::Reading(custom.to_owned(), Via::Custom));
                 }
@@ -583,25 +581,21 @@ fn apply(
 fn why_unfound(transcript: &Transcript, index: usize) -> String {
     let u = &transcript.uncertain[index];
     match transcript.why_unfound(index) {
-        Some(Unfound::EditedOut { .. }) => format!(
-            "\"{}\" was edited out of its line, so it can't be corrected here. Reset Transcript \
-             brings it back.",
-            u.alternatives
-                .first()
-                .filter(|_| u.text.is_empty())
-                .unwrap_or(&u.text)
-        ),
-        _ => {
-            let others = match u.alternatives.as_slice() {
-                [] => String::new(),
-                others => format!(" (or {})", others.join(" / ")),
-            };
-            format!(
-                "Claude was unsure of \"{}\"{others} here, but it isn't in the transcript. \
-                 Double-click its line to fix it by hand.",
-                u.text
+        Some(Unfound::EditedOut { .. }) => {
+            let word = u.alternatives.first().filter(|_| u.text.is_empty());
+            t!(
+                "unfound-edited-out",
+                word = word.unwrap_or(&u.text).as_str()
             )
         }
+        _ => match u.alternatives.as_slice() {
+            [] => t!("unfound-not-in-transcript", word = u.text.as_str()),
+            others => t!(
+                "unfound-not-in-transcript-alternatives",
+                word = u.text.as_str(),
+                alternatives = others.join(" / ")
+            ),
+        },
     }
 }
 

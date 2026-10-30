@@ -9,36 +9,36 @@ use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
 
+use crate::t;
 use crate::ui::dialog::{self, Action, Choice};
 
-/// Under the model choice.
-const MODEL_HINT: &str = "For new and forced transcriptions. Cached transcripts by either model \
-are used; this one's is preferred.";
-
-/// Beside the markdown style, which only reaches transcripts parsed from now on and unedited ones.
-const FUTURE_ONLY: &str = "Future transcripts only";
-
-const FUTURE_ONLY_HINT: &str = "Applies to future and unedited transcripts only, so we don't \
-clobber your edits. \"Reset Transcript\" on edited pages to pick up changes.";
-
-/// Marks that can wrap underlined text, and how they look.
-const UNDERLINES: [(&str, &str); 2] = [("_", "_underscores_"), ("*", "*asterisks*")];
+/// Marks that can wrap underlined text.
+const UNDERLINES: [&str; 2] = ["_", "*"];
 
 /// Heading levels a wholly underlined line can become.
 const HEADINGS: std::ops::RangeInclusive<usize> = 1..=6;
 
-/// What each model is good for. From `decisions/2026-10-24-sonnet-quality.md`.
-fn tradeoffs(model: Model) -> &'static str {
+fn label(model: Model) -> String {
     match model {
-        Model::Opus => {
-            "Slower (20–45s a page), about $0.07 a page. Flags more of the words it's unsure \
-            of. Best for pages you'll correct closely."
-        }
-        Model::Sonnet => {
-            "2–3× faster, about $0.03 a page, and reads words about as well. Flags fewer of its \
-            mistakes, so more are left to find by reading, and may drop separators, underlines \
-            and crossed-out words. Good for a quick first pass."
-        }
+        Model::Opus => t!("model-opus"),
+        Model::Sonnet => t!("model-sonnet"),
+    }
+}
+
+/// What each model is good for.
+fn tradeoffs(model: Model) -> String {
+    match model {
+        Model::Opus => t!("model-opus-tradeoffs"),
+        Model::Sonnet => t!("model-sonnet-tradeoffs"),
+    }
+}
+
+/// How underlined text wrapped in `marker` looks.
+fn underline_example(marker: &str) -> String {
+    match marker {
+        "_" => t!("underline-underscores"),
+        "*" => t!("underline-asterisks"),
+        other => other.to_owned(),
     }
 }
 
@@ -62,12 +62,12 @@ impl SettingsDialog {
     pub fn show(&mut self, ctx: &egui::Context) -> Option<Settings> {
         let draft = self.draft.as_mut()?;
         let choice = dialog::show(ctx, "settings", 420.0, |ui| {
-            ui.heading("Settings");
+            ui.heading(t!("settings-title"));
             ui.add_space(8.0);
             model(ui, &mut draft.model);
             ui.add_space(12.0);
             markdown(ui, &mut draft.markdown);
-            dialog::buttons(ui, "Save", Action::Default, true)
+            dialog::buttons(ui, &t!("settings-save"), Action::Default, true)
         });
         match choice? {
             Choice::Affirmative => self.draft.take(),
@@ -80,44 +80,42 @@ impl SettingsDialog {
 }
 
 fn model(ui: &mut Ui, model: &mut Model) {
-    ui.label(RichText::new("Transcription model").strong());
+    ui.label(RichText::new(t!("settings-model")).strong());
     for m in Model::ALL {
-        ui.radio_value(model, m, m.label());
+        ui.radio_value(model, m, label(m));
         ui.indent(m.name(), |ui| {
             ui.label(RichText::new(tradeoffs(m)).small().weak());
         });
     }
     ui.add_space(4.0);
-    ui.label(RichText::new(MODEL_HINT).small().weak());
+    ui.label(RichText::new(t!("settings-model-hint")).small().weak());
 }
 
 fn markdown(ui: &mut Ui, style: &mut MarkdownStyle) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Markdown").strong());
+        ui.label(RichText::new(t!("settings-markdown")).strong());
         ui.spacing_mut().item_spacing.x = 4.0;
-        info_icon(ui).on_hover_text(FUTURE_ONLY_HINT);
-        ui.label(RichText::new(FUTURE_ONLY).small().weak())
-            .on_hover_text(FUTURE_ONLY_HINT);
+        let hint = t!("settings-future-only-hint");
+        info_icon(ui).on_hover_text(&hint);
+        ui.label(RichText::new(t!("settings-future-only")).small().weak())
+            .on_hover_text(hint);
     });
     egui::Grid::new("markdown style")
         .num_columns(2)
         .show(ui, |ui| {
-            let label = ui.label("Underlines");
-            let selected = UNDERLINES
-                .iter()
-                .find(|(marker, _)| *marker == style.underline)
-                .map_or(style.underline.as_str(), |(_, label)| label);
+            let label = ui.label(t!("settings-underlines"));
             egui::ComboBox::from_id_salt("underline")
-                .selected_text(selected)
+                .selected_text(underline_example(&style.underline))
                 .show_ui(ui, |ui| {
-                    for (marker, label) in UNDERLINES {
-                        ui.selectable_value(&mut style.underline, marker.to_owned(), label);
+                    for marker in UNDERLINES {
+                        let example = underline_example(marker);
+                        ui.selectable_value(&mut style.underline, marker.to_owned(), example);
                     }
                 })
                 .response
                 .labelled_by(label.id);
             ui.end_row();
-            let label = ui.label("Underlined lines");
+            let label = ui.label(t!("settings-underlined-lines"));
             egui::ComboBox::from_id_salt("underlined line heading")
                 .selected_text(heading(style.underlined_line_heading))
                 .show_ui(ui, |ui| {
@@ -137,7 +135,7 @@ fn markdown(ui: &mut Ui, style: &mut MarkdownStyle) {
 
 /// How a heading of `level` is written.
 fn heading(level: usize) -> String {
-    format!("{} Heading", "#".repeat(level))
+    t!("settings-heading", marks = "#".repeat(level))
 }
 
 /// A circled "i", drawn because egui's bundled fonts have no glyph for one.

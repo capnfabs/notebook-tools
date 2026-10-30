@@ -7,6 +7,8 @@
 use eframe::egui;
 use egui::{Align, Color32, Key, Layout, Modifiers, RichText};
 
+use crate::t;
+
 /// Space between a dialog's edge and its contents.
 const PADDING: f32 = 20.0;
 
@@ -74,7 +76,7 @@ pub fn buttons(
         let button = egui::Button::new(RichText::new(affirmative).color(text)).fill(fill);
         // Right to left, so the first added is rightmost.
         let affirmative = ui.add_enabled(enabled, button).clicked() || entered;
-        let cancel = ui.button("Cancel").clicked();
+        let cancel = ui.button(t!("dialog-cancel")).clicked();
         match (affirmative, cancel) {
             (true, _) => Some(Choice::Affirmative),
             (false, true) => Some(Choice::Cancel),
