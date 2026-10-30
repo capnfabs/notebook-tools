@@ -1020,9 +1020,9 @@ fn growing_the_crop_asks_for_retranscription() {
     assert!(!warns_lines_outside(&harness));
 }
 
-/// Without a transcriber (no credentials), there's nothing to transcribe or export.
+/// Without a transcriber (no credentials) or a cache, there's nothing to transcribe or export.
 #[test]
-fn controls_without_a_transcriber() {
+fn controls_without_a_transcriber_or_cache() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png())]);
 
@@ -1228,6 +1228,44 @@ fn cached_pages_load_without_a_transcriber() {
             ..
         }]
     ));
+}
+
+/// Without credentials, cached transcripts can be viewed and exported, but nothing can be sent.
+#[test]
+fn cached_transcripts_without_a_transcriber() {
+    let dir = test_dir("cached_without_transcriber");
+    let (fetch, _) = counting_fetch();
+    let mut harness = cached_harness(fetch, dir.path());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+
+    let app = NotebookApp::with_transcription(None, Some(Cache::new(dir.path())));
+    let mut harness = harness_for(app);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    for label in [
+        &Command::ViewTranscribed.label(),
+        &Command::ExportAs.label(),
+    ] {
+        assert!(!disabled(&harness, label), "{label} is disabled");
+    }
+    for label in [
+        &Command::ForceRetranscribe.label(),
+        &Command::TranscribeAll.label(),
+    ] {
+        assert!(disabled(&harness, label), "{label} is enabled");
+    }
+    assert!(export_to_clipboard(&mut harness).contains("# Thurs 23 Oct"));
+
+    drop_files(&mut harness, &[("b.png", png())]);
+    harness.get_by_label("b.png").click();
+    step_until(&mut harness, &t!("not-cached", name = "b.png"));
+    harness.get_by_label(&t!("no-transcriber-hint"));
+    assert!(
+        harness
+            .query_by_label(&Command::Transcribe.label())
+            .is_none()
+    );
 }
 
 /// Answers with the recorded responses in `answers`, in turn.

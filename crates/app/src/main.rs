@@ -58,15 +58,12 @@ fn file_picker() -> notebook_app::PickFiles {
 }
 
 /// Transcribes with Claude when credentials are in the environment, caching what comes back.
-/// Without credentials there's no cache either, for now: see `tasks/cache-without-credentials.md`.
+/// Without credentials, cached transcripts still load: see
+/// `decisions/2026-10-30-cache-without-credentials.md`.
 fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
     use notebook_app::eval_log;
     use notebook_core::ocr::{Credentials, fetch_page};
 
-    let Some(credentials) = Credentials::from_env() else {
-        log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
-        return (None, None);
-    };
     let cache = Cache::default_dir().map(Cache::new);
     match &cache {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
@@ -79,6 +76,10 @@ fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
             Err(err) => log::warn!("Couldn't prune the cache: {err}"),
         });
     }
+    let Some(credentials) = Credentials::from_env() else {
+        log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
+        return (None, cache);
+    };
     let fetch = move |bytes: &[u8], params: &_, corners, model| {
         fetch_page(&credentials, bytes, params, corners, model)
     };

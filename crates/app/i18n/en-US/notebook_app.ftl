@@ -54,8 +54,8 @@ confirm-reset-button = Reset
 drop-zone-title = Drop image files here
 drop-zone-formats = JPEG, PNG or HEIC
 drop-overlay = Drop to add pages
-# Why the Transcribed view and exporting are unavailable.
-no-transcriber-hint = Transcription needs ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, and the desktop app
+# Why transcribing is unavailable (and, without a cache, the Transcribed view and exporting).
+no-transcriber-hint = Transcription requires an ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.
 all-transcribed-hint = Every page is transcribed
 # The selected page, in the toolbar.
 page-position = { $name } · { $number } of { $count }
@@ -89,6 +89,8 @@ transcribe-failed = Couldn't transcribe { $name }: { $error }
 transcribe-retry = Retry
 checking-cache = Looking for { $name } in the cache…
 not-transcribed-yet = { $name } isn't transcribed yet.
+# In place of the transcript when there's nothing to transcribe with.
+not-cached = No cached transcript for { $name }.
 
 ## Under a transcript
 

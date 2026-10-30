@@ -177,8 +177,8 @@ pub struct NotebookApp {
 }
 
 impl NotebookApp {
-    /// Without a transcriber, the Transcribed view is disabled. Without a cache, every page is sent
-    /// to Claude.
+    /// Without a transcriber, only cached transcripts show; without a cache either, the
+    /// Transcribed view is disabled. Without a cache, every page is sent to Claude.
     pub fn with_transcription(transcriber: Option<Transcriber>, cache: Option<Cache>) -> Self {
         Self {
             transcriptions: Transcriptions::new(transcriber, cache),
@@ -308,7 +308,8 @@ impl NotebookApp {
         let index = self.selected_index();
         let page = self.pages.get(index);
         let can_transcribe = self.transcriptions.available();
-        let can_export = can_transcribe && self.export.running().is_none();
+        let can_view = self.transcriptions.viewable();
+        let can_export = can_view && self.export.running().is_none();
         let possible = match command {
             Command::Settings => true,
             Command::AddPages => self.pick_files.is_some(),
@@ -316,7 +317,8 @@ impl NotebookApp {
             Command::ViewOriginal | Command::ViewCleaned => page.is_some(),
             Command::PlaceCorners => page.is_some_and(|p| p.loaded.is_some()),
             Command::ResetCorners => page.is_some_and(|p| p.corners.is_some()),
-            Command::ViewTranscribed | Command::Transcribe => page.is_some() && can_transcribe,
+            Command::ViewTranscribed => page.is_some() && can_view,
+            Command::Transcribe => page.is_some() && can_transcribe,
             Command::ForceRetranscribe => {
                 can_transcribe
                     && page.is_some_and(|p| {
@@ -827,7 +829,7 @@ impl NotebookApp {
                     (View::Cleaned, Command::ViewCleaned),
                     (View::Transcribed, Command::ViewTranscribed),
                 ] {
-                    let enabled = view != View::Transcribed || self.transcriptions.available();
+                    let enabled = view != View::Transcribed || self.transcriptions.viewable();
                     let button = egui::Button::selectable(self.view == view, command.label());
                     let button = ui
                         .add_enabled(enabled, button)
@@ -874,10 +876,11 @@ impl NotebookApp {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     // Only transcribed pages can be exported, one export at a time.
                     let can_transcribe = self.transcriptions.available();
-                    let can_export = can_transcribe && self.export.running().is_none();
+                    let can_view = self.transcriptions.viewable();
+                    let can_export = can_view && self.export.running().is_none();
                     let export = egui::Button::new(Command::ExportAs.label());
                     let mut export = ui.add_enabled(can_export, export);
-                    if !can_transcribe {
+                    if !can_view {
                         export = export.on_disabled_hover_text(t!("no-transcriber-hint"));
                     }
                     if with_shortcut(export, Command::ExportAs).clicked() {
@@ -1186,6 +1189,7 @@ impl NotebookApp {
         let page = self.pages.get(index)?;
         let transcript = page.transcript.as_ref()?;
         let corrected = transcript.corrected();
+        let can_transcribe = self.transcriptions.available();
         let when = when_and_by(transcript, &TimeZone::system());
         let error = self.transcriptions.error(&page.name);
         let mut text = match error {
@@ -1246,8 +1250,10 @@ impl NotebookApp {
                 let reset = ui
                     .add_enabled(corrected, egui::Button::new(reset_label))
                     .clicked();
-                let force =
-                    with_shortcut(ui.button(force_label), Command::ForceRetranscribe).clicked();
+                let force = ui
+                    .add_enabled(can_transcribe, egui::Button::new(force_label))
+                    .on_disabled_hover_text(t!("no-transcriber-hint"));
+                let force = with_shortcut(force, Command::ForceRetranscribe).clicked();
                 (reset, force)
             })
             .inner
@@ -1279,6 +1285,10 @@ impl NotebookApp {
             with_shortcut(ui.button(t!("transcribe-retry")), Command::Transcribe).clicked()
         } else if self.transcriptions.checking(name) {
             spinner(ui, &t!("checking-cache", name = name.as_str()));
+            false
+        } else if !self.transcriptions.available() {
+            ui.label(t!("not-cached", name = name.as_str()));
+            ui.label(t!("no-transcriber-hint"));
             false
         } else {
             ui.label(t!("not-transcribed-yet", name = name.as_str()));

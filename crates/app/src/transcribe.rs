@@ -207,6 +207,11 @@ impl Transcriptions {
         self.transcriber.is_some()
     }
 
+    /// Whether pages can have transcripts: sent to Claude, or found in the cache.
+    pub fn viewable(&self) -> bool {
+        self.transcriber.is_some() || self.cache.is_some()
+    }
+
     /// Looks the page named `name` up in the cache, which can be done straight away: nothing is
     /// sent. A hit comes out of [`Self::next`].
     pub fn look_up(&mut self, name: &str, bytes: Arc<[u8]>) {
