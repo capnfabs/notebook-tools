@@ -10,7 +10,6 @@ See [done/index.md](done/index.md).
 - [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [Cached transcripts without credentials](cache-without-credentials.md)
-- [ ] [Clamp boxes to the image](clamp-boxes.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
 - [ ] [Polish the transcript status line](status-ui.md)
