@@ -4,14 +4,13 @@ use std::cell::Cell;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use image::{ImageFormat, Rgba, RgbaImage};
+use notebook_core::Crop;
 use notebook_core::cache::Cache;
 use notebook_core::compare;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
-use notebook_core::ocr::{Fetched, OcrError};
+use notebook_core::ocr::{CACHE_VERSION, Fetched, OcrError};
 use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, Crop, decode, detect_outline, photo_corners};
 use tempfile::TempDir;
 
 const PHOTO: &[u8] = b"photo bytes";
@@ -340,16 +339,9 @@ fn compared_with_other_models_entries() {
     assert!(compare::with_cached(&cache, b"another photo", &sonnet).is_empty());
 }
 
-fn png(img: RgbaImage) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
-        .unwrap();
-    bytes
-}
-
-/// Stores `fixture("success")` for `photo` the way entries were before they kept corners.
-fn write_legacy_entry(cache: &Cache, photo: &[u8]) -> std::path::PathBuf {
-    let path = cache.entry_path(photo, Model::Opus);
+/// Stores `fixture("success")` for [`PHOTO`] the way entries were before they kept corners.
+fn write_entry_without_corners(cache: &Cache) {
+    let path = cache.entry_path(PHOTO, Model::Opus);
     let response: serde_json::Value = serde_json::from_slice(&fixture("success")).unwrap();
     let entry = serde_json::json!({
         "image_size": [1200, 900],
@@ -358,68 +350,12 @@ fn write_legacy_entry(cache: &Cache, photo: &[u8]) -> std::path::PathBuf {
     });
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, entry.to_string()).unwrap();
-    path
-}
-
-/// The corners an entry at `path` has on disk, if any.
-fn stored_corners(path: &Path) -> Option<serde_json::Value> {
-    let entry: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    entry.get("corners").cloned()
 }
 
 #[test]
-fn old_entries_get_the_detected_corners() {
-    let (_dir, cache) = cache("backfill");
-    // A cream page on a brown table, which cleanup finds an outline for.
-    let photo = png(RgbaImage::from_fn(1000, 500, |x, y| {
-        if (200..800).contains(&x) && (60..440).contains(&y) {
-            Rgba([235, 225, 200, 255])
-        } else {
-            Rgba([120, 80, 50, 255])
-        }
-    }));
-    let detected = detect_outline(&decode(&photo).unwrap(), &CleanParams::default()).unwrap();
-    let path = write_legacy_entry(&cache, &photo);
-    assert_eq!(stored_corners(&path), None);
-
-    let transcript = cache
-        .get(&photo, Model::Opus, &MarkdownStyle::default())
-        .unwrap();
-    assert_eq!(
-        transcript.crop,
-        Crop {
-            corners: detected,
-            size: (1200, 900)
-        }
-    );
-    assert!(stored_corners(&path).is_some(), "written back");
-    assert_eq!(
-        cache
-            .get(&photo, Model::Opus, &MarkdownStyle::default())
-            .unwrap(),
-        transcript
-    );
-}
-
-#[test]
-fn old_entries_without_an_outline_get_the_photos_corners() {
-    let (_dir, cache) = cache("backfill_whole");
-    let photo = png(RgbaImage::from_pixel(400, 300, Rgba([128, 128, 128, 255])));
-    write_legacy_entry(&cache, &photo);
-    assert_eq!(
-        cache
-            .get(&photo, Model::Opus, &MarkdownStyle::default())
-            .unwrap()
-            .crop
-            .corners,
-        photo_corners(400, 300)
-    );
-}
-
-#[test]
-fn old_entries_for_undecodable_photos_are_fetched_again() {
-    let (_dir, cache) = cache("backfill_undecodable");
-    write_legacy_entry(&cache, PHOTO);
+fn entries_without_corners_are_fetched_again() {
+    let (_dir, cache) = cache("no_corners");
+    write_entry_without_corners(&cache);
     assert!(
         cache
             .get(PHOTO, Model::Opus, &MarkdownStyle::default())
@@ -429,4 +365,54 @@ fn old_entries_for_undecodable_photos_are_fetched_again() {
     let transcript = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
     assert_eq!(fetches.get(), 1);
     assert_eq!(transcript.crop, CROP);
+}
+
+#[test]
+fn entries_are_formatted_json() {
+    let (_dir, cache) = cache("formatted");
+    transcribe(&cache, PHOTO, 200, "success", &Cell::new(0)).unwrap();
+    let stored = std::fs::read_to_string(cache.entry_path(PHOTO, Model::Opus)).unwrap();
+    assert!(
+        stored.starts_with("{\n  \"image_size\": [\n    1200,"),
+        "{stored}"
+    );
+}
+
+#[test]
+fn pruning_removes_only_older_versions_entries() {
+    let (dir, cache) = cache("prune");
+    let fetches = Cell::new(0);
+    transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+    let current = cache.entry_path(PHOTO, Model::Opus);
+    let hash = current.file_name().unwrap().to_str().unwrap()[..64].to_owned();
+    let file = |name: String| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, "{}").unwrap();
+        path
+    };
+    let older = [
+        file(format!("{hash}-v{}-opus.json", CACHE_VERSION - 1)),
+        file(format!("{hash}-v{}.json", CACHE_VERSION - 1)),
+    ];
+    let kept = [
+        current,
+        file(format!("{hash}-v{}-sonnet.json", CACHE_VERSION + 1)),
+        file("notes.txt".to_owned()),
+    ];
+
+    assert_eq!(cache.prune().unwrap(), older.len());
+    for path in &older {
+        assert!(!path.exists(), "{} kept", path.display());
+    }
+    for path in &kept {
+        assert!(path.exists(), "{} removed", path.display());
+    }
+    transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+    assert_eq!(fetches.get(), 1, "current entry still used");
+}
+
+#[test]
+fn pruning_a_missing_cache_does_nothing() {
+    let (dir, _cache) = cache("prune_missing");
+    assert_eq!(Cache::new(dir.path().join("missing")).prune().unwrap(), 0);
 }

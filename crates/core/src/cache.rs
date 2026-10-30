@@ -2,8 +2,9 @@
 //! or [`CACHE_VERSION`] is bumped. An entry is the raw response, parsed on every load just like a
 //! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. Entries
 //! keep the corners the photo was cropped to, so boxes can follow the page if its corners move.
-//! See `decisions/2026-10-24-transcription-cache.md`, `decisions/2026-10-24-model-selector.md` and
-//! `decisions/2026-10-30-boxes-follow-corners.md`.
+//! Entries from older versions are removed by [`Cache::prune`]. See
+//! `decisions/2026-10-24-transcription-cache.md`, `decisions/2026-10-24-model-selector.md`,
+//! `decisions/2026-10-30-boxes-follow-corners.md` and `decisions/2026-10-30-cache-housekeeping.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::clean::{CleanParams, Crop, Quad, detect_outline, page_quad, photo_corners};
+use crate::clean::{Crop, Quad};
 use crate::llm_model::Model;
 use crate::markdown_style::MarkdownStyle;
 use crate::ocr::{CACHE_VERSION, Fetched, OcrError, parse_response};
@@ -30,9 +31,7 @@ pub struct Cache {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     image_size: (u32, u32),
-    /// `None` only in entries stored before corners were; see [`backfill_corners`].
-    #[serde(default)]
-    corners: Option<Quad>,
+    corners: Quad,
     response: Value,
     /// When it was stored, in seconds since the Unix epoch.
     /// See `decisions/2026-10-24-cache-status.md`.
@@ -59,6 +58,33 @@ impl Cache {
             .join(format!("{}.json", key(page_bytes, CACHE_VERSION, model)))
     }
 
+    /// Removes entries from versions before [`CACHE_VERSION`], returning how many went. Newer
+    /// versions' are kept for the newer build that wrote them, and other files are left alone. A
+    /// missing directory has nothing to prune; an entry that can't be removed only logs.
+    pub fn prune(&self) -> io::Result<usize> {
+        let dir = match std::fs::read_dir(&self.dir) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+            dir => dir?,
+        };
+        let mut removed = 0;
+        for path in dir.map(|e| e.map(|e| e.path())) {
+            let path = path?;
+            let obsolete = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(key_version)
+                .is_some_and(|version| version < CACHE_VERSION);
+            if !obsolete {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed += 1,
+                Err(err) => log::warn!("couldn't prune {}: {err}", path.display()),
+            }
+        }
+        Ok(removed)
+    }
+
     /// The photo's transcript by `model` in `style`, if there's a readable entry.
     pub fn get(
         &self,
@@ -66,7 +92,7 @@ impl Cache {
         model: Model,
         style: &MarkdownStyle,
     ) -> Option<Transcript> {
-        load(&self.entry_path(page_bytes, model), page_bytes, style)
+        load(&self.entry_path(page_bytes, model), style)
     }
 
     /// The photo's transcript by `preferred`, else by any other model, in `style`.
@@ -113,7 +139,7 @@ impl Cache {
         let stored_at = unix_secs(SystemTime::now());
         let entry = serde_json::from_slice(&body).map(|response| Entry {
             image_size: crop.size,
-            corners: Some(crop.corners),
+            corners: crop.corners,
             response,
             stored_at,
         });
@@ -133,18 +159,14 @@ impl Cache {
     }
 }
 
-/// The transcript in the entry at `path`, for the photo `page_bytes`, in `style`.
-fn load(path: &Path, page_bytes: &[u8], style: &MarkdownStyle) -> Option<Transcript> {
+/// The transcript in the entry at `path`, in `style`.
+fn load(path: &Path, style: &MarkdownStyle) -> Option<Transcript> {
     let bytes = std::fs::read(path).ok()?;
     let loaded = serde_json::from_slice::<Entry>(&bytes)
         .map_err(|e| OcrError::Parse(e.to_string()))
-        .and_then(|mut entry| {
-            let corners = match entry.corners {
-                Some(corners) => corners,
-                None => backfill_corners(path, page_bytes, &mut entry)?,
-            };
+        .and_then(|entry| {
             let crop = Crop {
-                corners,
+                corners: entry.corners,
                 size: entry.image_size,
             };
             let response = entry.response.to_string();
@@ -167,27 +189,11 @@ fn load(path: &Path, page_bytes: &[u8], style: &MarkdownStyle) -> Option<Transcr
     }
 }
 
-/// Corners for `entry`, stored at `path` before entries kept them: those cleaning finds with the
-/// default parameters, which is where the photo was cropped unless the user placed corners. They're
-/// written back to the entry, so this happens once. Remove with `tasks/remove-corner-backfill.md`.
-fn backfill_corners(path: &Path, page_bytes: &[u8], entry: &mut Entry) -> Result<Quad, OcrError> {
-    let photo = crate::decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
-    let detected = detect_outline(&photo, &CleanParams::default());
-    let corners =
-        page_quad(None, &detected).unwrap_or_else(|| photo_corners(photo.width(), photo.height()));
-    entry.corners = Some(corners);
-    match write(path, entry) {
-        Ok(()) => log::info!("backfilled corners in {}", path.display()),
-        Err(err) => log::warn!("couldn't backfill corners in {}: {err}", path.display()),
-    }
-    Ok(corners)
-}
-
 fn write(path: &Path, entry: &Entry) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, serde_json::to_vec(entry)?)
+    std::fs::write(path, serde_json::to_vec_pretty(entry)?)
 }
 
 fn unix_secs(time: SystemTime) -> u64 {
@@ -202,6 +208,20 @@ fn from_unix_secs(secs: u64) -> SystemTime {
 /// Names `model`'s entry for `page_bytes` at cache version `version`.
 fn key(page_bytes: &[u8], version: u32, model: Model) -> String {
     format!("{}-v{version}-{}", sha256_hex(page_bytes), model.name())
+}
+
+/// The cache version in an entry's file name, if it's one's: `<sha256>-v<version>-<model>.json`,
+/// or without `-<model>` from before entries were per model.
+fn key_version(file_name: &str) -> Option<u32> {
+    let (hash, rest) = file_name.strip_suffix(".json")?.split_at_checked(64)?;
+    if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let rest = rest.strip_prefix("-v")?;
+    let version = rest
+        .split_once('-')
+        .map_or(rest, |(version, _model)| version);
+    version.parse().ok()
 }
 
 pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
@@ -227,5 +247,27 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad-v3-sonnet",
             "sha256, so `shasum -a 256` finds a photo's entry"
         );
+    }
+
+    #[test]
+    fn key_version_reads_entry_names() {
+        let name = format!("{}.json", key(b"page", 7, Model::Sonnet));
+        assert_eq!(key_version(&name), Some(7));
+        let hash = sha256_hex(b"page");
+        assert_eq!(
+            key_version(&format!("{hash}-v3.json")),
+            Some(3),
+            "before models"
+        );
+        for other in [
+            format!("{hash}-v3.json.tmp"),
+            format!("{hash}-3-opus.json"),
+            format!("{hash}-vx-opus.json"),
+            format!("{}-v3-opus.json", "z".repeat(64)),
+            "notes.json".to_owned(),
+            ".DS_Store".to_owned(),
+        ] {
+            assert_eq!(key_version(&other), None, "{other}");
+        }
     }
 }

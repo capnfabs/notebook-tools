@@ -29,3 +29,5 @@ In the order they were finished.
 - [x] [Correction UI improvements](correction-ui.md)
 - [x] [Settings dialog](settings-dialog.md)
 - [x] [Centralise UI strings](centralise-strings.md)
+- [x] [Prune the transcription cache](prune-cache.md)
+- [x] [Remove the corner backfill](remove-corner-backfill.md)

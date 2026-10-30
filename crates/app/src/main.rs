@@ -72,6 +72,13 @@ fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
         None => log::warn!("No cache directory: transcriptions won't be cached"),
     }
+    if let Some(cache) = cache.clone() {
+        std::thread::spawn(move || match cache.prune() {
+            Ok(0) => {}
+            Ok(removed) => log::info!("Pruned {removed} obsolete cached transcriptions"),
+            Err(err) => log::warn!("Couldn't prune the cache: {err}"),
+        });
+    }
     let fetch = move |bytes: &[u8], params: &_, corners, model| {
         fetch_page(&credentials, bytes, params, corners, model)
     };

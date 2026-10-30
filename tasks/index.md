@@ -9,12 +9,10 @@ See [done/index.md](done/index.md).
 - [ ] Human review all strings!
 - [ ] [Edit menu](edit-menu.md)
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
-- [ ] [Prune the transcription cache](prune-cache.md)
 - [ ] [Cached transcripts without credentials](cache-without-credentials.md)
 - [ ] [Clamp boxes to the image](clamp-boxes.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
-- [ ] [Remove the corner backfill](remove-corner-backfill.md)
 - [ ] [Polish the transcript status line](status-ui.md)
 
 ## polish (difficult / lower pri)
