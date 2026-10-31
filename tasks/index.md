@@ -3,8 +3,6 @@
 ## completed
 See [done/index.md](done/index.md).
 
-## features
-
 ## polish
 - [ ] [Keyboard focus audit](keyboard-focus-audit.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
@@ -16,4 +14,4 @@ See [done/index.md](done/index.md).
 - [ ] [Claude auth approach](claude-auth.md)
 - [ ] [Decide: spread detection approach + reading order](spread-detection.md)
 - [ ] [Bundle libheif for distribution](heic-distribution.md)
-- [ ] [Outline detection: hard photos](outline-detection.md)
+- [ ] [Corner detection: hard photos](outline-detection.md)

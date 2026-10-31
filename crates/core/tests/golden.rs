@@ -4,11 +4,16 @@
 //! Cleanup is expected to change while it's being tuned. After a deliberate change, look at the
 //! images in `target/tmp/golden-actual/` and regenerate with `UPDATE_GOLDEN=1 cargo test`.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
+use common::{fixtures_dir, photo};
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
-use notebook_core::{CleanParams, Quad, clean, decode, detect_outline, shrink_to_fit};
+use notebook_core::clean::{CleanParams, clean, detect_corners};
+use notebook_core::geom::{Quad, dist};
+use notebook_core::imaging::shrink_to_fit;
 
 /// Long side the goldens are stored and compared at; enough to see a cleanup regression.
 const GOLDEN_SIDE_PX: u32 = 512;
@@ -19,37 +24,33 @@ const CORNER_TOLERANCE: f32 = 0.02;
 
 struct Fixture {
     name: &'static str,
-    /// Hand-labelled page outline (TL, TR, BR, BL) in fixture pixels.
-    outline: Quad,
-    /// Outline detection doesn't handle this one yet (cleanup falls back to lighting only).
-    /// Checked by the ignored `hard_outlines_match_hand_labels`; see `tasks/outline-detection.md`.
+    /// Hand-labelled page corners in fixture pixels.
+    corners: Quad,
+    /// Corner detection doesn't handle this one yet (cleanup falls back to lighting only).
+    /// Checked by the ignored `hard_corners_match_hand_labels`; see `tasks/outline-detection.md`.
     hard: bool,
 }
 
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "spread-wood-1",
-        outline: [[97.0, 38.0], [875.0, 61.0], [899.0, 705.0], [68.0, 704.0]],
+        corners: [[97.0, 38.0], [875.0, 61.0], [899.0, 705.0], [68.0, 704.0]],
         hard: false,
     },
     // Shadowed bottom of the page is as bright as the wood beside it.
     Fixture {
         name: "spread-wood-2",
-        outline: [[141.0, 43.0], [914.0, 66.0], [920.0, 702.0], [125.0, 699.0]],
+        corners: [[141.0, 43.0], [914.0, 66.0], [920.0, 702.0], [125.0, 699.0]],
         hard: true,
     },
     // Light grey table, about as bright as the paper; the next page is partly in shot. The
-    // outline is the left page.
+    // corners are the left page's.
     Fixture {
         name: "page-grey-table",
-        outline: [[88.0, 47.0], [607.0, 54.0], [607.0, 940.0], [33.0, 940.0]],
+        corners: [[88.0, 47.0], [607.0, 54.0], [607.0, 940.0], [33.0, 940.0]],
         hard: true,
     },
 ];
-
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-}
 
 fn golden_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/{name}.png"))
@@ -61,13 +62,8 @@ fn actual_dir() -> PathBuf {
     dir
 }
 
-fn load(name: &str) -> RgbaImage {
-    let bytes = std::fs::read(fixtures_dir().join(format!("{name}.jpg"))).unwrap();
-    decode(&bytes).unwrap()
-}
-
-/// The photo with the detected outline in red and the hand-labelled one in green.
-fn draw_outlines(img: &RgbaImage, detected: Option<&Quad>, labelled: &Quad) -> RgbaImage {
+/// The photo with the detected corners in red and the hand-labelled ones in green.
+fn draw_corners(img: &RgbaImage, detected: Option<&Quad>, labelled: &Quad) -> RgbaImage {
     let mut out = img.clone();
     let mut draw = |quad: &Quad, colour: Rgba<u8>| {
         for i in 0..4 {
@@ -102,39 +98,39 @@ fn fixtures_have_no_metadata() {
 }
 
 #[test]
-fn outlines_match_hand_labels() {
-    check_outlines(FIXTURES.iter().filter(|f| !f.hard));
+fn corners_match_hand_labels() {
+    check_corners(FIXTURES.iter().filter(|f| !f.hard));
 }
 
-/// Photos outline detection can't handle yet. Run with `cargo test -- --ignored` when working
+/// Photos corner detection can't handle yet. Run with `cargo test -- --ignored` when working
 /// on detection.
 #[test]
 #[ignore]
-fn hard_outlines_match_hand_labels() {
-    check_outlines(FIXTURES.iter().filter(|f| f.hard));
+fn hard_corners_match_hand_labels() {
+    check_corners(FIXTURES.iter().filter(|f| f.hard));
 }
 
-fn check_outlines<'a>(fixtures: impl Iterator<Item = &'a Fixture>) {
+fn check_corners<'a>(fixtures: impl Iterator<Item = &'a Fixture>) {
     let params = CleanParams::default();
     let mut failures = Vec::new();
     for fixture in fixtures {
-        let img = load(fixture.name);
-        let detected = detect_outline(&img, &params);
-        let annotated = draw_outlines(&img, detected.as_ref().ok(), &fixture.outline);
-        let path = actual_dir().join(format!("{}-outline.png", fixture.name));
+        let img = photo(fixture.name);
+        let detected = detect_corners(&img, &params);
+        let annotated = draw_corners(&img, detected.as_ref().ok(), &fixture.corners);
+        let path = actual_dir().join(format!("{}-corners.png", fixture.name));
         annotated.save(&path).unwrap();
 
         let tolerance = CORNER_TOLERANCE * img.width().max(img.height()) as f32;
         let ok = detected.as_ref().is_ok_and(|quad| {
             quad.iter()
-                .zip(&fixture.outline)
-                .all(|(d, l)| (d[0] - l[0]).hypot(d[1] - l[1]) <= tolerance)
+                .zip(&fixture.corners)
+                .all(|(&d, &l)| dist(d, l) <= tolerance)
         });
         if !ok {
             failures.push(format!(
                 "{}: detected {detected:?}, labelled {:?} (see {})",
                 fixture.name,
-                fixture.outline,
+                fixture.corners,
                 path.display()
             ));
         }
@@ -148,7 +144,7 @@ fn cleaned_output_matches_golden() {
     let params = CleanParams::default();
     let mut failures = Vec::new();
     for fixture in FIXTURES {
-        let cleaned = clean(&load(fixture.name), &params, None);
+        let cleaned = clean(&photo(fixture.name), &params, None);
         let actual = shrink_to_fit(cleaned.image, GOLDEN_SIDE_PX);
         let golden = golden_path(fixture.name);
         if update {

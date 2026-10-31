@@ -3,8 +3,8 @@
 
 use eframe::egui;
 use egui::accesskit::Role;
-use egui::{Color32, Margin, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
-use notebook_core::Pages;
+use egui::{Color32, Margin, Rect, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
+use notebook_core::page::Pages;
 
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
@@ -78,6 +78,7 @@ impl Thumbnails {
             .inner
     }
 
+    /// The pages' thumbnails in a row, the `selected` one framed. Returns what the user did.
     fn thumbnails<'a>(
         &mut self,
         ui: &mut egui::Ui,
@@ -137,6 +138,19 @@ impl Thumbnails {
             self.drop_slot = None;
             return action;
         };
+        self.drag(ui, from, &rects, selection).or(action)
+    }
+
+    /// While page `from`'s thumbnail is dragged over the strip, whose thumbnails are at `rects`,
+    /// marks where it would go in `colour` and scrolls near the edges. Returns the move once it's
+    /// dropped.
+    fn drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        from: usize,
+        rects: &[Rect],
+        colour: Color32,
+    ) -> Option<Action> {
         if let Some(x) = ui.input(|i| i.pointer.latest_pos()).map(|pos| pos.x) {
             self.drop_slot = Some(rects.iter().filter(|r| r.center().x < x).count());
             // Near an edge, scroll towards it while there's more strip beyond it.
@@ -156,9 +170,7 @@ impl Thumbnails {
                 ui.ctx().request_repaint();
             }
         }
-        let Some(slot) = self.drop_slot else {
-            return action;
-        };
+        let slot = self.drop_slot?;
         // Dropping either side of the dragged page leaves it where it is.
         let to = if slot > from { slot - 1 } else { slot };
         if to != from {
@@ -171,15 +183,15 @@ impl Thumbnails {
                 .iter()
                 .fold(rects[0].y_range(), |ys, r| ys.union(r.y_range()));
             ui.painter()
-                .vline(x, ys, Stroke::new(ACTIVE_FRAME_PT, selection));
+                .vline(x, ys, Stroke::new(ACTIVE_FRAME_PT, colour));
         }
         if ui.input(|i| i.pointer.any_released())
             && egui::DragAndDrop::take_payload::<DraggedPage>(ui.ctx()).is_some()
         {
             self.drop_slot = None;
-            action = Some(Action::Move { from, to });
+            return Some(Action::Move { from, to });
         }
-        action
+        None
     }
 }
 
@@ -192,7 +204,7 @@ fn loading_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
         .extreme_bg_color
         .gamma_multiply(tint.a() as f32 / 255.0);
     ui.painter().rect_filled(rect, THUMB_CORNER_PT, fill);
-    let spinner = egui::Rect::from_center_size(rect.center(), Vec2::splat(THUMB_SIZE_PT / 4.0));
+    let spinner = Rect::from_center_size(rect.center(), Vec2::splat(THUMB_SIZE_PT / 4.0));
     egui::Spinner::new().paint_at(ui, spinner);
     response
 }

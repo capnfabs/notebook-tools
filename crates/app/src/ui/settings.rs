@@ -10,7 +10,7 @@ use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
 
 use crate::t;
-use crate::ui::dialog::{self, Action, Choice};
+use crate::ui::dialog::{self, Choice, Stakes};
 
 /// Marks that can wrap underlined text.
 const UNDERLINES: [&str; 2] = ["_", "*"];
@@ -67,7 +67,7 @@ impl SettingsDialog {
             model(ui, &mut draft.model);
             ui.add_space(12.0);
             markdown(ui, &mut draft.markdown);
-            dialog::buttons(ui, &t!("settings-save"), Action::Default, true)
+            dialog::buttons(ui, &t!("settings-save"), Stakes::Safe, true)
         });
         match choice? {
             Choice::Affirmative => self.draft.take(),

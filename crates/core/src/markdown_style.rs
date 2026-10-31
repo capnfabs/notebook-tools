@@ -29,14 +29,14 @@ impl Default for MarkdownStyle {
 
 /// Converts `lines` and `uncertain` words to `style`, and drops alternatives that repeat the word
 /// they're for: an uncertain word with none left still needs a look.
-pub fn tidy(lines: &mut [Line], uncertain: &mut [Uncertain], style: &MarkdownStyle) {
+pub fn restyle(lines: &mut [Line], uncertain: &mut [Uncertain], style: &MarkdownStyle) {
     for line in lines {
-        line.text_md = tidy_line(&line.text_md, style);
+        line.text_md = restyle_line(&line.text_md, style);
     }
     for u in uncertain {
-        u.text = tidy_word(&u.text, style);
+        u.text = restyle_word(&u.text, style);
         for alternative in &mut u.alternatives {
-            *alternative = tidy_word(alternative, style);
+            *alternative = restyle_word(alternative, style);
         }
         let text = &u.text;
         u.alternatives.retain(|a| a != text);
@@ -45,7 +45,7 @@ pub fn tidy(lines: &mut [Line], uncertain: &mut [Uncertain], style: &MarkdownSty
 
 /// One line of Claude's markdown in `style`. A line of dashes becomes `---`, a wholly underlined
 /// line a heading, and other underlines `style.underline`.
-pub fn tidy_line(text_md: &str, style: &MarkdownStyle) -> String {
+fn restyle_line(text_md: &str, style: &MarkdownStyle) -> String {
     let trimmed = text_md.trim();
     if is_rule(trimmed) {
         return "---".to_owned();
@@ -62,7 +62,7 @@ pub fn tidy_line(text_md: &str, style: &MarkdownStyle) -> String {
 
 /// An uncertain word in `style`. One that's underlined as a whole loses its tags, so it's found
 /// both in a heading and between underline marks.
-fn tidy_word(text: &str, style: &MarkdownStyle) -> String {
+fn restyle_word(text: &str, style: &MarkdownStyle) -> String {
     match whole_underline(text) {
         Some(inner) => inner.trim().to_owned(),
         None => underlines(text, &style.underline),
@@ -114,56 +114,62 @@ mod tests {
     use super::*;
     use crate::transcript::Transcript;
 
-    fn tidy_default(text_md: &str) -> String {
-        tidy_line(text_md, &MarkdownStyle::default())
+    fn restyle_default(text_md: &str) -> String {
+        restyle_line(text_md, &MarkdownStyle::default())
     }
 
     #[test]
     fn dash_lines_become_rules() {
         for dashes in ["-", "—", "–", "---", " — ", "- - -", "——"] {
-            assert_eq!(tidy_default(dashes), "---", "{dashes:?}");
+            assert_eq!(restyle_default(dashes), "---", "{dashes:?}");
         }
     }
 
     #[test]
     fn bullets_and_blank_lines_are_not_rules() {
-        assert_eq!(tidy_default("- item"), "- item");
-        assert_eq!(tidy_default("-- note"), "-- note");
-        assert_eq!(tidy_default(""), "");
+        assert_eq!(restyle_default("- item"), "- item");
+        assert_eq!(restyle_default("-- note"), "-- note");
+        assert_eq!(restyle_default(""), "");
     }
 
     #[test]
     fn underlined_line_becomes_heading() {
-        assert_eq!(tidy_default("<u>Sat 26th</u>"), "## Sat 26th");
-        assert_eq!(tidy_default(" <u>So 27th, 08:00</u> "), "## So 27th, 08:00");
+        assert_eq!(restyle_default("<u>Sat 26th</u>"), "## Sat 26th");
         assert_eq!(
-            tidy_default("<u>Sat 26<sup>th</sup></u>"),
+            restyle_default(" <u>So 27th, 08:00</u> "),
+            "## So 27th, 08:00"
+        );
+        assert_eq!(
+            restyle_default("<u>Sat 26<sup>th</sup></u>"),
             "## Sat 26<sup>th</sup>"
         );
     }
 
     #[test]
     fn underlined_spans_get_marks() {
-        assert_eq!(tidy_default("I am <u>so excited</u>"), "I am _so excited_");
         assert_eq!(
-            tidy_default("<u>Great</u> experience"),
+            restyle_default("I am <u>so excited</u>"),
+            "I am _so excited_"
+        );
+        assert_eq!(
+            restyle_default("<u>Great</u> experience"),
             "_Great_ experience"
         );
         assert_eq!(
-            tidy_default("makes me <u>so</u> <u>so</u> happy"),
+            restyle_default("makes me <u>so</u> <u>so</u> happy"),
             "makes me _so_ _so_ happy"
         );
-        assert_eq!(tidy_default("<u>a</u> and <u>b</u>"), "_a_ and _b_");
-        assert_eq!(tidy_default("it's <u>so </u>good"), "it's _so_ good");
+        assert_eq!(restyle_default("<u>a</u> and <u>b</u>"), "_a_ and _b_");
+        assert_eq!(restyle_default("it's <u>so </u>good"), "it's _so_ good");
     }
 
     #[test]
     fn leaves_other_text_alone() {
-        assert_eq!(tidy_default("snake_case"), "snake_case");
-        assert_eq!(tidy_default("Fri 25^th^"), "Fri 25^th^");
-        assert_eq!(tidy_default("~~laksa~~ LAKSA"), "~~laksa~~ LAKSA");
-        assert_eq!(tidy_default("an <u>unclosed tag"), "an <u>unclosed tag");
-        assert_eq!(tidy_default("x<u></u>"), "x", "empty tags dropped");
+        assert_eq!(restyle_default("snake_case"), "snake_case");
+        assert_eq!(restyle_default("Fri 25^th^"), "Fri 25^th^");
+        assert_eq!(restyle_default("~~laksa~~ LAKSA"), "~~laksa~~ LAKSA");
+        assert_eq!(restyle_default("an <u>unclosed tag"), "an <u>unclosed tag");
+        assert_eq!(restyle_default("x<u></u>"), "x", "empty tags dropped");
     }
 
     #[test]
@@ -172,8 +178,8 @@ mod tests {
             underline: "*".to_owned(),
             underlined_line_heading: 3,
         };
-        assert_eq!(tidy_line("<u>Notes</u>", &style), "### Notes");
-        assert_eq!(tidy_line("a <u>big</u> day", &style), "a *big* day");
+        assert_eq!(restyle_line("<u>Notes</u>", &style), "### Notes");
+        assert_eq!(restyle_line("a <u>big</u> day", &style), "a *big* day");
     }
 
     fn line(text_md: &str) -> Line {
@@ -185,24 +191,20 @@ mod tests {
 
     fn uncertain(line: usize, text: &str, alternatives: &[&str]) -> Uncertain {
         Uncertain {
-            line,
-            text: text.to_owned(),
-            bbox: None,
             alternatives: alternatives.iter().map(|&a| a.to_owned()).collect(),
-            resolved: false,
-            deleted: None,
+            ..Uncertain::for_test(line, text)
         }
     }
 
-    fn tidied(lines: &[&str], uncertain: Vec<Uncertain>) -> Transcript {
+    fn restyled(lines: &[&str], uncertain: Vec<Uncertain>) -> Transcript {
         let mut t = Transcript::for_test(lines.iter().copied().map(line).collect(), uncertain);
-        tidy(&mut t.lines, &mut t.uncertain, &MarkdownStyle::default());
+        restyle(&mut t.lines, &mut t.uncertain, &MarkdownStyle::default());
         t
     }
 
     #[test]
     fn drops_alternatives_that_repeat_the_word() {
-        let t = tidied(
+        let t = restyled(
             &["Kemptner Hütte", "threatening"],
             vec![
                 uncertain(0, "Kemptner", &["Kemptner", "Kempter"]),
@@ -218,7 +220,7 @@ mod tests {
 
     #[test]
     fn underlined_uncertain_words_are_still_found() {
-        let t = tidied(
+        let t = restyled(
             &[
                 "<u>Sat 26th</u>",
                 "<u>Great</u> experience",

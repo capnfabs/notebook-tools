@@ -16,11 +16,11 @@ const PADDING: f32 = 20.0;
 /// bright for white text to read well on.
 const DANGER_FILL: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
 
-/// What a dialog's affirmative button does.
+/// What's at stake if the user confirms, which sets how the affirmative button looks.
 #[derive(Clone, Copy)]
-pub enum Action {
+pub enum Stakes {
     /// Safe, and what the user most likely wants next: emphasised.
-    Default,
+    Safe,
     /// Destroys something: red.
     Dangerous,
 }
@@ -60,7 +60,7 @@ pub fn show(
 pub fn buttons(
     ui: &mut egui::Ui,
     affirmative: &str,
-    action: Action,
+    stakes: Stakes,
     enabled: bool,
 ) -> Option<Choice> {
     let unfocused = ui.memory(|m| m.focused().is_none());
@@ -69,9 +69,9 @@ pub fn buttons(
     ui.add_space(PADDING / 2.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let visuals = ui.visuals();
-        let (fill, text) = match action {
-            Action::Default => (visuals.hyperlink_color, Color32::WHITE),
-            Action::Dangerous => (DANGER_FILL, Color32::WHITE),
+        let (fill, text) = match stakes {
+            Stakes::Safe => (visuals.hyperlink_color, Color32::WHITE),
+            Stakes::Dangerous => (DANGER_FILL, Color32::WHITE),
         };
         let button = egui::Button::new(RichText::new(affirmative).color(text)).fill(fill);
         // Right to left, so the first added is rightmost.

@@ -15,7 +15,7 @@ use egui::{
     Align, Color32, CursorIcon, Id, Key, Label, Popup, PopupCloseBehavior, Pos2, Rect, RichText,
     Sense, Shape, Stroke, StrokeKind, TextEdit, TextStyle, Tooltip, UiBuilder, Vec2, WidgetInfo,
 };
-use notebook_core::Crop;
+use notebook_core::clean::Crop;
 use notebook_core::reframe::Reframe;
 use notebook_core::transcript::{Bbox, Span, Transcript, Unfound, struck_ranges};
 
@@ -87,7 +87,7 @@ struct Correcting {
 }
 
 /// What the user picked in the popup.
-enum Choice {
+enum Pick {
     Reading(String, Via),
     DeleteStruck,
 }
@@ -239,43 +239,54 @@ impl TranscriptView {
             let Some(bbox) = u.bbox else {
                 continue;
             };
-            let target = Target::Uncertain(i);
-            let hot = self.is_hot(&target);
+            let hot = self.is_hot(&Target::Uncertain(i));
             let rect = paint(bbox, highlight(ui, mark, hot), outline(ui, mark, hot));
-            let correctable = mark != Mark::Unfound;
-            let sense = if correctable {
-                Sense::click()
-            } else {
-                Sense::hover()
-            };
-            let response = ui.interact(rect, ui.scope_id().with(("uncertain box", i)), sense);
-            // A deleted word is named by the reading it had.
-            let name = match u.text.as_str() {
-                "" => u.alternatives.first().map_or("", String::as_str),
-                text => text,
-            };
-            response.widget_info(|| {
-                WidgetInfo::labeled(Role::Button, correctable, t!("uncertain-box", word = name))
-            });
-
-            let response = if !correctable {
-                response.on_hover_text(why_unfound(transcript, i))
-            } else if u.text.is_empty() {
-                response
-                    .on_hover_cursor(CursorIcon::PointingHand)
-                    .on_hover_text(t!("deleted-word-hint", word = name))
-            } else {
-                response.on_hover_cursor(CursorIcon::PointingHand)
-            };
-            if response.hovered() {
-                *hovered = Some(target.clone());
-            }
-            if response.clicked() {
-                self.open_correction(target.clone(), true, rect);
-                self.scroll_to = Some(i);
-            }
-            self.follow(&target, true, rect);
+            self.uncertain_box(ui, transcript, i, mark, rect, hovered);
         }
+    }
+
+    /// Makes uncertain word `index`'s box, painted at `rect`, clickable to correct it, or says on
+    /// hover why it can't be.
+    fn uncertain_box(
+        &mut self,
+        ui: &mut egui::Ui,
+        transcript: &Transcript,
+        index: usize,
+        mark: Mark,
+        rect: Rect,
+        hovered: &mut Option<Target>,
+    ) {
+        let u = &transcript.uncertain[index];
+        let target = Target::Uncertain(index);
+        let correctable = mark != Mark::Unfound;
+        let sense = if correctable {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(rect, ui.scope_id().with(("uncertain box", index)), sense);
+        let name = u.reading();
+        response.widget_info(|| {
+            WidgetInfo::labeled(Role::Button, correctable, t!("uncertain-box", word = name))
+        });
+
+        let response = if !correctable {
+            response.on_hover_text(why_unfound(transcript, index))
+        } else if u.text.is_empty() {
+            response
+                .on_hover_cursor(CursorIcon::PointingHand)
+                .on_hover_text(t!("deleted-word-hint", word = name))
+        } else {
+            response.on_hover_cursor(CursorIcon::PointingHand)
+        };
+        if response.hovered() {
+            *hovered = Some(target.clone());
+        }
+        if response.clicked() {
+            self.open_correction(target.clone(), true, rect);
+            self.scroll_to = Some(index);
+        }
+        self.follow(&target, true, rect);
     }
 
     /// The transcript, one row per line, with uncertain words and struck text marked.
@@ -287,37 +298,7 @@ impl TranscriptView {
         marks: &[Mark],
         hovered: &mut Option<Target>,
     ) {
-        let mut targets: Vec<Vec<(Target, Range<usize>)>> =
-            vec![Vec::new(); transcript.lines.len()];
-        for (i, span) in spans.iter().enumerate() {
-            // A deleted word has nothing left in the text to click; its box still does.
-            if let Some(Span { line, range }) = span
-                && !range.is_empty()
-            {
-                targets[*line].push((Target::Uncertain(i), range.clone()));
-            }
-        }
-        for (line, targets) in targets.iter_mut().enumerate() {
-            let struck = struck_ranges(&transcript.lines[line].text_md);
-            let overlaps = |r: &Range<usize>, (_, w): &(Target, Range<usize>)| {
-                r.start < w.end && w.start < r.end
-            };
-            let plain: Vec<_> = struck
-                .into_iter()
-                .filter(|r| !targets.iter().any(|t| overlaps(r, t)))
-                .map(|range| {
-                    (
-                        Target::Struck {
-                            line,
-                            range: range.clone(),
-                        },
-                        range,
-                    )
-                })
-                .collect();
-            targets.extend(plain);
-            targets.sort_by_key(|(_, range)| range.start);
-        }
+        let targets = line_targets(transcript, spans);
         let scroll_line = self
             .scroll_to
             .take()
@@ -326,94 +307,20 @@ impl TranscriptView {
         let mut hot_line = None;
 
         for (line, targets) in targets.iter().enumerate() {
-            if let Some((editing, text)) = &mut self.editing_line
-                && *editing == line
-            {
-                let response = ui.add(
-                    TextEdit::singleline(text)
-                        // Also names the field for screen readers.
-                        .hint_text(t!("edit-empty-line"))
-                        .font(TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
-                );
+            if self.editing_line.as_ref().is_some_and(|(l, _)| *l == line) {
+                self.edit_line(ui, transcript, line);
                 hot_line = Some(line);
-                if response.lost_focus() {
-                    // Enter or a click elsewhere keeps the edit; Escape drops it.
-                    let from = &transcript.lines[line].text_md;
-                    if !ui.input(|i| i.key_pressed(Key::Escape)) && *from != *text {
-                        self.events.push(Event::LineEdited {
-                            page: self.page.clone(),
-                            model: transcript.model.clone(),
-                            line,
-                            from: from.clone(),
-                            to: text.clone(),
-                        });
-                        transcript.set_line(line, std::mem::take(text));
-                    }
-                    self.editing_line = None;
-                } else if !response.has_focus() {
-                    response.request_focus();
-                }
                 continue;
             }
 
             let text = transcript.lines[line].text_md.as_str();
-            let mut double_clicked = false;
-            let mut clicked_at = None;
-            let row = ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let mut plain = |ui: &mut egui::Ui, text: &str| {
-                    let label = Label::new(RichText::new(text).monospace()).sense(Sense::click());
-                    let response = ui.add(label);
-                    double_clicked |= response.double_clicked();
-                    if response.clicked() && !response.double_clicked() {
-                        clicked_at = response.interact_pointer_pos();
-                    }
-                };
-                let mut at = 0;
-                for (target, range) in targets {
-                    // Two uncertain words can overlap; only the first is marked.
-                    if range.start < at {
-                        continue;
-                    }
-                    if range.start > at {
-                        plain(ui, &text[at..range.start]);
-                    }
-                    let hot = self.is_hot(target);
-                    let mut word = RichText::new(&text[range.clone()]).monospace();
-                    word = match target {
-                        Target::Uncertain(i) => {
-                            let word = word.background_color(highlight(ui, marks[*i], hot));
-                            if marks[*i] == Mark::Resolved {
-                                word.underline()
-                            } else {
-                                word
-                            }
-                        }
-                        Target::Struck { .. } => word.background_color(struck_highlight(ui, hot)),
-                    };
-                    let response = ui
-                        .add(Label::new(word).sense(Sense::click()))
-                        .on_hover_cursor(CursorIcon::PointingHand);
-                    if response.hovered() {
-                        *hovered = Some(target.clone());
-                    }
-                    if response.clicked() {
-                        self.open_correction(target.clone(), false, response.rect);
-                    }
-                    self.follow(target, false, response.rect);
-                    at = range.end;
-                }
-                // A paragraph break still needs something to double-click.
-                if at < text.len() || text.is_empty() {
-                    plain(ui, if text.is_empty() { " " } else { &text[at..] });
-                }
-            });
-            if ui.rect_contains_pointer(row.response.rect) {
+            let (row, double_clicked, clicked_at) =
+                self.show_line_row(ui, text, targets, marks, hovered);
+            if ui.rect_contains_pointer(row) {
                 hot_line = Some(line);
             }
             if scroll_line == Some(line) {
-                ui.scroll_to_rect(row.response.rect, Some(Align::Center));
+                ui.scroll_to_rect(row, Some(Align::Center));
             }
             if double_clicked {
                 self.correcting = None;
@@ -424,6 +331,102 @@ impl TranscriptView {
             }
         }
         self.hot_line = hot_line;
+    }
+
+    /// Line `line` in a text field, being edited. Enter or a click elsewhere keeps the edit;
+    /// Escape drops it.
+    fn edit_line(&mut self, ui: &mut egui::Ui, transcript: &mut Transcript, line: usize) {
+        let Some((_, text)) = &mut self.editing_line else {
+            return;
+        };
+        let response = ui.add(
+            TextEdit::singleline(text)
+                // Also names the field for screen readers.
+                .hint_text(t!("edit-empty-line"))
+                .font(TextStyle::Monospace)
+                .desired_width(f32::INFINITY),
+        );
+        if response.lost_focus() {
+            let from = &transcript.lines[line].text_md;
+            if !ui.input(|i| i.key_pressed(Key::Escape)) && *from != *text {
+                self.events.push(Event::LineEdited {
+                    page: self.page.clone(),
+                    model: transcript.model.clone(),
+                    line,
+                    from: from.clone(),
+                    to: text.clone(),
+                });
+                transcript.set_line(line, std::mem::take(text));
+            }
+            self.editing_line = None;
+        } else if !response.has_focus() {
+            response.request_focus();
+        }
+    }
+
+    /// One line's `text`, with its uncertain words and struck text (`targets`) marked to click.
+    /// Returns where the row went, whether it was double-clicked, and where it was clicked once,
+    /// if it was.
+    fn show_line_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        text: &str,
+        targets: &[(Target, Range<usize>)],
+        marks: &[Mark],
+        hovered: &mut Option<Target>,
+    ) -> (Rect, bool, Option<Pos2>) {
+        let mut double_clicked = false;
+        let mut clicked_at = None;
+        let row = ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let mut plain = |ui: &mut egui::Ui, text: &str| {
+                let label = Label::new(RichText::new(text).monospace()).sense(Sense::click());
+                let response = ui.add(label);
+                double_clicked |= response.double_clicked();
+                if response.clicked() && !response.double_clicked() {
+                    clicked_at = response.interact_pointer_pos();
+                }
+            };
+            let mut at = 0;
+            for (target, range) in targets {
+                // Two uncertain words can overlap; only the first is marked.
+                if range.start < at {
+                    continue;
+                }
+                if range.start > at {
+                    plain(ui, &text[at..range.start]);
+                }
+                let hot = self.is_hot(target);
+                let mut word = RichText::new(&text[range.clone()]).monospace();
+                word = match target {
+                    Target::Uncertain(i) => {
+                        let word = word.background_color(highlight(ui, marks[*i], hot));
+                        if marks[*i] == Mark::Resolved {
+                            word.underline()
+                        } else {
+                            word
+                        }
+                    }
+                    Target::Struck { .. } => word.background_color(struck_highlight(ui, hot)),
+                };
+                let response = ui
+                    .add(Label::new(word).sense(Sense::click()))
+                    .on_hover_cursor(CursorIcon::PointingHand);
+                if response.hovered() {
+                    *hovered = Some(target.clone());
+                }
+                if response.clicked() {
+                    self.open_correction(target.clone(), false, response.rect);
+                }
+                self.follow(target, false, response.rect);
+                at = range.end;
+            }
+            // A paragraph break still needs something to double-click.
+            if at < text.len() || text.is_empty() {
+                plain(ui, if text.is_empty() { " " } else { &text[at..] });
+            }
+        });
+        (row.response.rect, double_clicked, clicked_at)
     }
 
     /// After a single click on a line, once it's clearly not the first of a double-click, says
@@ -488,21 +491,21 @@ impl TranscriptView {
         .show(|ui| {
             let Some(u) = word else {
                 if ui.button(t!("delete-struck")).clicked() {
-                    choice = Some(Choice::DeleteStruck);
+                    choice = Some(Pick::DeleteStruck);
                 }
                 return;
             };
             for (i, alternative) in u.alternatives.iter().enumerate() {
                 if ui.button(alternative).clicked() {
-                    choice = Some(Choice::Reading(alternative.clone(), Via::Alternative(i)));
+                    choice = Some(Pick::Reading(alternative.clone(), Via::Alternative(i)));
                 }
             }
             // A deleted word's reading is among its alternatives.
             if !u.text.is_empty() && ui.button(t!("keep-word", word = u.text.as_str())).clicked() {
-                choice = Some(Choice::Reading(u.text.clone(), Via::Keep));
+                choice = Some(Pick::Reading(u.text.clone(), Via::Keep));
             }
             if !struck_ranges(&u.text).is_empty() && ui.button(t!("delete-struck")).clicked() {
-                choice = Some(Choice::DeleteStruck);
+                choice = Some(Pick::DeleteStruck);
             }
             ui.horizontal(|ui| {
                 let edit = ui.add(
@@ -515,7 +518,7 @@ impl TranscriptView {
                 let ok = egui::Button::new(t!("custom-reading-ok"));
                 let ok = ui.add_enabled(!custom.is_empty(), ok);
                 if !custom.is_empty() && (ok.clicked() || entered) {
-                    choice = Some(Choice::Reading(custom.to_owned(), Via::Custom));
+                    choice = Some(Pick::Reading(custom.to_owned(), Via::Custom));
                 }
             });
         });
@@ -533,20 +536,51 @@ impl TranscriptView {
     }
 }
 
+/// What can be clicked in each of `transcript`'s lines, in order: the uncertain words found at
+/// `spans`, and struck text that isn't part of one.
+fn line_targets(
+    transcript: &Transcript,
+    spans: &[Option<Span>],
+) -> Vec<Vec<(Target, Range<usize>)>> {
+    let mut targets: Vec<Vec<(Target, Range<usize>)>> = vec![Vec::new(); transcript.lines.len()];
+    for (i, span) in spans.iter().enumerate() {
+        // A deleted word has nothing left in the text to click; its box still does.
+        if let Some(Span { line, range }) = span
+            && !range.is_empty()
+        {
+            targets[*line].push((Target::Uncertain(i), range.clone()));
+        }
+    }
+    for (line, targets) in targets.iter_mut().enumerate() {
+        let struck = struck_ranges(&transcript.lines[line].text_md);
+        let overlaps =
+            |r: &Range<usize>, (_, w): &(Target, Range<usize>)| r.start < w.end && w.start < r.end;
+        let plain: Vec<_> = struck
+            .into_iter()
+            .filter(|r| !targets.iter().any(|t| overlaps(r, t)))
+            .map(|range| {
+                let target = Target::Struck {
+                    line,
+                    range: range.clone(),
+                };
+                (target, range)
+            })
+            .collect();
+        targets.extend(plain);
+        targets.sort_by_key(|(_, range)| range.start);
+    }
+    targets
+}
+
 /// Makes `choice` for `target`, returning what to log if it changed anything.
-fn apply(
-    transcript: &mut Transcript,
-    page: &str,
-    target: &Target,
-    choice: Choice,
-) -> Option<Event> {
+fn apply(transcript: &mut Transcript, page: &str, target: &Target, choice: Pick) -> Option<Event> {
     let (page, model) = (page.to_owned(), transcript.model.clone());
     match (target, choice) {
         (&Target::Uncertain(word), choice) => {
             let from = transcript.uncertain.get(word)?.text.clone();
             let (to, via) = match choice {
-                Choice::Reading(to, via) => (transcript.resolve(word, &to).then_some(to)?, via),
-                Choice::DeleteStruck => {
+                Pick::Reading(to, via) => (transcript.resolve(word, &to).then_some(to)?, via),
+                Pick::DeleteStruck => {
                     transcript.delete_struck(word).then_some(())?;
                     (transcript.uncertain[word].text.clone(), Via::DeleteStruck)
                 }
@@ -560,7 +594,7 @@ fn apply(
                 via,
             })
         }
-        (Target::Struck { line, range }, Choice::DeleteStruck) => {
+        (Target::Struck { line, range }, Pick::DeleteStruck) => {
             let from = transcript.lines.get(*line)?.text_md.clone();
             transcript
                 .delete_struck_at(*line, range.clone())
@@ -573,7 +607,7 @@ fn apply(
                 to: transcript.lines[*line].text_md.clone(),
             })
         }
-        (Target::Struck { .. }, Choice::Reading(..)) => None,
+        (Target::Struck { .. }, Pick::Reading(..)) => None,
     }
 }
 
@@ -581,13 +615,7 @@ fn apply(
 fn why_unfound(transcript: &Transcript, index: usize) -> String {
     let u = &transcript.uncertain[index];
     match transcript.why_unfound(index) {
-        Some(Unfound::EditedOut { .. }) => {
-            let word = u.alternatives.first().filter(|_| u.text.is_empty());
-            t!(
-                "unfound-edited-out",
-                word = word.unwrap_or(&u.text).as_str()
-            )
-        }
+        Some(Unfound::EditedOut { .. }) => t!("unfound-edited-out", word = u.reading()),
         _ => match u.alternatives.as_slice() {
             [] => t!("unfound-not-in-transcript", word = u.text.as_str()),
             others => t!(

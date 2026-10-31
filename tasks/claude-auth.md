@@ -1,7 +1,5 @@
 # Claude auth approach
 
-Spec wants "log in with Claude.ai". Likely not permitted for third-party apps without Anthropic approval — verify.
+Today credentials come from `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`; `scripts/with-claude-token.sh` fills the latter from `ant auth print-credentials --access-token`. Both bill the API, not a subscription.
 
-Fallbacks: API key in OS keychain (`keyring`); reuse `ant auth login` Console profile via `ant auth print-credentials --access-token` (Bearer + `anthropic-beta: oauth-2025-04-20`). Both bill the API, not a subscription.
-
-Meanwhile, [Claude OCR](done/claude-ocr.md) reads credentials from env vars.
+Open: an API key in the OS keychain (`keyring`), and whether "log in with Claude.ai" in the app is possible at all (likely not for third-party apps without Anthropic approval — verify).

@@ -7,10 +7,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use eframe::egui;
-use notebook_core::{CleanParams, DecodeError, Loaded, Quad};
+use notebook_core::clean::CleanParams;
+use notebook_core::decode::DecodeError;
+use notebook_core::geom::Quad;
+use notebook_core::loaded::Loaded;
 
 use crate::jobs::Jobs;
-use crate::transcribe::Waker;
+use crate::jobs::Waker;
 
 /// A dropped or picked file's name and contents, or why it couldn't be read.
 pub type Received = (String, Result<Vec<u8>, String>);
@@ -25,14 +28,14 @@ pub type Load =
     Arc<dyn Fn(&[u8], &CleanParams, Option<Quad>) -> Result<Loaded, DecodeError> + Send + Sync>;
 
 /// A page's name and bytes, and what loading them made.
-pub type Finished = (String, Arc<[u8]>, Result<Loaded, String>);
+pub(crate) type LoadOutcome = (String, Arc<[u8]>, Result<Loaded, String>);
 
 /// A page's name and bytes, which tell it from a later page of the same name.
-type Key = (String, Arc<[u8]>);
+type LoadKey = (String, Arc<[u8]>);
 
 pub struct Ingest {
     load: Load,
-    jobs: Jobs<Key, Result<Loaded, String>>,
+    jobs: Jobs<LoadKey, Result<Loaded, String>>,
 }
 
 impl Default for Ingest {
@@ -87,7 +90,7 @@ impl Ingest {
     }
 
     /// The next page that finished loading, or failed to, if any.
-    pub fn next(&mut self) -> Option<Finished> {
+    pub fn next(&mut self) -> Option<LoadOutcome> {
         let ((name, bytes), loaded) = self.jobs.next()?;
         Some((name, bytes, loaded))
     }

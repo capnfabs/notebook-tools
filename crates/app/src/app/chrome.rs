@@ -1,0 +1,206 @@
+//! Everything around the selected page: the drop zone, toolbar, page strip and status line.
+
+use eframe::egui;
+use egui::{Align, Layout, Shape};
+
+use super::commands::with_shortcut;
+use super::{NotebookApp, View};
+use crate::command::Command;
+use crate::t;
+use crate::ui::thumbnails;
+
+impl NotebookApp {
+    /// Where to drop photos, before there are any pages.
+    pub(super) fn show_drop_zone(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            let rect = ui.max_rect().shrink(24.0);
+            let stroke = if is_hovering_files(ui) {
+                ui.visuals().selection.stroke
+            } else {
+                ui.visuals().widgets.noninteractive.fg_stroke
+            };
+            let corners = [
+                rect.left_top(),
+                rect.right_top(),
+                rect.right_bottom(),
+                rect.left_bottom(),
+                rect.left_top(),
+            ];
+            ui.painter()
+                .extend(Shape::dashed_line(&corners, stroke, 8.0, 6.0));
+
+            ui.vertical_centered(|ui| {
+                ui.add_space(rect.center().y - ui.min_rect().top() - 40.0);
+                ui.heading(t!("drop-zone-title"));
+                ui.label(t!("drop-zone-formats"));
+                self.show_status(ui);
+            });
+        });
+    }
+
+    /// Everything but the drop zone: the toolbar, the page strip and status line, the selected
+    /// page in the current view, and any dialog.
+    pub(super) fn show_viewer(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("toolbar").show(ui, |ui| self.show_toolbar(ui));
+        egui::Panel::bottom("pages").show(ui, |ui| self.show_bottom_bar(ui));
+        egui::CentralPanel::default().show(ui, |ui| match self.view {
+            View::Original => self.show_original(ui),
+            View::Cleaned => self.show_cleaned(ui),
+            View::Transcribed => self.show_transcribed(ui),
+        });
+
+        self.delete_dialog(ui.ctx());
+        self.transcribe_all_dialog(ui.ctx());
+        self.retranscribe_dialog(ui.ctx());
+        self.reset_dialog(ui.ctx());
+        self.export
+            .dialog(ui.ctx(), &self.pages, self.selected_index());
+
+        if is_hovering_files(ui) {
+            show_drop_overlay(ui);
+        }
+    }
+
+    /// The views to pick from, which page is shown, and buttons to delete or sort pages.
+    fn show_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for (view, command) in [
+                (View::Original, Command::ViewOriginal),
+                (View::Cleaned, Command::ViewCleaned),
+                (View::Transcribed, Command::ViewTranscribed),
+            ] {
+                let button = egui::Button::selectable(self.view == view, command.label());
+                let button = ui
+                    .add_enabled(self.can(command), button)
+                    .on_disabled_hover_text(t!("no-transcriber-hint"));
+                if with_shortcut(button, command).clicked() {
+                    self.set_view(view);
+                }
+            }
+            ui.separator();
+            let index = self.selected_index();
+            if let Some(page) = self.pages.get(index) {
+                ui.label(t!(
+                    "page-position",
+                    name = page.name.as_str(),
+                    number = index + 1,
+                    count = self.pages.len()
+                ));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if self.command_button(ui, Command::Delete).clicked() {
+                    self.request_delete();
+                }
+                if self.command_button(ui, Command::SortByName).clicked() {
+                    self.sort_pages();
+                }
+            });
+        });
+    }
+
+    /// The page strip, and under it the status line and buttons to export and transcribe.
+    fn show_bottom_bar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        let selected = self.selected_index();
+        let thumbs = |name: &str| self.textures.thumbnail(name);
+        match self.thumbnails.show(ui, &self.pages, thumbs, selected) {
+            Some(thumbnails::Action::Select(name)) => self.selected = Some(name),
+            Some(thumbnails::Action::Move { from, to }) => self.move_page(from, to),
+            None => {}
+        }
+        ui.horizontal(|ui| {
+            self.show_status(ui);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let can_transcribe = self.transcriptions.can_send();
+                let can_show = self.transcriptions.can_show();
+                let mut export = self.command_button(ui, Command::ExportAs);
+                if !can_show {
+                    export = export.on_disabled_hover_text(t!("no-transcriber-hint"));
+                }
+                if export.clicked() {
+                    self.export.open_dialog();
+                }
+                // Export is Export As… until there's been an export to repeat.
+                let can_reexport = self.can(Command::Export) && self.export.can_reexport();
+                let reexport = egui::Button::new(t!("command-reexport"));
+                let reexport = ui.add_enabled(can_reexport, reexport);
+                if with_shortcut(reexport, Command::Export).clicked() {
+                    self.export
+                        .reexport(ui.ctx(), &self.pages, self.selected_index());
+                }
+                let transcribe_all = self
+                    .command_button(ui, Command::TranscribeAll)
+                    .on_disabled_hover_text(if can_transcribe {
+                        t!("all-transcribed-hint")
+                    } else {
+                        t!("no-transcriber-hint")
+                    });
+                if transcribe_all.clicked() {
+                    self.request_transcribe_all();
+                }
+            });
+        });
+    }
+
+    /// Loading and transcription progress, errors from the last drop, and what the last export
+    /// did.
+    pub(super) fn show_status(&self, ui: &mut egui::Ui) {
+        if self.ingest.pending() > 0 {
+            spinner(ui, &t!("status-loading", count = self.ingest.pending()));
+        }
+        match self.transcriptions.pending() {
+            0 => {}
+            count => spinner(ui, &t!("status-transcribing", count = count)),
+        }
+        if let Some(count) = self.export.running() {
+            spinner(ui, &t!("status-exporting", count = count));
+        }
+        for err in &self.errors {
+            ui.colored_label(ui.visuals().error_fg_color, err);
+        }
+        let now = ui.input(|i| i.time);
+        if let Some((hint, until)) = &self.hint
+            && now < *until
+        {
+            ui.label(hint);
+            ui.ctx().request_repaint_after_secs((*until - now) as f32);
+        }
+        match self.export.status() {
+            Some(Ok(done)) => {
+                ui.label(done);
+            }
+            Some(Err(err)) => {
+                ui.colored_label(ui.visuals().error_fg_color, err);
+            }
+            None => {}
+        }
+    }
+}
+
+pub(super) fn spinner(ui: &mut egui::Ui, label: &str) {
+    ui.horizontal(|ui| {
+        ui.spinner();
+        ui.label(label);
+    });
+}
+
+/// Darkens the window while files are dragged over it, saying they can be dropped.
+fn show_drop_overlay(ui: &egui::Ui) {
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::unique("drop_overlay"),
+    ));
+    let rect = ui.ctx().content_rect();
+    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        t!("drop-overlay"),
+        egui::TextStyle::Heading.resolve(ui.style()),
+        egui::Color32::WHITE,
+    );
+}
+
+pub(super) fn is_hovering_files(ui: &egui::Ui) -> bool {
+    ui.ctx().input(|i| !i.raw.hovered_files.is_empty())
+}

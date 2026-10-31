@@ -1,19 +1,7 @@
 #!/usr/bin/env bash
-# Deletes every cached transcription, so pages are sent to Claude again. The path matches
-# `Cache::default_dir` in crates/core/src/cache.rs; keep the two in step.
+# Deletes every cached transcription, so pages are sent to Claude again. The cache lives where
+# `Cache::default_dir` in crates/core/src/cache.rs says.
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
-if [[ "$(uname)" == Darwin ]]; then
-  cache_root="$HOME/Library/Caches"
-else
-  cache_root="${XDG_CACHE_HOME:-$HOME/.cache}"
-fi
-dir="$cache_root/notebook-tools/transcriptions"
-
-if [[ -d "$dir" ]]; then
-  count=$(find "$dir" -type f | wc -l | tr -d ' ')
-  rm -rf "$dir"
-  echo "Removed $count cached transcriptions from $dir"
-else
-  echo "No cache at $dir"
-fi
+exec cargo run -q -p notebook_core --bin clear-cache

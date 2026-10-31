@@ -1,6 +1,6 @@
 [package]
 name = "notebook_app"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
@@ -11,18 +11,19 @@ path = "src/main.rs"
 [dependencies]
 notebook_core.workspace = true
 eframe.workspace = true
+image.workspace = true
 env_logger = "0.11"
 jiff = "0.2"
-log = "0.4"
+log.workspace = true
 rayon.workspace = true
 rfd = "0.17"
 i18n-embed = { version = "0.16.0", features = ["fluent-system"] }
 i18n-embed-fl = "0.10.1"
 rust-embed = "8.13.0"
+similar = "2"
 
 [dev-dependencies]
 egui_kittest.workspace = true
-image.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

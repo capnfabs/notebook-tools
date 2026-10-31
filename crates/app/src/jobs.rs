@@ -1,9 +1,11 @@
 //! Work done off the UI thread. Each job has a key, so the UI can tell what a result is for when
 //! it collects it with [`Jobs::next`].
 
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use crate::transcribe::Waker;
+/// Wakes the UI, from the thread a job finished on, so it picks the result up.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// Runs a job somewhere other than the calling thread.
 type Spawn = fn(Box<dyn FnOnce() + Send>);

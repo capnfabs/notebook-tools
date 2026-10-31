@@ -3,8 +3,7 @@
 //! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. Entries
 //! keep the corners the photo was cropped to, so boxes can follow the page if its corners move.
 //! Entries from older versions are removed by [`Cache::prune`]. See
-//! `decisions/2026-10-24-transcription-cache.md`, `decisions/2026-10-24-model-selector.md`,
-//! `decisions/2026-10-30-boxes-follow-corners.md` and `decisions/2026-10-30-cache-housekeeping.md`.
+//! `decisions/2026-10-31-transcription-cache.md` and `decisions/2026-10-30-boxes-follow-corners.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -14,11 +13,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::clean::{Crop, Quad};
+use crate::claude_transcribe::{Fetched, OcrError, parse_response};
+use crate::clean::Crop;
+use crate::geom::Quad;
+use crate::json_file;
 use crate::llm_model::Model;
 use crate::markdown_style::MarkdownStyle;
-use crate::ocr::{CACHE_VERSION, Fetched, OcrError, parse_response};
 use crate::transcript::Transcript;
+
+/// Version of cached responses, which are also kept per [`Model`]. Bump it when the schema in
+/// [`crate::claude_transcribe`] changes, since old responses won't parse; a test there checks for
+/// that. After a prompt, model version or send-image change, bump it only if the cached
+/// transcriptions should be redone.
+pub const CACHE_VERSION: u32 = 1;
 
 /// A directory of cached responses, one file per photo and model.
 #[derive(Clone)]
@@ -43,7 +50,7 @@ impl Cache {
         Self { dir: dir.into() }
     }
 
-    /// The user's cache directory. `scripts/clear-cache.sh` removes it; keep the two in step.
+    /// The user's cache directory. `scripts/clear-cache.sh` removes it with [`Self::clear`].
     pub fn default_dir() -> Option<PathBuf> {
         Some(dirs::cache_dir()?.join("notebook-tools/transcriptions"))
     }
@@ -83,6 +90,18 @@ impl Cache {
             }
         }
         Ok(removed)
+    }
+
+    /// Removes the cache directory and everything in it, returning how many files went. A missing
+    /// directory has nothing to clear.
+    pub fn clear(&self) -> io::Result<usize> {
+        let files = match std::fs::read_dir(&self.dir) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+            dir => dir?.filter(|e| e.as_ref().is_ok_and(|e| e.path().is_file())),
+        };
+        let count = files.count();
+        std::fs::remove_dir_all(&self.dir)?;
+        Ok(count)
     }
 
     /// The photo's transcript by `model` in `style`, if there's a readable entry.
@@ -134,18 +153,18 @@ impl Cache {
         fetch: impl FnOnce() -> Result<Fetched, OcrError>,
     ) -> Result<Transcript, OcrError> {
         let path = self.entry_path(page_bytes, model);
-        let Fetched { status, body, crop } = fetch()?;
-        let transcript = parse_response(status, &body, crop, style)?;
+        let fetched = fetch()?;
+        let transcript = fetched.parse(style)?;
         let stored_at = unix_secs(SystemTime::now());
-        let entry = serde_json::from_slice(&body).map(|response| Entry {
-            image_size: crop.size,
-            corners: crop.corners,
+        let entry = serde_json::from_slice(&fetched.body).map(|response| Entry {
+            image_size: fetched.crop.size,
+            corners: fetched.crop.corners,
             response,
             stored_at,
         });
         match entry
             .map_err(io::Error::from)
-            .and_then(|e| write(&path, &e))
+            .and_then(|e| json_file::write(&path, &e))
         {
             Ok(()) => Ok(Transcript {
                 stored_at: Some(from_unix_secs(stored_at)),
@@ -187,13 +206,6 @@ fn load(path: &Path, style: &MarkdownStyle) -> Option<Transcript> {
             None
         }
     }
-}
-
-fn write(path: &Path, entry: &Entry) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, serde_json::to_vec_pretty(entry)?)
 }
 
 fn unix_secs(time: SystemTime) -> u64 {

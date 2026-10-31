@@ -1,9 +1,0 @@
----
-source: crates/core/tests/ocr.rs
-expression: transcript.markdown()
----
-# Thurs 23 Oct
-- ring the plumber re: ~~tap~~ shower
-- [x] buy eggs
-
-Idea: notebook OCR w/ Claude [drawing: arrow to a box]

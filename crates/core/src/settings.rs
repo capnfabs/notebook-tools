@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::json_file;
 use crate::llm_model::Model;
 use crate::markdown_style::MarkdownStyle;
 
@@ -44,10 +45,7 @@ impl Settings {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, serde_json::to_vec_pretty(self)?)
+        json_file::write(path, self)
     }
 }
 

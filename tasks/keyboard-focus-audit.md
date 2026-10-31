@@ -7,3 +7,4 @@ Some things to fix:
 - Tabbing through the transcript view is _awesome_ but:
      - it doesn't scroll the page as the focus changes, and probably should
      - selecting a correction doesn't focus the correction popover and should. Pressing esc from a correction dialog should move the focus back to where you were beforehand.
+     - having focus on a given 'element' should highlight the line, like on mouseover.

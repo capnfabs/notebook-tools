@@ -8,9 +8,9 @@ use std::sync::LazyLock;
 
 use i18n_embed::LanguageLoader;
 use i18n_embed::fluent::{FluentLanguageLoader, fluent_language_loader};
-use notebook_core::DecodeError;
+use notebook_core::claude_transcribe::OcrError;
+use notebook_core::decode::DecodeError;
 use notebook_core::export::PdfError;
-use notebook_core::ocr::OcrError;
 use rust_embed::RustEmbed;
 
 #[doc(hidden)]

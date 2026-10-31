@@ -1,49 +1,48 @@
 Notebook-tools is a tool for OCR-ing a handwritten notebook.
 
+## Build
+
+Needs Rust and libheif (1.19+) + pkg-config:
+
+```sh
+brew install libheif pkg-config
+```
+
+The app is the `notebook_app` package; its binary is called `notebook-tools`.
+
 ## Run
 
 ```sh
-# run w/ logs (debug + eval) and anthropic auth token
+# run w/ logs (debug + eval) and a fresh anthropic token from `ant`
 scripts/run.sh
 
-# more manual steps below:
+# the same without llm transcription (and therefore without spending money).
+# Still loads saved transcripts from cache.
+scripts/run.sh --offline
+```
 
-# run desktop app
-cargo run -p notebook_app
+## Test
 
-# with a fresh anthropic token from `ant`, required for transcription
-scripts/with-claude-token.sh cargo run -p notebook_app
-
-# with debug logs including timing info
-RUST_LOG=notebook_app=debug cargo run -p notebook_app
-
-# with eval logs for comparing models: per-page cost and timing, corrections, and how a page's
-# transcript differs from another model's cached one.
-RUST_LOG=eval=info cargo run -p notebook_app
-
-# lo-fi CI
+```sh
+# lo-fi CI: formatting, clippy and every test
 scripts/check.sh
+
+# update golden tests
+UPDATE_GOLDEN=1 cargo test -p notebook_core --test golden
+
+# photos corner detection can't handle yet
+cargo test -p notebook_core --test golden -- --ignored
+
+# snapshot (insta) changes: review and accept
+cargo insta review
+
+# send a real photo to Claude; costs money. OCR_LIVE_PHOTO and OCR_LIVE_MODEL=sonnet pick another
+scripts/with-claude-token.sh cargo test -p notebook_core --test claude_transcribe -- --ignored live
 ```
 
 ## Tools
 
-### cache
-
 ```sh
-# does what it says
+# clear caches
 scripts/clear-cache.sh
-```
-
-### bounding box investigation
-```sh
-# bbox spike: send photos to Claude at each effort level and image size, then draw the returned
-# boxes over each photo into target/tmp/bbox-spike/. Costs money. `--only <variant>` (e.g.
-# high-capped) sends just one variant; runs that already got an answer are skipped.
-scripts/with-claude-token.sh cargo run -p notebook_core --example bbox_spike -- run sample_images/*.jpeg
-
-# redraw the boxes from the recorded fixtures, no API calls
-cargo run -p notebook_core --example bbox_spike -- \
-  draw crates/core/tests/fixtures/ocr/bbox-spike --photos crates/core/tests/fixtures \
-  --out target/tmp/bbox-spike-fixtures
-
 ```

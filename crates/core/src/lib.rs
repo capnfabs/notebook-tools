@@ -1,22 +1,23 @@
-//! UI-agnostic logic for notebook-tools. Keep the public API to plain data types.
+//! Everything notebook-tools does that isn't UI: decoding and cleaning photos, transcribing them
+//! with Claude, caching and correcting transcripts, and exporting them. The app imports items by
+//! their module path, e.g. `notebook_core::page::Page`; nothing is re-exported here. No UI types,
+//! so a native mobile shell could use it too (`decisions/2026-10-23-egui-desktop-native-mobile-shell.md`).
+//! See `decisions/2026-10-31-code-layout.md`.
 
 pub mod cache;
+pub mod claude_transcribe;
 pub mod clean;
-pub mod compare;
 pub mod decode;
 pub mod export;
+pub mod geom;
+pub mod imaging;
+mod json_file;
 pub mod llm_model;
+pub mod loaded;
 pub mod markdown_style;
-pub mod ocr;
 pub mod page;
 pub mod reframe;
 pub mod settings;
+#[cfg(test)]
+mod test_images;
 pub mod transcript;
-
-pub use clean::{
-    CleanParams, CleanReport, Cleaned, Crop, Cropped, LightingReport, NoOutline, Quad, clean,
-    crop_to_page, detect_outline, is_page_shaped, order_corners, photo_corners,
-};
-pub use decode::{DecodeError, decode};
-pub use image::RgbaImage;
-pub use page::{Loaded, Page, Pages, shrink_to_fit};

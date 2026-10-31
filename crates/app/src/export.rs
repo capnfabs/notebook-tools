@@ -12,11 +12,11 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use eframe::egui;
 use notebook_core::export::PdfPage;
+use notebook_core::page::{Page, Pages};
 use notebook_core::transcript::Transcript;
-use notebook_core::{Page, Pages};
 
 use crate::t;
-use crate::ui::dialog::{self, Action, Choice};
+use crate::ui::dialog::{self, Choice, Stakes};
 
 /// Asks where to save a file, given a suggested file name. `None` if the user cancelled.
 pub type SavePath = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
@@ -39,27 +39,27 @@ pub enum Format {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct Settings {
+pub struct ExportOptions {
     pub scope: Scope,
     pub format: Format,
 }
 
 /// What the last export did, so Re-export can repeat it.
 struct Last {
-    settings: Settings,
+    settings: ExportOptions,
     /// Where the file went; `None` for the clipboard.
     path: Option<PathBuf>,
 }
 
 /// An export running on its thread.
 struct Running {
-    settings: Settings,
+    settings: ExportOptions,
     pages: usize,
-    done: Receiver<Result<Done, String>>,
+    done: Receiver<Result<Exported, String>>,
 }
 
 /// What a finished export did.
-struct Done {
+struct Exported {
     message: String,
     /// Where the file went; `None` for the clipboard.
     path: Option<PathBuf>,
@@ -72,7 +72,7 @@ pub struct Export {
     save_path: Option<SavePath>,
     dialog_open: bool,
     /// What the dialog shows; kept from one export to the next.
-    settings: Settings,
+    settings: ExportOptions,
     last: Option<Last>,
     running: Option<Running>,
     /// What the last export did, or why it failed.
@@ -166,7 +166,7 @@ impl Export {
             if let Some(blocked) = &blocked {
                 ui.colored_label(ui.visuals().warn_fg_color, blocked);
             }
-            dialog::buttons(ui, &t!("export-go"), Action::Default, blocked.is_none())
+            dialog::buttons(ui, &t!("export-go"), Stakes::Safe, blocked.is_none())
         });
         if choice.is_some() {
             self.dialog_open = false;
@@ -188,7 +188,7 @@ impl Export {
     fn run(
         &mut self,
         ctx: &egui::Context,
-        settings: Settings,
+        settings: ExportOptions,
         path: Option<PathBuf>,
         pages: &Pages,
         selected: usize,
@@ -219,6 +219,8 @@ impl Export {
                 path
             }
         };
+        // A thread and channel of its own rather than [`crate::jobs::Jobs`], so a panic shows as
+        // the channel disconnecting.
         let ctx = ctx.clone();
         let (tx, done) = mpsc::channel();
         let pages = in_scope.len();
@@ -246,7 +248,7 @@ struct Snapshot {
 }
 
 /// Exports `pages` as `format` to `path`, or for the clipboard if there's no path.
-fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<Done, String> {
+fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<Exported, String> {
     // Messages name the page when there's one.
     let (count, name) = (pages.len(), pages.first().map_or("", |p| p.name.as_str()));
     let by_name: Vec<(&str, &Transcript)> = pages
@@ -255,7 +257,7 @@ fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<D
         .collect();
     let markdown = || notebook_core::export::markdown(&by_name);
     let Some(path) = path else {
-        return Ok(Done {
+        return Ok(Exported {
             message: t!("export-copied", count = count, name = name),
             path: None,
             clipboard: Some(markdown()),
@@ -280,7 +282,7 @@ fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<D
         Format::MarkdownFile | Format::MarkdownClipboard => markdown().into_bytes(),
     };
     match std::fs::write(&path, contents) {
-        Ok(()) => Ok(Done {
+        Ok(()) => Ok(Exported {
             message: t!(
                 "export-saved",
                 count = count,
@@ -332,7 +334,7 @@ fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot
             let (loaded, transcript) = (p.loaded.as_ref()?, p.transcript.as_ref()?);
             Some(Snapshot {
                 name: p.name.clone(),
-                cleaned: loaded.cleaned.clone(),
+                cleaned: loaded.cleaned_jpeg.clone(),
                 size: loaded.report.output_size,
                 // Boxes follow the page if its corners moved since it was transcribed, staying
                 // upright: `decisions/2026-10-30-pdf-text-upright-boxes.md`.

@@ -1,6 +1,6 @@
 //! The macOS menu bar, built from [`MENUS`] with muda. It takes the keys of enabled commands
 //! before egui sees them; a disabled command's key reaches egui as an ordinary key press, which is
-//! how a text field keeps ← and ⌘⌫.
+//! how a text field keeps ← and ⌘⌫. See `decisions/2026-10-29-mac-menu.md`.
 
 use std::sync::mpsc::{self, Receiver};
 

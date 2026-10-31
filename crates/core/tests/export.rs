@@ -1,23 +1,11 @@
 //! Export output for recorded transcripts.
 
-use std::path::Path;
+mod common;
 
-use notebook_core::markdown_style::MarkdownStyle;
-use notebook_core::ocr::parse_response;
-use notebook_core::transcript::Transcript;
-use notebook_core::{CleanParams, Crop, Loaded, export};
-
-fn recorded(name: &str) -> Transcript {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/ocr/{name}.json"));
-    parse_response(
-        200,
-        &std::fs::read(path).unwrap(),
-        Crop::whole(1200, 900),
-        &MarkdownStyle::default(),
-    )
-    .unwrap()
-}
+use common::{fixture, recorded};
+use notebook_core::clean::{CleanParams, Crop};
+use notebook_core::export;
+use notebook_core::loaded::Loaded;
 
 #[test]
 fn markdown_names_each_page() {
@@ -67,15 +55,6 @@ fn text_layer_follows_the_crop() {
     }
 }
 
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .unwrap()
-}
-
 #[test]
 fn pdf_has_a_searchable_page_each_and_the_markdown() {
     let page = Loaded::new(
@@ -89,13 +68,13 @@ fn pdf_has_a_searchable_page_each_and_the_markdown() {
     let pages = [
         export::PdfPage {
             name: "a.jpg",
-            jpeg: &page.cleaned,
+            jpeg: &page.cleaned_jpeg,
             size: page.report.output_size,
             transcript: &first,
         },
         export::PdfPage {
             name: "b.jpg",
-            jpeg: &page.cleaned,
+            jpeg: &page.cleaned_jpeg,
             size: page.report.output_size,
             transcript: &second,
         },

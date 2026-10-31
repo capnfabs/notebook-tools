@@ -188,7 +188,7 @@ settings-title = Settings
 settings-model = Transcription model
 model-opus = Opus
 model-sonnet = Sonnet
-# What each model is good for. From `decisions/2026-10-24-sonnet-quality.md`.
+# What each model is good for. From `decisions/2026-10-31-transcription-models.md`.
 model-opus-tradeoffs = More accurate, and handles formatting better, but slower and more expensive. Best if you're in a hurry and want to skip proofreading, or your handwriting is terrible.
 model-sonnet-tradeoffs = Not quite as accurate (but still really good). Faster, half the price.
 settings-model-hint = For new transcriptions. Cached transcripts from either model are retained and used; force retranscription if you want to switch.

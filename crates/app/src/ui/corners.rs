@@ -8,12 +8,12 @@
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{Color32, CursorIcon, Key, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo};
-use notebook_core::{Quad, is_page_shaped, order_corners};
+use notebook_core::geom::{Quad, is_page_shaped, order_corners};
 
 use crate::t;
 
 /// What corner `i`'s handle is called, in [`Quad`] order.
-pub fn label(i: usize) -> String {
+fn label(i: usize) -> String {
     match i {
         0 => t!("corner-top-left"),
         1 => t!("corner-top-right"),
@@ -149,12 +149,7 @@ impl Corners {
             }
         }
 
-        let painter = ui.painter_at(image_rect.expand(GRAB_RADIUS));
-        let (line, fill) = colours(ui);
-        painter.add(Shape::closed_line(corners.to_vec(), line));
-        for corner in corners {
-            painter.circle(corner, HANDLE_RADIUS, fill, line);
-        }
+        paint_corners(ui, image_rect, corners);
         changed
     }
 
@@ -234,4 +229,15 @@ fn furthest(from: Pos2, to: Pos2, fits: impl Fn(Pos2) -> bool) -> Pos2 {
 fn colours(ui: &egui::Ui) -> (Stroke, Color32) {
     let accent = ui.visuals().selection.bg_fill;
     (Stroke::new(2.0, accent), Color32::WHITE)
+}
+
+/// The page's outline through `corners`, on screen, with a handle on each, over the image at
+/// `image_rect`.
+fn paint_corners(ui: &egui::Ui, image_rect: Rect, corners: [Pos2; 4]) {
+    let painter = ui.painter_at(image_rect.expand(GRAB_RADIUS));
+    let (line, fill) = colours(ui);
+    painter.add(Shape::closed_line(corners.to_vec(), line));
+    for corner in corners {
+        painter.circle(corner, HANDLE_RADIUS, fill, line);
+    }
 }

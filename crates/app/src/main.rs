@@ -1,3 +1,6 @@
+//! Starts the app with real credentials, cache, settings file and native dialogs. Tests build
+//! [`NotebookApp`] with stand-ins for these instead.
+
 use notebook_app::{NotebookApp, t};
 use notebook_core::cache::Cache;
 use notebook_core::settings::Settings;
@@ -26,6 +29,7 @@ fn main() -> eframe::Result {
 }
 
 /// Asks where to save with the system's save dialog, offering the suggested name's file type.
+/// See `decisions/2026-10-23-rfd-save-dialog.md`.
 fn save_dialog() -> notebook_app::SavePath {
     std::sync::Arc::new(|suggested| {
         let extension = std::path::Path::new(suggested)
@@ -59,10 +63,10 @@ fn file_picker() -> notebook_app::PickFiles {
 
 /// Transcribes with Claude when credentials are in the environment, caching what comes back.
 /// Without credentials, cached transcripts still load: see
-/// `decisions/2026-10-30-cache-without-credentials.md`.
+/// `decisions/2026-10-31-transcription-cache.md`.
 fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
     use notebook_app::eval_log;
-    use notebook_core::ocr::{Credentials, fetch_page};
+    use notebook_core::claude_transcribe::{Credentials, fetch_page};
 
     let cache = Cache::default_dir().map(Cache::new);
     match &cache {

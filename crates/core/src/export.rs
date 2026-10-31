@@ -1,8 +1,8 @@
 //! Transcribed pages as files to save.
 //!
 //! PDF: each page is the cleaned image with an invisible text layer, one run of text per line, laid
-//! over the line's box (`decisions/2026-10-23-line-level-pdf-text.md`). The markdown rides along as
-//! an embedded file. See `decisions/2026-10-28-pdf-text-layer.md`.
+//! over the line's box. The markdown rides along as an embedded file. See
+//! `decisions/2026-10-31-pdf-export.md`.
 
 use std::fmt;
 
@@ -38,7 +38,7 @@ pub fn markdown(pages: &[(&str, &Transcript)]) -> String {
 /// A transcribed page to put in a PDF: its name, its cleaned image and its transcript.
 pub struct PdfPage<'a> {
     pub name: &'a str,
-    /// [`crate::Loaded::cleaned`], embedded as it is.
+    /// [`crate::loaded::Loaded::cleaned_jpeg`], embedded as it is.
     pub jpeg: &'a [u8],
     /// The JPEG's size in pixels.
     pub size: (u32, u32),
@@ -194,7 +194,7 @@ fn draw_line(surface: &mut Surface, font: &Font, face: &ttf_parser::Face, line: 
 
 /// `text_md`, one line of markdown, as the plain text it renders to: without list, heading, quote
 /// or checkbox markers, emphasis or code marks, or link targets.
-pub fn plain_text(text_md: &str) -> String {
+fn plain_text(text_md: &str) -> String {
     let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut text = String::new();
     for event in Parser::new_ext(text_md, options) {

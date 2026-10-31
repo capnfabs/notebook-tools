@@ -1,17 +1,9 @@
 //! HEIC decoding, against the JPEG it was converted from (`sips -s format heic`).
 
-use std::path::Path;
+mod common;
 
-use notebook_core::decode;
-
-fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures")
-            .join(name),
-    )
-    .unwrap()
-}
+use common::fixture;
+use notebook_core::decode::decode;
 
 #[test]
 fn heic_decodes_like_the_jpeg_it_came_from() {

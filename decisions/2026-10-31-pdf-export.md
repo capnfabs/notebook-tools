@@ -1,0 +1,5 @@
+# PDF export: krilla, cleaned image, line-level invisible text, embedded `.md`
+
+PDFs are built with `krilla` (pure Rust; `pdf-writer` if we ever need lower-level control). Each page is the cleaned image as a JPEG at 300 DPI, which sets its physical size, so pages keep their own shape. Over it, each line's text is stretched across the line's box at fill opacity 0, because krilla 0.8 has no invisible text mode; it searches, selects and copies like OCR text. Lines, not words or pages, because Claude returns a box for every line but not every word. The text is plain: list, heading and emphasis markers are stripped. The font is egui's bundled Ubuntu Light, already in the binary; characters it lacks may not search well. Upright boxes for turned crops: `2026-10-30-pdf-text-upright-boxes.md`.
+
+The full markdown is embedded as an attachment, so nothing is lost. Export, markdown included, runs on a thread with a spinner, because a PDF of a whole notebook takes a moment. Reason: Human Taste (line level, DPI, stripped text plus attachment, background export); unquestioned agent recommendation (krilla, opacity, font).

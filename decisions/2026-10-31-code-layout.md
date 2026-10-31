@@ -1,0 +1,5 @@
+# Code layout: small modules by job, core imported by module path
+
+`notebook_core` holds everything that isn't UI, one module per job (`claude_transcribe`, `cache`, `clean/`, `geom`, `imaging`, `loaded`, `page`, `transcript/`, …), and re-exports nothing at its root: the app imports by module path (`notebook_core::page::Page`), so there's one name for each thing and the path says where it lives. Items only core uses stay private. Comparing transcripts between models is in the app's `eval_log`, its only user. In the app, `NotebookApp` stays one struct, but its methods are split over `app/` by what they do, with self-contained state (`Textures`) in structs of its own.
+
+The viewer tests are one test binary, `tests/viewer/`, split by feature, with shared helpers in `common.rs`; core's integration tests share fixtures through `tests/common/`. One binary keeps link time down. Words: a page's four points are its *corners* (type `Quad`) everywhere. Reason: unquestioned agent recommendation, from a readability review.

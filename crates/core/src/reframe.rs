@@ -8,16 +8,17 @@
 
 use imageproc::geometric_transformations::Projection;
 
-use crate::clean::{Crop, Quad};
+use crate::clean::Crop;
+use crate::geom::{Quad, rect_corners};
 use crate::transcript::{Bbox, Transcript};
 
 /// Share of a line's box that must fall outside a crop, beyond what fell outside the crop it was
 /// transcribed from, for it to count as cut off.
-pub const CUT_OFF_SHARE: f32 = 0.5;
+const CUT_OFF_SHARE: f32 = 0.5;
 
 /// Largest share of a crop that may lie outside the crop its transcript was made from before the
 /// page needs transcribing again.
-pub const MAX_UNTRANSCRIBED: f32 = 0.1;
+const MAX_UNTRANSCRIBED: f32 = 0.1;
 
 /// Maps points from one [`Crop`] of a photo to another.
 #[derive(Clone, Copy, Debug)]
@@ -31,9 +32,8 @@ impl Reframe {
         if from == to {
             return Self { projection: None };
         }
-        let to_photo =
-            Projection::from_control_points(rect_corners(from.size), tuples(from.corners));
-        let from_photo = Projection::from_control_points(tuples(to.corners), rect_corners(to.size));
+        let to_photo = Projection::from_control_points(sized(from.size), tuples(from.corners));
+        let from_photo = Projection::from_control_points(tuples(to.corners), sized(to.size));
         let projection = match (to_photo, from_photo) {
             (Some(to_photo), Some(from_photo)) => to_photo.and_then(from_photo),
             // Corners too degenerate to straighten; scaling is the best guess.
@@ -52,7 +52,7 @@ impl Reframe {
         self.projection.is_none()
     }
 
-    pub fn point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+    fn point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
         match &self.projection {
             Some(projection) => {
                 let (x, y) = projection * &(x, y);
@@ -95,10 +95,10 @@ impl Transcript {
     pub fn reframed(&self, to: Crop) -> Transcript {
         let reframe = Reframe::new(self.crop, to);
         let mut transcript = self.clone();
-        let original = transcript.original.as_deref_mut();
+        let before = transcript.before_corrections.as_deref_mut();
         let texts = [(&mut transcript.lines, &mut transcript.uncertain)]
             .into_iter()
-            .chain(original.map(|o| (&mut o.lines, &mut o.uncertain)));
+            .chain(before.map(|b| (&mut b.lines, &mut b.uncertain)));
         for (lines, uncertain) in texts {
             let boxes = lines.iter_mut().map(|l| &mut l.bbox);
             for bbox in boxes.chain(uncertain.iter_mut().map(|u| &mut u.bbox)) {
@@ -145,9 +145,9 @@ fn tuples(quad: Quad) -> [(f32, f32); 4] {
     quad.map(|[x, y]| (x, y))
 }
 
-fn rect_corners((w, h): (u32, u32)) -> [(f32, f32); 4] {
-    let (w, h) = (w as f32, h as f32);
-    [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
+/// The corners of an image of `size`, as a projection's control points.
+fn sized((w, h): (u32, u32)) -> [(f32, f32); 4] {
+    tuples(rect_corners(w, h))
 }
 
 fn rect_bbox((w, h): (u32, u32)) -> Bbox {
@@ -329,12 +329,8 @@ mod tests {
         let to = rect(0.0, 100.0, 800.0, 1100.0);
         let t = Transcript {
             uncertain: vec![Uncertain {
-                line: 0,
-                text: "text".to_owned(),
                 bbox: Some([10.0, 150.0, 60.0, 200.0]),
-                alternatives: vec![],
-                resolved: false,
-                deleted: None,
+                ..Uncertain::for_test(0, "text")
             }],
             ..lined(from)
         };

@@ -1,12 +1,11 @@
 //! The Claude models that transcribe pages, and what they cost.
 //!
-//! See `decisions/2026-10-24-model-selector.md` and `decisions/2026-10-24-sonnet-quality.md`.
+//! See `decisions/2026-10-31-transcription-models.md`.
 
 use serde::{Deserialize, Serialize};
 
-/// Which Claude transcribes. Both see images at the same resolution, so [`crate::ocr::MAX_IMAGE_PIXELS`]
-/// suits
-/// either.
+/// Which Claude transcribes. Both see images at the same resolution, so
+/// [`crate::claude_transcribe::MAX_IMAGE_PIXELS`] suits either.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Model {
@@ -42,7 +41,7 @@ impl Model {
     }
 
     /// Dollars per million input and output tokens.
-    pub fn prices(self) -> (f64, f64) {
+    fn prices(self) -> (f64, f64) {
         match self {
             Self::Opus => (4.0, 20.0),
             Self::Sonnet => (2.0, 10.0),

@@ -1,15 +1,16 @@
 //! The transcription cache, with recorded responses standing in for the API.
 
 use std::cell::Cell;
-use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use notebook_core::Crop;
-use notebook_core::cache::Cache;
-use notebook_core::compare;
+mod common;
+
+use common::response as fixture;
+use notebook_core::cache::{CACHE_VERSION, Cache};
+use notebook_core::claude_transcribe::{Fetched, OcrError};
+use notebook_core::clean::Crop;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
-use notebook_core::ocr::{CACHE_VERSION, Fetched, OcrError};
 use notebook_core::transcript::Transcript;
 use tempfile::TempDir;
 
@@ -19,11 +20,6 @@ const CROP: Crop = Crop {
     corners: [[10.0, 20.0], [1300.0, 30.0], [1290.0, 1000.0], [5.0, 990.0]],
     size: (1200, 900),
 };
-
-fn fixture(name: &str) -> Vec<u8> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ocr");
-    std::fs::read(dir.join(format!("{name}.json"))).unwrap()
-}
 
 /// An empty cache of its own for each test, in a directory removed when dropped. Unique, so
 /// overlapping runs of the suite, from two terminals say, don't share entries.
@@ -318,27 +314,6 @@ fn refresh_writes_only_its_models_entry() {
     );
 }
 
-#[test]
-fn compared_with_other_models_entries() {
-    let (_dir, cache) = cache("compare");
-    let fetches = Cell::new(0);
-    let opus = transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
-    let sonnet = Transcript {
-        model: Model::Sonnet.id().to_owned(),
-        ..opus.clone()
-    };
-    let comparisons = compare::with_cached(&cache, PHOTO, &sonnet);
-    assert_eq!(comparisons.len(), 1);
-    assert_eq!(comparisons[0].0, Model::Opus);
-    assert_eq!(comparisons[0].1.similarity, 1.0);
-
-    assert!(
-        compare::with_cached(&cache, PHOTO, &opus).is_empty(),
-        "not with its own model's entry"
-    );
-    assert!(compare::with_cached(&cache, b"another photo", &sonnet).is_empty());
-}
-
 /// Stores `fixture("success")` for [`PHOTO`] the way entries were before they kept corners.
 fn write_entry_without_corners(cache: &Cache) {
     let path = cache.entry_path(PHOTO, Model::Opus);
@@ -415,4 +390,15 @@ fn pruning_removes_only_older_versions_entries() {
 fn pruning_a_missing_cache_does_nothing() {
     let (dir, _cache) = cache("prune_missing");
     assert_eq!(Cache::new(dir.path().join("missing")).prune().unwrap(), 0);
+}
+
+#[test]
+fn clearing_removes_every_entry() {
+    let (dir, cache) = cache("clear");
+    let fetches = Cell::new(0);
+    transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+    transcribe(&cache, b"another photo", 200, "success", &fetches).unwrap();
+    assert_eq!(cache.clear().unwrap(), 2);
+    assert!(!dir.path().exists());
+    assert_eq!(cache.clear().unwrap(), 0, "nothing left to clear");
 }

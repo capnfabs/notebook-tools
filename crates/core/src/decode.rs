@@ -1,7 +1,7 @@
 //! Turns image files into upright pixels. Each format has a [`Decoder`]; [`decode`] picks the one
 //! that recognizes the file. Nothing past here knows which format a page came from.
 //!
-//! See `decisions/2026-10-23-image-abstraction-and-heic.md` and `decisions/2026-10-28-system-libheif.md`.
+//! See `decisions/2026-10-31-image-decoding.md`.
 
 use std::fmt;
 use std::io::Cursor;
@@ -10,7 +10,7 @@ use image::{DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, RgbaImage
 use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 
 /// Decodes one image format.
-pub trait Decoder: Sync {
+trait Decoder: Sync {
     /// Whether `bytes` look like this decoder's format, from their first few bytes.
     fn recognizes(&self, bytes: &[u8]) -> bool;
     /// `bytes` decoded and turned upright.
@@ -55,7 +55,7 @@ pub fn decode(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
 }
 
 /// JPEG and PNG, through the `image` crate, applying the EXIF orientation.
-pub struct ImageCrate;
+struct ImageCrate;
 
 impl Decoder for ImageCrate {
     fn recognizes(&self, bytes: &[u8]) -> bool {
@@ -78,7 +78,7 @@ impl Decoder for ImageCrate {
 }
 
 /// HEIC, as iPhones take, through libheif.
-pub struct Heif;
+struct Heif;
 
 impl Decoder for Heif {
     fn recognizes(&self, bytes: &[u8]) -> bool {
@@ -114,16 +114,9 @@ impl Decoder for Heif {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_images::png;
     use image::codecs::jpeg::JpegEncoder;
     use image::{ImageEncoder as _, Rgb, RgbImage, Rgba};
-
-    fn png(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbaImage::from_fn(w, h, |x, y| Rgba([x as u8, y as u8, 0, 255]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
 
     /// A JPEG whose EXIF says "rotate 90° clockwise to display", as iPhones write for portrait shots.
     fn rotated_jpeg(w: u32, h: u32) -> Vec<u8> {

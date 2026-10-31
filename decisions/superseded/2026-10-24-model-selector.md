@@ -1,0 +1,7 @@
+# Opus/Sonnet selector, cache keyed by model
+
+A "Transcription model" setting (in Settings since `2026-10-30-settings-dialog.md`; first a toolbar dropdown) picks Opus 5.5 or Sonnet 5.5 (both at effort `high`) for new and forced transcriptions. The model's family (`opus`/`sonnet`, not version or effort) is part of the cache filename, `{sha256}-v{CACHE_VERSION}-{model}.json`, so each model keeps its own entry per photo. Lookups prefer the selected model's entry and fall back to the other's: a page cached by either model isn't sent again unless forced. Changing it changes nothing already loaded. Sonnet 5.5 is in the same high-resolution image tier as Opus (2576px, 4,784 visual tokens), so `MAX_IMAGE_PIXELS` holds for both. Existing entries were renamed by hand on the one machine that had them; no version bump.
+
+Eval loglines (target `eval`: per-transcript tokens, cost, latency, session cost per model, comparisons with the other model's cached transcript, and each correction) are for judging whether Sonnet is good enough. Reason: Human Taste (cache key, lookup preference, logged events); agent recommendation accepted for the rest.
+
+Superseded by `2026-10-31-transcription-models.md`.

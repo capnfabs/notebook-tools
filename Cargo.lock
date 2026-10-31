@@ -3662,6 +3662,7 @@ dependencies = [
  "rayon",
  "rfd",
  "rust-embed",
+ "similar",
  "tempfile",
 ]
 
@@ -3685,7 +3686,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "similar",
  "tempfile",
  "ttf-parser",
 ]

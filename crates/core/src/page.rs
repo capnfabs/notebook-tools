@@ -1,20 +1,10 @@
-//! Opened image files and the ordered set of them.
+//! The pages the user opened, in order.
 
 use std::sync::Arc;
 
-use image::buffer::ConvertBuffer as _;
-use image::{RgbImage, RgbaImage, imageops};
-
-use crate::clean::{CleanParams, CleanReport, Quad, clean};
-use crate::decode::{DecodeError, decode};
+use crate::geom::Quad;
+use crate::loaded::Loaded;
 use crate::transcript::Transcript;
-
-/// Longest side of the thumbnails in [`Loaded`], in pixels. Big enough for the viewer's thumbnails
-/// on a 2x display.
-pub const THUMBNAIL_SIDE_PX: u32 = 256;
-
-/// Quality of the JPEGs in [`Loaded`]. The cleaned one goes into PDFs as it is.
-pub const PAGE_JPEG_QUALITY: u8 = 85;
 
 /// An image file the user opened.
 ///
@@ -45,89 +35,6 @@ impl Page {
             corners: None,
         }
     }
-}
-
-/// A page's file decoded and cleaned once, kept as JPEGs no longer than
-/// [`CleanParams::max_output_side`] so the viewer and the PDF never decode the full photo.
-pub struct Loaded {
-    /// The photo as it was.
-    pub original: Arc<[u8]>,
-    /// The photo [`clean`]ed.
-    pub cleaned: Arc<[u8]>,
-    pub thumbnail: RgbaImage,
-    pub cleaned_thumbnail: RgbaImage,
-    /// What cleaning found. Its `output_size` is `cleaned`'s size.
-    pub report: CleanReport,
-    /// The user's corners it was cleaned with, if any. Once they differ from the page's, it's out
-    /// of date.
-    pub corners: Option<Quad>,
-}
-
-impl Loaded {
-    /// Decodes and cleans a page's file, cropping to `corners` if given. Takes a while for a big
-    /// photo.
-    pub fn new(
-        bytes: &[u8],
-        params: &CleanParams,
-        corners: Option<Quad>,
-    ) -> Result<Self, DecodeError> {
-        let photo = decode(bytes)?;
-        let original = shrunk_copy(&photo, params.max_output_side);
-        let cleaned = clean(&photo, params, corners);
-        let jpeg = |img: &RgbaImage| -> Arc<[u8]> {
-            let rgb: RgbImage = img.convert();
-            crate::ocr::jpeg(&rgb, PAGE_JPEG_QUALITY).into()
-        };
-        Ok(Self {
-            thumbnail: shrunk_copy(&original, THUMBNAIL_SIDE_PX),
-            cleaned_thumbnail: shrunk_copy(&cleaned.image, THUMBNAIL_SIDE_PX),
-            original: jpeg(&original),
-            cleaned: jpeg(&cleaned.image),
-            report: cleaned.report,
-            corners,
-        })
-    }
-}
-
-/// Scales `img` down so neither side exceeds `max_side`, keeping the aspect ratio.
-/// Images that already fit are returned unchanged.
-pub fn shrink_to_fit(img: RgbaImage, max_side: u32) -> RgbaImage {
-    let (w, h) = img.dimensions();
-    if w <= max_side && h <= max_side {
-        return img;
-    }
-    shrunk_copy(&img, max_side)
-}
-
-/// [`shrink_to_fit`] for a borrowed image: a copy, scaled down only if it doesn't fit.
-pub(crate) fn shrunk_copy(img: &RgbaImage, max_side: u32) -> RgbaImage {
-    let (w, h) = img.dimensions();
-    match fitted_size(w, h, max_side) {
-        (fw, fh) if (fw, fh) == (w, h) => img.clone(),
-        (fw, fh) => imageops::thumbnail(img, fw, fh),
-    }
-}
-
-/// The longest side a `w` x `h` image can be scaled to, keeping the aspect ratio, and have at most
-/// `max_pixels`. Never more than its longest side now.
-pub(crate) fn max_side_within(w: u32, h: u32, max_pixels: u32) -> u32 {
-    let pixels = u64::from(w) * u64::from(h);
-    if pixels <= u64::from(max_pixels) {
-        return w.max(h);
-    }
-    let scale = (f64::from(max_pixels) / pixels as f64).sqrt();
-    (f64::from(w.max(h)) * scale) as u32
-}
-
-/// The size `w` x `h` scales to so neither side exceeds `max_side`, keeping the aspect ratio.
-/// Never scales up.
-pub(crate) fn fitted_size(w: u32, h: u32, max_side: u32) -> (u32, u32) {
-    if w <= max_side && h <= max_side {
-        return (w, h);
-    }
-    let scale = f64::from(max_side) / f64::from(w.max(h));
-    let scaled = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
-    (scaled(w), scaled(h))
 }
 
 /// Pages with no duplicate names, in filename order until the user rearranges them.
@@ -177,6 +84,10 @@ impl Pages {
         self.0.iter().find(|p| p.name == name)
     }
 
+    pub fn find_mut(&mut self, name: &str) -> Option<&mut Page> {
+        self.0.iter_mut().find(|p| p.name == name)
+    }
+
     pub fn sort_by_name(&mut self) {
         self.0.sort_by(|a, b| a.name.cmp(&b.name));
     }
@@ -208,18 +119,8 @@ impl Pages {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
     use super::*;
-    use image::{ImageFormat, Rgba};
-
-    fn png(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbaImage::from_fn(w, h, |x, y| Rgba([x as u8, y as u8, 0, 255]));
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
+    use crate::test_images::png;
 
     fn page(name: &str) -> Page {
         Page::new(name.to_owned(), png(2, 2).into())
@@ -227,98 +128,6 @@ mod tests {
 
     fn names(pages: &Pages) -> Vec<&str> {
         pages.iter().map(|p| p.name.as_str()).collect()
-    }
-
-    #[test]
-    fn shrinks_keeping_aspect_ratio() {
-        let img = RgbaImage::new(400, 100);
-        assert_eq!(shrink_to_fit(img.clone(), 128).dimensions(), (128, 32));
-        assert_eq!(shrink_to_fit(img, 1000).dimensions(), (400, 100));
-    }
-
-    #[test]
-    fn copies_shrink_the_same_way() {
-        let img = RgbaImage::from_fn(400, 100, |x, y| Rgba([x as u8, y as u8, 0, 255]));
-        assert_eq!(shrunk_copy(&img, 128), shrink_to_fit(img.clone(), 128));
-        assert_eq!(shrunk_copy(&img, 1000), img);
-    }
-
-    #[test]
-    fn max_side_within_a_pixel_budget() {
-        assert_eq!(max_side_within(400, 100, 40_000), 400, "already fits");
-        assert_eq!(max_side_within(400, 100, 10_000), 200);
-        assert_eq!(max_side_within(100, 400, 10_000), 200);
-    }
-
-    /// A cream page on a brown table, which cleanup finds an outline for.
-    fn page_photo(w: u32, h: u32) -> Vec<u8> {
-        let img = RgbaImage::from_fn(w, h, |x, y| {
-            let inside = (w / 5..w * 4 / 5).contains(&x) && (h / 8..h * 7 / 8).contains(&y);
-            if inside {
-                Rgba([235, 225, 200, 255])
-            } else {
-                Rgba([120, 80, 50, 255])
-            }
-        });
-        let mut bytes = Vec::new();
-        img.write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
-
-    #[test]
-    fn loading_cleans_and_shrinks_the_page() {
-        let params = CleanParams {
-            max_output_side: 400,
-            ..CleanParams::default()
-        };
-        let loaded = Loaded::new(&page_photo(1000, 500), &params, None).unwrap();
-        assert!(
-            loaded.report.outline.is_some(),
-            "{:?}",
-            loaded.report.detected
-        );
-
-        let original = decode(&loaded.original).unwrap();
-        assert_eq!(original.dimensions(), (400, 200));
-        assert_eq!(
-            loaded.thumbnail.dimensions(),
-            (THUMBNAIL_SIDE_PX, THUMBNAIL_SIDE_PX / 2)
-        );
-
-        let cleaned = decode(&loaded.cleaned).unwrap();
-        assert_eq!(cleaned.dimensions(), loaded.report.output_size);
-        let (w, h) = cleaned.dimensions();
-        // The page is 600x375, so cropped to it the image is taller than the photo's 2:1.
-        assert_eq!(w, 400);
-        assert!((240..=260).contains(&h), "cropped to the page: {w}x{h}");
-        let (tw, th) = loaded.cleaned_thumbnail.dimensions();
-        assert_eq!(tw.max(th), THUMBNAIL_SIDE_PX.min(w.max(h)));
-    }
-
-    #[test]
-    fn loading_crops_to_the_users_corners() {
-        let corners = [[0.0, 0.0], [500.0, 0.0], [500.0, 500.0], [0.0, 500.0]];
-        let loaded = Loaded::new(
-            &page_photo(1000, 500),
-            &CleanParams::default(),
-            Some(corners),
-        );
-        let loaded = loaded.unwrap();
-        assert_eq!(loaded.corners, Some(corners));
-        assert_eq!(loaded.report.outline, Some(corners));
-        assert!(
-            loaded.report.detected.is_ok(),
-            "{:?}",
-            loaded.report.detected
-        );
-        assert_eq!(loaded.report.output_size, (500, 500));
-        assert_eq!(decode(&loaded.original).unwrap().dimensions(), (1000, 500));
-    }
-
-    #[test]
-    fn loading_rejects_non_images() {
-        assert!(Loaded::new(b"hi", &CleanParams::default(), None).is_err());
     }
 
     #[test]
@@ -386,6 +195,10 @@ mod tests {
         assert_eq!(pages.find("b.png").map(|p| p.name.as_str()), Some("b.png"));
         assert_eq!(pages.position("c.png"), None);
         assert!(pages.find("c.png").is_none());
+
+        pages.find_mut("a.png").unwrap().corners = Some([[1.0; 2]; 4]);
+        assert_eq!(pages.get(1).unwrap().corners, Some([[1.0; 2]; 4]));
+        assert!(pages.find_mut("c.png").is_none());
     }
 
     #[test]
