@@ -4,11 +4,14 @@
 //!
 //! Unsaved changes are found by comparing the pages with what was last saved or opened, rather
 //! than by noting each change, so none can be missed. See `decisions/2026-10-31-projects.md`.
+//!
+//! A project also opens when dropped on the window, or named on the command line: see
+//! `decisions/2026-10-31-open-by-drop-and-argument.md`.
 
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use notebook_core::project::{self, EXTENSION, Missing, SavedPage};
+use notebook_core::project::{self, EXTENSION, Missing, Opened, SavedPage};
 
 use super::NotebookApp;
 use crate::export::Export;
@@ -17,10 +20,13 @@ use crate::t;
 use crate::ui::dialog::{self, Choice, Stakes};
 
 /// What to do once unsaved changes are saved or discarded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum After {
     NewProject,
-    OpenProject,
+    /// Ask which project to open, and open it.
+    PickProject,
+    /// Open the project at this path, which was dropped on the window.
+    OpenProject(PathBuf),
     Quit,
 }
 
@@ -103,7 +109,8 @@ impl NotebookApp {
     fn proceed(&mut self, ctx: &egui::Context, after: After) {
         match after {
             After::NewProject => self.new_project(),
-            After::OpenProject => self.open_picked(),
+            After::PickProject => self.open_picked(),
+            After::OpenProject(path) => self.open_project(&path),
             After::Quit => {
                 self.project.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -113,7 +120,7 @@ impl NotebookApp {
 
     /// Asks whether to save the changes before what the user asked for, if it's asking.
     pub(super) fn unsaved_dialog(&mut self, ctx: &egui::Context) {
-        let Some(after) = self.project.confirm else {
+        let Some(after) = self.project.confirm.clone() else {
             return;
         };
         let name = self.project_name();
@@ -223,15 +230,25 @@ impl NotebookApp {
     /// Opens the project at `path` in place of this one, without asking to save this one: see
     /// [`Self::after_saving`]. If it can't be opened, this one stays.
     pub fn open_project(&mut self, path: &Path) {
-        let opened = match project::open(path) {
-            Ok(opened) => opened,
+        match project::open(path) {
+            Ok(opened) => self.show_opened(path, opened),
             Err(err) => {
                 log::warn!("couldn't open {}: {err:?}", path.display());
                 self.errors
                     .push(crate::i18n::open_project_error(path, &err));
-                return;
             }
-        };
+        }
+    }
+
+    /// Starts with `opened`, the project at `path`, open: for opening one named on the command
+    /// line, which was read before the window opened.
+    pub fn with_project(mut self, path: &Path, opened: Opened) -> Self {
+        self.show_opened(path, opened);
+        self
+    }
+
+    /// Puts `opened`, the project read from `path`, in place of this one.
+    fn show_opened(&mut self, path: &Path, opened: Opened) {
         self.new_project();
         self.pages = opened.pages;
         self.errors = opened
@@ -272,6 +289,8 @@ impl NotebookApp {
             pick_files: self.pick_files.take(),
             save_path: self.save_path.take(),
             asked_which_files: self.asked_which_files,
+            // Says what happened to the files dropped with the project being opened.
+            hint: self.hint.take(),
             waker: self.waker.take(),
             ..NotebookApp::default()
         };

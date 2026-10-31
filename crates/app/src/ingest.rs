@@ -11,6 +11,7 @@ use notebook_core::clean::CleanParams;
 use notebook_core::decode::DecodeError;
 use notebook_core::geom::Quad;
 use notebook_core::loaded::Loaded;
+use notebook_core::project;
 
 use crate::jobs::Jobs;
 use crate::jobs::Waker;
@@ -29,6 +30,49 @@ pub enum Pick {
     Photos,
     /// One project to open.
     Project,
+}
+
+/// What dropping some files does: a project among them opens, in place of adding pages. See
+/// `decisions/2026-10-31-open-by-drop-and-argument.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Dropping {
+    /// No project: the files are added as pages.
+    AddPages,
+    /// The one project among them opens, and the other files are left out.
+    OpenProject {
+        path: PathBuf,
+        /// How many other files were dropped with it.
+        others: usize,
+    },
+    /// More than one project, so none opens.
+    SeveralProjects,
+}
+
+impl Dropping {
+    /// What dropping files at `paths` does. A file dropped without a path isn't a project.
+    pub fn of<'a>(paths: impl IntoIterator<Item = Option<&'a Path>>) -> Self {
+        let (mut projects, mut others) = (Vec::new(), 0);
+        for path in paths {
+            match path.filter(|p| is_project(p)) {
+                Some(path) => projects.push(path.to_path_buf()),
+                None => others += 1,
+            }
+        }
+        match projects.len() {
+            0 => Self::AddPages,
+            1 => Self::OpenProject {
+                path: projects.remove(0),
+                others,
+            },
+            _ => Self::SeveralProjects,
+        }
+    }
+}
+
+/// Whether `path` names a project file.
+pub fn is_project(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(project::EXTENSION))
 }
 
 /// Loads a page from its file's bytes, cropped to the user's corners if given. Tests stand in for
@@ -72,6 +116,23 @@ impl Ingest {
         self.jobs.set_waker(waker);
     }
 
+    /// What dropping the files dropped this frame does.
+    pub fn dropped(ctx: &egui::Context) -> Dropping {
+        ctx.input(|i| {
+            let paths = i.raw.dropped_files.iter().map(|f| dropped_path(f.path()));
+            Dropping::of(paths)
+        })
+    }
+
+    /// What dropping the files being dragged over the window would do, if any are.
+    pub fn hovering(ctx: &egui::Context) -> Option<Dropping> {
+        ctx.input(|i| {
+            let hovered = &i.raw.hovered_files;
+            let paths = hovered.iter().map(|f| f.path.as_deref());
+            (!hovered.is_empty()).then(|| Dropping::of(paths))
+        })
+    }
+
     /// Files dropped this frame, in filename order: once the pages have been rearranged, new ones
     /// go at the end in the order they're added.
     pub fn read_drops(&self, ctx: &egui::Context) -> Vec<Received> {
@@ -79,7 +140,7 @@ impl Ingest {
         let received = dropped.iter().map(|file| {
             (
                 file_name(file.path()),
-                dropped_path(file.path()),
+                dropped_path(file.path()).map(Path::to_path_buf),
                 file.bytes(),
             )
         });
@@ -128,8 +189,8 @@ fn by_name(mut received: Vec<Received>) -> Vec<Received> {
 }
 
 /// Where a dropped file is: its path, unless it was dropped with only a name.
-fn dropped_path(path: &Path) -> Option<PathBuf> {
-    path.is_absolute().then(|| path.to_path_buf())
+fn dropped_path(path: &Path) -> Option<&Path> {
+    path.is_absolute().then_some(path)
 }
 
 fn file_name(path: &Path) -> String {

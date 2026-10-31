@@ -9,10 +9,11 @@ use notebook_core::page::Page;
 use notebook_core::transcript::Transcript;
 
 use super::commands::shortcut_text;
+use super::project::After;
 use super::{NotebookApp, View};
 use crate::command::Command;
 use crate::eval_log::Event;
-use crate::ingest::{Ingest, Pick, Received};
+use crate::ingest::{Dropping, Ingest, Pick, Received};
 use crate::t;
 use crate::ui::dialog;
 use crate::ui::dialog::{Choice, Stakes};
@@ -48,10 +49,24 @@ impl NotebookApp {
         self.add_received(received);
     }
 
-    /// Adds the files dropped this frame as pages.
+    /// Adds the files dropped this frame as pages, or opens the project dropped among them,
+    /// leaving the rest out. See `decisions/2026-10-31-open-by-drop-and-argument.md`.
     pub(super) fn add_dropped(&mut self, ctx: &egui::Context) {
-        let received = self.ingest.read_drops(ctx);
-        self.add_received(received);
+        match Ingest::dropped(ctx) {
+            Dropping::AddPages => {
+                let received = self.ingest.read_drops(ctx);
+                self.add_received(received);
+            }
+            // The question already asked is answered first.
+            Dropping::OpenProject { .. } if self.dialog_open() => {}
+            Dropping::OpenProject { path, others } => {
+                if others > 0 {
+                    self.show_hint(ctx, t!("drop-others-left-out", count = others));
+                }
+                self.after_saving(ctx, After::OpenProject(path));
+            }
+            Dropping::SeveralProjects => self.errors.push(t!("drop-several-projects")),
+        }
     }
 
     /// Adds `received` as pages, and starts loading them. Pages are usable before they've

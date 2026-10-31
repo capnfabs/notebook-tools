@@ -287,6 +287,28 @@ pub fn drop_files_in(
     settle(harness);
 }
 
+/// Drops the files at `paths`, as they are on disk, and waits for what that started.
+pub fn drop_paths(harness: &mut Harness<'_, NotebookApp>, paths: &[&Path]) {
+    for path in paths {
+        harness.input_mut().dropped_files.push(Arc::new(TestFile {
+            path: path.to_path_buf(),
+            bytes: std::fs::read(path).unwrap(),
+        }));
+    }
+    settle(harness);
+}
+
+/// Drags files at `paths` over the window, without dropping them, for a frame.
+pub fn hover_paths(harness: &mut Harness<'_, NotebookApp>, paths: &[&Path]) {
+    let hovered = &mut harness.input_mut().hovered_files;
+    hovered.clear();
+    hovered.extend(paths.iter().map(|path| egui::HoveredFile {
+        path: Some(path.to_path_buf()),
+        ..Default::default()
+    }));
+    harness.step();
+}
+
 /// Asks to close the window, as its close button does, and returns what the app told the window
 /// to do in that frame.
 pub fn close_window(harness: &mut Harness<'_, NotebookApp>) -> Vec<egui::ViewportCommand> {

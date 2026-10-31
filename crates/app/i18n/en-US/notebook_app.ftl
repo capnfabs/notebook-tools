@@ -64,6 +64,15 @@ unsaved-discard = Don't Save
 drop-zone-title = Drop image files here
 drop-zone-formats = JPEG, PNG or HEIC
 drop-overlay = Drop to add pages
+# While a project is dragged over the window: dropping it opens it. `decisions/2026-10-31-open-by-drop-and-argument.md`.
+drop-overlay-open = Drop to open { $name }
+drop-overlay-one-project = Drop one project at a time
+drop-several-projects = Couldn't open the projects dropped: drop one at a time.
+# Files dropped with a project aren't added to it.
+drop-others-left-out = { $count ->
+    [one] The other file dropped wasn't added.
+   *[other] The { $count } other files dropped weren't added.
+}
 # Why transcribing is unavailable (and, without a cache, the Transcribed view and exporting).
 no-transcriber-hint = Transcription requires an ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.
 all-transcribed-hint = Every page is transcribed
@@ -215,6 +224,11 @@ project-no-path = Couldn't save: { $names } { $count ->
 photo-not-found = Couldn't find { $name } at { $path }. Its page is kept in the project, but hidden.
 photo-changed = { $path } has changed since the project was saved. { $name }'s page is kept in the project, but hidden.
 photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept in the project, but hidden.
+
+## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`.
+
+cli-usage = Usage: { app-name } [PROJECT.notebook]
+cli-not-a-project = { $path } isn't a .notebook project. Usage: { app-name } [PROJECT.notebook]
 
 ## Settings
 

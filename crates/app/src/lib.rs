@@ -5,6 +5,7 @@
 //! `notebook_core`. See `decisions/2026-10-31-code-layout.md`.
 
 pub mod app;
+pub mod cli;
 pub mod command;
 pub mod eval_log;
 mod export;

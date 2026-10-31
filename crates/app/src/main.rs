@@ -1,5 +1,6 @@
-//! Starts the app with real credentials, cache, settings file and native dialogs. Tests build
-//! [`NotebookApp`] with stand-ins for these instead.
+//! Starts the app with real credentials, cache, settings file and native dialogs, and the project
+//! named on the command line open, if any (`decisions/2026-10-31-open-by-drop-and-argument.md`).
+//! Tests build [`NotebookApp`] with stand-ins for these instead.
 
 use notebook_app::{NotebookApp, Pick, t};
 use notebook_core::cache::Cache;
@@ -8,6 +9,13 @@ use notebook_core::settings::Settings;
 
 fn main() -> eframe::Result {
     env_logger::init();
+    let project = match notebook_app::cli::project_to_open(std::env::args_os().skip(1)) {
+        Ok(project) => project,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+    };
     eframe::run_native(
         &t!("app-name"),
         eframe::NativeOptions::default(),
@@ -24,6 +32,11 @@ fn main() -> eframe::Result {
             let app = app.with_frontend(Box::new(notebook_app::menu::NativeMenu::install(
                 &cc.egui_ctx,
             )));
+            // Last, so the transcripts are restyled in the settings' style.
+            let app = match project {
+                Some((path, opened)) => app.with_project(&path, opened),
+                None => app,
+            };
             Ok(Box::new(app))
         }),
     )

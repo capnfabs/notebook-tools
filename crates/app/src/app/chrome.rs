@@ -6,6 +6,7 @@ use egui::{Align, Layout, Shape};
 use super::commands::with_shortcut;
 use super::{NotebookApp, View};
 use crate::command::Command;
+use crate::ingest::{Dropping, Ingest};
 use crate::t;
 use crate::ui::thumbnails;
 
@@ -14,7 +15,8 @@ impl NotebookApp {
     pub(super) fn show_drop_zone(&mut self, ui: &mut egui::Ui) {
         egui::CentralPanel::default().show(ui, |ui| {
             let rect = ui.max_rect().shrink(24.0);
-            let stroke = if is_hovering_files(ui) {
+            let hovering = Ingest::hovering(ui.ctx());
+            let stroke = if hovering.is_some() {
                 ui.visuals().selection.stroke
             } else {
                 ui.visuals().widgets.noninteractive.fg_stroke
@@ -31,8 +33,15 @@ impl NotebookApp {
 
             ui.vertical_centered(|ui| {
                 ui.add_space(rect.center().y - ui.min_rect().top() - 40.0);
-                ui.heading(t!("drop-zone-title"));
-                ui.label(t!("drop-zone-formats"));
+                // Says what the files dragged over it would do once dropped.
+                let title = hovering
+                    .as_ref()
+                    .map_or_else(|| t!("drop-zone-title"), drop_text);
+                ui.heading(title);
+                // The photos that can be added, unless it's a project that would be opened.
+                if hovering.is_none_or(|d| d == Dropping::AddPages) {
+                    ui.label(t!("drop-zone-formats"));
+                }
                 self.show_status(ui);
             });
         });
@@ -56,8 +65,8 @@ impl NotebookApp {
         self.export
             .dialog(ui.ctx(), &self.pages, self.selected_index());
 
-        if is_hovering_files(ui) {
-            show_drop_overlay(ui);
+        if let Some(dropping) = Ingest::hovering(ui.ctx()) {
+            show_drop_overlay(ui, &dropping);
         }
     }
 
@@ -184,23 +193,35 @@ pub(super) fn spinner(ui: &mut egui::Ui, label: &str) {
     });
 }
 
-/// Darkens the window while files are dragged over it, saying they can be dropped.
-fn show_drop_overlay(ui: &egui::Ui) {
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::unique("drop_overlay"),
-    ));
+/// Darkens the window while files are dragged over it, saying what dropping them would do. A
+/// label rather than painted text, so it's in the accessibility tree.
+fn show_drop_overlay(ui: &egui::Ui, dropping: &Dropping) {
     let rect = ui.ctx().content_rect();
-    painter.rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        t!("drop-overlay"),
-        egui::TextStyle::Heading.resolve(ui.style()),
-        egui::Color32::WHITE,
-    );
+    let id = egui::Id::unique("drop_overlay");
+    // Not an `Area`, which is hidden on its first frame while it's measured.
+    let builder = egui::UiBuilder::new()
+        .layer_id(egui::LayerId::new(egui::Order::Foreground, id))
+        .max_rect(rect)
+        .layout(Layout::centered_and_justified(egui::Direction::TopDown));
+    let mut overlay = egui::Ui::new(ui.ctx().clone(), id, builder);
+    overlay
+        .painter()
+        .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
+    let text = egui::RichText::new(drop_text(dropping))
+        .heading()
+        .color(egui::Color32::WHITE);
+    overlay.add(egui::Label::new(text).selectable(false));
 }
 
-pub(super) fn is_hovering_files(ui: &egui::Ui) -> bool {
-    ui.ctx().input(|i| !i.raw.hovered_files.is_empty())
+/// What dropping files does, to show while they're dragged over the window. See
+/// `decisions/2026-10-31-open-by-drop-and-argument.md`.
+fn drop_text(dropping: &Dropping) -> String {
+    match dropping {
+        Dropping::AddPages => t!("drop-overlay"),
+        Dropping::OpenProject { path, .. } => {
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            t!("drop-overlay-open", name = name.into_owned())
+        }
+        Dropping::SeveralProjects => t!("drop-overlay-one-project"),
+    }
 }

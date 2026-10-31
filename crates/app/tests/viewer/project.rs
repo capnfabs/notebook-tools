@@ -359,3 +359,133 @@ fn every_answer_to_save_is_reachable_by_keyboard() {
     assert!(thumbnails(&harness).is_empty());
     assert_eq!(dialogs.saves(), 0);
 }
+
+// Opening a project by dropping it or naming it on the command line. See
+// `decisions/2026-10-31-open-by-drop-and-argument.md`.
+
+/// Saves a project of `photos`, dropped from `dir`, at the path `dialogs` answers with.
+fn save_project(dir: &Path, dialogs: &Dialogs, photos: &[&str]) {
+    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+    let files: Vec<(&str, Vec<u8>)> = photos.iter().map(|name| (*name, png())).collect();
+    drop_files_in(&mut harness, dir, &files);
+    press_command(&mut harness, Key::S);
+}
+
+#[test]
+fn dropping_a_project_asks_to_save_then_opens_it() {
+    let (dir, path, dialogs) = setup("drop_project");
+    save_project(dir.path(), &dialogs, &["a.png"]);
+    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+
+    drop_paths(&mut harness, &[&path]);
+    assert!(asks_to_save(&harness));
+    assert_eq!(thumbnails(&harness), ["b.png"], "not yet");
+    harness.get_by_label(&t!("unsaved-discard")).click();
+    settle(&mut harness);
+    assert_eq!(thumbnails(&harness), ["a.png"]);
+    assert_eq!(title(&harness), "notes");
+}
+
+#[test]
+fn files_dropped_with_a_project_are_left_out() {
+    let (dir, path, dialogs) = setup("drop_project_and_photos");
+    save_project(dir.path(), &dialogs, &["a.png"]);
+    let photo = dir.path().join("c.png");
+    std::fs::write(&photo, png()).unwrap();
+    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+
+    drop_paths(&mut harness, &[&photo, &path]);
+    assert!(!asks_to_save(&harness), "nothing to lose");
+    assert_eq!(thumbnails(&harness), ["a.png"]);
+    assert_eq!(title(&harness), "notes", "c.png wasn't added");
+    let left_out = t!("drop-others-left-out", count = 1);
+    assert!(harness.query_by_label(&left_out).is_some());
+}
+
+#[test]
+fn dropping_two_projects_opens_neither() {
+    let (dir, path, dialogs) = setup("drop_two_projects");
+    save_project(dir.path(), &dialogs, &["a.png"]);
+    let other = dir.path().join("other.notebook");
+    std::fs::copy(&path, &other).unwrap();
+    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+
+    drop_paths(&mut harness, &[&path, &other]);
+    assert!(!asks_to_save(&harness));
+    assert_eq!(thumbnails(&harness), ["b.png"]);
+    let error = t!("drop-several-projects");
+    assert!(harness.query_by_label(&error).is_some());
+}
+
+#[test]
+fn a_project_dropped_while_asking_to_save_is_ignored() {
+    let (dir, path, dialogs) = setup("drop_project_while_asking");
+    save_project(dir.path(), &dialogs, &["a.png"]);
+    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+    press_command(&mut harness, Key::N);
+    assert!(asks_to_save(&harness));
+
+    drop_paths(&mut harness, &[&path]);
+    answer(&mut harness, &t!("unsaved-discard"));
+    assert!(!asks_to_save(&harness));
+    assert!(
+        harness.query_by_label(&t!("drop-zone-title")).is_some(),
+        "the new project the user asked for, not the one dropped"
+    );
+}
+
+#[test]
+fn dragging_files_over_the_window_says_what_dropping_them_does() {
+    let dir = test_dir("hover");
+    let (photo, notes) = (dir.path().join("a.png"), dir.path().join("notes.notebook"));
+    let other = dir.path().join("other.notebook");
+    let says = |harness: &Harness<'_, NotebookApp>, text: String| {
+        assert!(harness.query_by_label(&text).is_some(), "{text}");
+    };
+    let mut empty = harness();
+    let mut with_pages = harness();
+    drop_files(&mut with_pages, &[("b.png", png())]);
+    for harness in [&mut empty, &mut with_pages] {
+        hover_paths(harness, &[&photo]);
+        says(harness, t!("drop-overlay"));
+        hover_paths(harness, &[&photo, &notes]);
+        says(harness, t!("drop-overlay-open", name = "notes"));
+        hover_paths(harness, &[&notes, &other]);
+        says(harness, t!("drop-overlay-one-project"));
+    }
+
+    // The empty window lists the photos it takes only while photos would be added.
+    let lists_formats = |harness: &Harness<'_, NotebookApp>| {
+        harness.query_by_label(&t!("drop-zone-formats")).is_some()
+    };
+    hover_paths(&mut empty, &[&photo]);
+    assert!(lists_formats(&empty));
+    hover_paths(&mut empty, &[&photo, &notes]);
+    assert!(!lists_formats(&empty), "opening a project");
+    hover_paths(&mut empty, &[&notes, &other]);
+    assert!(!lists_formats(&empty), "several projects");
+    hover_paths(&mut empty, &[]);
+    assert!(lists_formats(&empty), "nothing dragged");
+}
+
+#[test]
+fn a_project_named_on_the_command_line_starts_open() {
+    let (dir, path, dialogs) = setup("command_line");
+    save_project(dir.path(), &dialogs, &["a.png", "b.png"]);
+    std::fs::remove_file(dir.path().join("a.png")).unwrap();
+
+    let (opened_path, opened) = notebook_app::cli::project_to_open([path.clone().into()])
+        .unwrap()
+        .unwrap();
+    assert_eq!(opened_path, path);
+    let mut harness = harness_for(NotebookApp::default().with_project(&path, opened));
+    settle(&mut harness);
+    assert_eq!(thumbnails(&harness), ["b.png"]);
+    assert_eq!(title(&harness), "notes", "nothing changed");
+    let missing = dir.path().join("a.png").display().to_string();
+    let error = t!("photo-not-found", name = "a.png", path = missing);
+    assert!(harness.query_by_label(&error).is_some());
+}
