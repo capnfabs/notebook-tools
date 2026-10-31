@@ -616,6 +616,11 @@ pub fn harness_of_width(width: f32) -> Harness<'static, NotebookApp> {
 
 /// The colour the text `needle` is painted in.
 pub fn text_colour(harness: &Harness<'_, NotebookApp>, needle: &str) -> egui::Color32 {
+    text_format(harness, needle).color
+}
+
+/// How the text `needle` is painted.
+pub fn text_format(harness: &Harness<'_, NotebookApp>, needle: &str) -> egui::TextFormat {
     harness
         .output()
         .shapes
@@ -628,7 +633,7 @@ pub fn text_colour(harness: &Harness<'_, NotebookApp>, needle: &str) -> egui::Co
             let at = job.text.find(needle)?;
             let at = egui::text::ByteIndex(at);
             let section = job.sections.iter().find(|s| s.byte_range.contains(&at))?;
-            Some(section.format.color)
+            Some(section.format.clone())
         })
         .unwrap_or_else(|| panic!("{needle} isn't painted"))
 }
@@ -663,4 +668,43 @@ pub fn edit_line(harness: &mut Harness<'_, NotebookApp>, label: &str) {
 /// Whether the radio button or checkbox labelled `label` is on.
 pub fn checked(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
     harness.get_by_label(label).accesskit_node().toggled() == Some(Toggled::True)
+}
+
+/// Whether line 1's box is outlined on a.png's cleaned page, as when the line is pointed at.
+pub fn line_box_outlined(harness: &Harness<'_, NotebookApp>) -> bool {
+    // Line 1's box, as Claude put it: 130..980 of 1200 across, 190..250 of 900 down.
+    let page = harness
+        .get_by_label(&t!("current-page-cleaned", name = "a.png"))
+        .rect();
+    let expected = egui::Rect::from_min_max(
+        page.min + egui::vec2(130.0 / 1200.0, 190.0 / 900.0) * page.size(),
+        page.min + egui::vec2(980.0 / 1200.0, 250.0 / 900.0) * page.size(),
+    );
+    // Painted as a rect, or a quad if the page was cut elsewhere, with a 1pt outline outside.
+    harness.output().shapes.iter().any(|clipped| {
+        let painted = clipped.shape.visual_bounding_rect();
+        (painted.min - expected.min).length() < 3.0 && (painted.max - expected.max).length() < 3.0
+    })
+}
+
+/// The label of what has the keyboard focus, if anything does.
+pub fn focused(harness: &Harness<'_, NotebookApp>) -> Option<String> {
+    let node = harness.query_by(|node| node.is_focused())?;
+    let node = node.accesskit_node();
+    // A label's text is its value.
+    Some(node.label().or_else(|| node.value()).unwrap_or_default())
+}
+
+/// Presses Tab until what's labelled `label` has the keyboard focus.
+pub fn tab_to(harness: &mut Harness<'_, NotebookApp>, label: &str) {
+    let mut reached = Vec::new();
+    for _ in 0..100 {
+        let now = focused(harness);
+        if now.as_deref() == Some(label) {
+            return;
+        }
+        reached.push(now);
+        press(harness, egui::Modifiers::NONE, egui::Key::Tab);
+    }
+    panic!("Tab never reached {label}, only {reached:?}");
 }

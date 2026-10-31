@@ -7,6 +7,7 @@ mod common;
 mod corners;
 mod corrections;
 mod export;
+mod focus;
 mod keys;
 mod pages;
 mod settings;

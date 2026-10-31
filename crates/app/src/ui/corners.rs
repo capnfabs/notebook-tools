@@ -1,13 +1,16 @@
 //! The page's corners over the original photo, joined by its sides. Each corner can be dragged;
 //! or, while placing, the user clicks four new ones. Corners are in the photo's pixels. Only
 //! outlines that can be straightened ([`is_page_shaped`]) are allowed: a dragged corner stops
-//! where it would spoil the shape, and a fourth click that would is refused.
+//! where it would spoil the shape, and a fourth click that would is refused. A corner's handle
+//! can also take the keyboard focus, and then the arrow keys nudge it.
 //!
-//! See `decisions/2026-10-29-manual-corners.md`.
+//! See `decisions/2026-10-29-manual-corners.md` and `decisions/2026-10-31-keyboard-focus.md`.
 
 use eframe::egui;
 use egui::accesskit::Role;
-use egui::{Color32, CursorIcon, Key, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo};
+use egui::{
+    Color32, CursorIcon, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo,
+};
 use notebook_core::geom::{Quad, is_page_shaped, order_corners};
 
 use crate::t;
@@ -25,6 +28,19 @@ fn label(i: usize) -> String {
 /// Radius of a corner's handle, in points. It can be grabbed a little further out.
 const HANDLE_RADIUS: f32 = 5.0;
 const GRAB_RADIUS: f32 = 10.0;
+/// Radius of the ring around the handle that has the keyboard focus, in points.
+const FOCUS_RADIUS: f32 = HANDLE_RADIUS + 3.0;
+
+/// How far an arrow key nudges a corner, in points; with Shift, further.
+const NUDGE: f32 = 1.0;
+const SHIFT_NUDGE: f32 = 10.0;
+
+const ARROWS: [Key; 4] = [
+    Key::ArrowLeft,
+    Key::ArrowRight,
+    Key::ArrowUp,
+    Key::ArrowDown,
+];
 
 /// How many times a dragged corner halves the distance to where the pointer is, looking for the
 /// furthest it can go without spoiling the outline.
@@ -46,9 +62,17 @@ struct Drag {
     grip: Vec2,
 }
 
+/// Which corner the arrow keys are nudging, and where it is on screen, until they're let go.
+#[derive(Clone, Copy)]
+struct Nudge {
+    corner: usize,
+    at: Pos2,
+}
+
 #[derive(Default)]
 pub struct Corners {
     drag: Option<Drag>,
+    nudge: Option<Nudge>,
     placing: Option<Placing>,
 }
 
@@ -56,6 +80,7 @@ impl Corners {
     /// Starts clicking in new corners for the page named `name`, forgetting any clicked so far.
     pub fn place(&mut self, name: &str) {
         self.drag = None;
+        self.nudge = None;
         self.placing = Some(Placing {
             name: name.to_owned(),
             points: Vec::new(),
@@ -75,7 +100,8 @@ impl Corners {
     }
 
     /// `quad`, the corners of the page named `name`, over its photo of `source_size` pixels drawn
-    /// at `image_rect`. Returns new corners once the user lets go of one, or clicks in the fourth.
+    /// at `image_rect`. Returns new corners once the user lets go of one, whether dragged or nudged
+    /// with the arrow keys, or clicks in the fourth.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -101,17 +127,31 @@ impl Corners {
         let placed = quad.map(to_screen);
         let mut corners = placed;
         let mut changed = None;
-        for i in 0..4 {
-            let at = match self.drag {
-                Some(drag) if drag.corner == i => drag.at,
+        let mut focused = None;
+        let ids: [Id; 4] = std::array::from_fn(|i| ui.scope_id().with(("page corner", i)));
+        // A press that didn't move the corner, or would spoil the outline, changes nothing.
+        let moved_to = |i: usize, at: Pos2| {
+            let mut moved = quad;
+            moved[i] = to_source(at);
+            (at.distance(placed[i]) > 0.5 && is_page_shaped(&moved)).then(|| order_corners(moved))
+        };
+        for (i, id) in ids.into_iter().enumerate() {
+            let at = match (self.drag, self.nudge) {
+                (Some(drag), _) if drag.corner == i => drag.at,
+                (_, Some(nudge)) if nudge.corner == i => nudge.at,
                 _ => corners[i],
             };
             let handle = Rect::from_center_size(at, Vec2::splat(2.0 * GRAB_RADIUS));
-            let id = ui.scope_id().with(("page corner", i));
             let response = ui
                 .interact(handle, id, Sense::drag())
                 .on_hover_cursor(CursorIcon::Grab);
             response.widget_info(|| WidgetInfo::labeled(Role::GraphicsObject, true, label(i)));
+            let fits = |p: Pos2| {
+                let mut moved = quad;
+                moved[i] = to_source(p);
+                is_page_shaped(&moved)
+            };
+            corners[i] = at;
             if response.dragged()
                 && let Some(pointer) = response.interact_pointer_pos()
             {
@@ -121,11 +161,6 @@ impl Corners {
                     _ => at - ui.input(|i| i.pointer.press_origin()).unwrap_or(pointer),
                 };
                 let wanted = image_rect.clamp(pointer + grip);
-                let fits = |p: Pos2| {
-                    let mut moved = quad;
-                    moved[i] = to_source(p);
-                    is_page_shaped(&moved)
-                };
                 let at = furthest(at, wanted, fits);
                 self.drag = Some(Drag {
                     corner: i,
@@ -137,19 +172,34 @@ impl Corners {
             if response.drag_stopped() {
                 self.drag = None;
                 // Drawn where it was let go, not back where it was, until the new corners come in.
-                corners[i] = at;
-                let mut moved = quad;
-                moved[i] = to_source(at);
-                // A press that didn't move the corner changes nothing.
-                if at.distance(placed[i]) > 0.5 && is_page_shaped(&moved) {
-                    changed = Some(order_corners(moved));
-                } else {
+                changed = moved_to(i, at);
+                if changed.is_none() {
                     corners[i] = placed[i];
                 }
             }
+
+            if response.has_focus() {
+                focused = Some(i);
+                let step = nudge(ui);
+                if step != Vec2::ZERO {
+                    let at = furthest(at, image_rect.clamp(at + step), fits);
+                    self.nudge = Some(Nudge { corner: i, at });
+                    corners[i] = at;
+                }
+            }
+            // Once the arrows are let go, or the handle loses the focus, the nudges so far count as
+            // one move, so holding an arrow down cleans the page once.
+            let held = ui.input(|input| ARROWS.iter().any(|&k| input.key_down(k)));
+            if let Some(nudge) = self.nudge
+                && nudge.corner == i
+                && !(held && response.has_focus())
+            {
+                self.nudge = None;
+                changed = moved_to(i, nudge.at);
+            }
         }
 
-        paint_corners(ui, image_rect, corners);
+        paint_corners(ui, image_rect, corners, focused);
         changed
     }
 
@@ -207,6 +257,24 @@ impl Corners {
     }
 }
 
+/// How far this frame's arrow presses move the focused corner, on screen. Takes the presses, so
+/// nothing else acts on them, and keeps them from moving the focus.
+fn nudge(ui: &egui::Ui) -> Vec2 {
+    crate::ui::focus::keep_arrows(ui.ctx());
+    ui.input_mut(|i| {
+        let step = if i.modifiers.shift {
+            SHIFT_NUDGE
+        } else {
+            NUDGE
+        };
+        // Matching with no modifiers also takes the presses with Shift.
+        let mut presses = |key| i.count_and_consume_key(Modifiers::NONE, key) as f32;
+        let x = presses(Key::ArrowRight) - presses(Key::ArrowLeft);
+        let y = presses(Key::ArrowDown) - presses(Key::ArrowUp);
+        Vec2::new(x, y) * step
+    })
+}
+
 /// The furthest point from `from` towards `to` that `fits`. If `from` doesn't fit either, `to`:
 /// an outline that's already unusable doesn't hold the corner back.
 fn furthest(from: Pos2, to: Pos2, fits: impl Fn(Pos2) -> bool) -> Pos2 {
@@ -232,12 +300,16 @@ fn colours(ui: &egui::Ui) -> (Stroke, Color32) {
 }
 
 /// The page's outline through `corners`, on screen, with a handle on each, over the image at
-/// `image_rect`.
-fn paint_corners(ui: &egui::Ui, image_rect: Rect, corners: [Pos2; 4]) {
+/// `image_rect`. The handle of corner `focused` is ringed.
+fn paint_corners(ui: &egui::Ui, image_rect: Rect, corners: [Pos2; 4], focused: Option<usize>) {
     let painter = ui.painter_at(image_rect.expand(GRAB_RADIUS));
     let (line, fill) = colours(ui);
     painter.add(Shape::closed_line(corners.to_vec(), line));
     for corner in corners {
         painter.circle(corner, HANDLE_RADIUS, fill, line);
+    }
+    if let Some(i) = focused {
+        let ring = Stroke::new(2.0, ui.visuals().selection.stroke.color);
+        painter.circle_stroke(corners[i], FOCUS_RADIUS, ring);
     }
 }

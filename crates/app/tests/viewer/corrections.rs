@@ -228,30 +228,14 @@ fn hovering_a_line_highlights_its_box() {
     let mut harness = harness_with(transcriber());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    // Line 1's box, as Claude put it: 130..980 of 1200 across, 190..250 of 900 down.
-    let page = harness
-        .get_by_label(&t!("current-page-cleaned", name = "a.png"))
-        .rect();
-    let expected = egui::Rect::from_min_max(
-        page.min + egui::vec2(130.0 / 1200.0, 190.0 / 900.0) * page.size(),
-        page.min + egui::vec2(980.0 / 1200.0, 250.0 / 900.0) * page.size(),
-    );
-    // Painted as a rect, or a quad if the page was cut elsewhere, with a 1pt outline outside.
-    let outlined = |harness: &Harness<'_, NotebookApp>| {
-        harness.output().shapes.iter().any(|clipped| {
-            let painted = clipped.shape.visual_bounding_rect();
-            (painted.min - expected.min).length() < 3.0
-                && (painted.max - expected.max).length() < 3.0
-        })
-    };
-    assert!(!outlined(&harness));
+    assert!(!line_box_outlined(&harness));
 
     harness.get_by_label(" shower").hover();
     harness.run_ok();
-    assert!(outlined(&harness));
+    assert!(line_box_outlined(&harness));
     harness.get_by_label("# Thurs 23 Oct").hover();
     harness.run_ok();
-    assert!(!outlined(&harness), "only the hovered line");
+    assert!(!line_box_outlined(&harness), "only the hovered line");
 }
 
 #[test]

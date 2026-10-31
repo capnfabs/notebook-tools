@@ -34,3 +34,4 @@ In the order they were finished.
 - [x] [Clamp boxes to the image](clamp-boxes.md) (dropped)
 - [x] [Cached transcripts without credentials](cache-without-credentials.md)
 - [x] [Polish the transcript status line](status-ui.md)
+- [x] [Keyboard focus audit](keyboard-focus-audit.md)

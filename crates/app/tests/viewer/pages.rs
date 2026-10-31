@@ -98,7 +98,7 @@ fn pages_hold_their_place_while_loading() {
     drop_files(&mut harness, &[("a.png", png()), ("b.png", png())]);
     harness.get_by_label("b.png").click();
     settle(&mut harness);
-    press_command(&mut harness, egui::Key::ArrowLeft);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowLeft);
 
     let held = gate.write().unwrap();
     start_dropping(&mut harness, &[("d.png", png()), ("c.png", png())]);
@@ -339,7 +339,7 @@ fn new_drops_go_last_after_reordering() {
         &mut harness,
         &[("a.png", png()), ("b.png", png()), ("d.png", png())],
     );
-    press_command(&mut harness, egui::Key::ArrowRight);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowRight);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "d.png"]);
 
     drop_files(&mut harness, &[("e.png", png()), ("c.png", png())]);
@@ -357,7 +357,7 @@ fn sort_by_name_restores_filename_order() {
         |harness: &Harness<'_, NotebookApp>| !disabled(harness, &Command::SortByName.label());
     assert!(!sort(&harness), "already sorted");
 
-    press_command(&mut harness, egui::Key::ArrowRight);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowRight);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
     assert!(sort(&harness));
 
@@ -369,7 +369,7 @@ fn sort_by_name_restores_filename_order() {
 }
 
 #[test]
-fn command_arrows_move_the_selected_page() {
+fn command_shift_arrows_move_the_selected_page() {
     let mut harness = harness();
     drop_files(
         &mut harness,
@@ -378,16 +378,16 @@ fn command_arrows_move_the_selected_page() {
     harness.get_by_label("b.png").click();
     settle(&mut harness);
 
-    press_command(&mut harness, egui::Key::ArrowRight);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowRight);
     assert_eq!(thumbnails(&harness), ["a.png", "c.png", "b.png"]);
     // Already last.
-    press_command(&mut harness, egui::Key::ArrowRight);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowRight);
     assert_eq!(thumbnails(&harness), ["a.png", "c.png", "b.png"]);
 
-    press_command(&mut harness, egui::Key::ArrowLeft);
-    press_command(&mut harness, egui::Key::ArrowLeft);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowLeft);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowLeft);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
-    press_command(&mut harness, egui::Key::ArrowLeft);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowLeft);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png", "c.png"]);
     harness.get_by_label(&t!("current-page", name = "b.png"));
 }
@@ -420,7 +420,7 @@ fn active_page_scrolls_into_view() {
     drop_files(&mut harness, &files);
 
     for _ in 1..names.len() {
-        press_command(&mut harness, egui::Key::ArrowRight);
+        press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowRight);
     }
     assert_eq!(
         thumbnails(&harness).last().map(String::as_str),
@@ -445,7 +445,7 @@ fn export_follows_page_order() {
     step_until(&mut harness, &t!("current-page", name = "b.png"));
     step_until(&mut harness, "# Thurs 23 Oct");
 
-    press_command(&mut harness, egui::Key::ArrowLeft);
+    press(&mut harness, COMMAND_SHIFT, egui::Key::ArrowLeft);
     assert_eq!(thumbnails(&harness), ["b.png", "a.png"]);
     let copied = export_to_clipboard(&mut harness);
     let b = copied.find("<!-- b.png -->").unwrap();
@@ -454,22 +454,22 @@ fn export_follows_page_order() {
 }
 
 #[test]
-fn arrows_select_the_previous_and_next_page() {
+fn command_arrows_select_the_previous_and_next_page() {
     let mut harness = harness();
     drop_files(
         &mut harness,
         &[("a.png", png()), ("b.png", png()), ("c.png", png())],
     );
-    let none = egui::Modifiers::NONE;
+    let command = egui::Modifiers::COMMAND;
 
     // Already first.
-    press(&mut harness, none, egui::Key::ArrowLeft);
+    press(&mut harness, command, egui::Key::ArrowLeft);
     harness.get_by_label(&t!("current-page", name = "a.png"));
     for _ in 0..3 {
-        press(&mut harness, none, egui::Key::ArrowRight);
+        press(&mut harness, command, egui::Key::ArrowRight);
     }
     harness.get_by_label(&t!("current-page", name = "c.png"));
-    press(&mut harness, none, egui::Key::ArrowLeft);
+    press(&mut harness, command, egui::Key::ArrowLeft);
     harness.get_by_label(&t!("current-page", name = "b.png"));
     assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png"]);
 }

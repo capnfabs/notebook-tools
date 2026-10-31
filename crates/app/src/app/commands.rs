@@ -49,7 +49,9 @@ impl NotebookApp {
     pub(super) fn command_state(&self, ctx: &egui::Context, command: Command) -> CommandState {
         let spec = command.spec();
         let possible = self.can(command);
-        let typing = spec.edits_text && ctx.egui_wants_keyboard_input();
+        // Only a text field keeps its keys from the commands; a focused label or button doesn't.
+        // See `decisions/2026-10-31-keyboard-focus.md`.
+        let typing = spec.edits_text && ctx.text_edit_focused();
         let checked = match command {
             Command::ViewOriginal => Some(self.view == View::Original),
             Command::ViewCleaned => Some(self.view == View::Cleaned),

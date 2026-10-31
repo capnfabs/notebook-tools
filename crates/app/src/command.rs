@@ -103,18 +103,19 @@ impl Command {
                 keys(Modifiers::COMMAND, Key::Num3),
                 false,
             ),
-            Self::PreviousPage => ("previous-page", keys(Modifiers::NONE, Key::ArrowLeft), true),
-            Self::NextPage => ("next-page", keys(Modifiers::NONE, Key::ArrowRight), true),
+            // Bare arrows move the keyboard focus. See `decisions/2026-10-31-arrow-keys-move-focus.md`.
+            Self::PreviousPage => (
+                "previous-page",
+                keys(Modifiers::COMMAND, Key::ArrowLeft),
+                true,
+            ),
+            Self::NextPage => ("next-page", keys(Modifiers::COMMAND, Key::ArrowRight), true),
             Self::Transcribe => ("transcribe", keys(Modifiers::COMMAND, Key::T), false),
             Self::ForceRetranscribe => ("force-retranscribe", keys(COMMAND_SHIFT, Key::T), false),
             Self::ResetTranscript => ("reset-transcript", None, false),
             Self::TranscribeAll => ("transcribe-all", keys(COMMAND_ALT, Key::T), false),
-            Self::MoveLeft => ("move-left", keys(Modifiers::COMMAND, Key::ArrowLeft), true),
-            Self::MoveRight => (
-                "move-right",
-                keys(Modifiers::COMMAND, Key::ArrowRight),
-                true,
-            ),
+            Self::MoveLeft => ("move-left", keys(COMMAND_SHIFT, Key::ArrowLeft), true),
+            Self::MoveRight => ("move-right", keys(COMMAND_SHIFT, Key::ArrowRight), true),
             Self::SortByName => ("sort-by-name", None, false),
             Self::PlaceCorners => ("place-corners", None, false),
             Self::ResetCorners => ("reset-corners", None, false),
@@ -423,14 +424,12 @@ mod tests {
         assert_eq!(pressed(COMMAND_SHIFT, Key::T), [Command::ForceRetranscribe]);
         assert_eq!(pressed(COMMAND_ALT, Key::T), [Command::TranscribeAll]);
         assert_eq!(pressed(Modifiers::COMMAND, Key::T), [Command::Transcribe]);
+        assert_eq!(pressed(COMMAND_SHIFT, Key::ArrowLeft), [Command::MoveLeft]);
         assert_eq!(
             pressed(Modifiers::COMMAND, Key::ArrowLeft),
-            [Command::MoveLeft]
-        );
-        assert_eq!(
-            pressed(Modifiers::NONE, Key::ArrowLeft),
             [Command::PreviousPage]
         );
+        assert_eq!(pressed(Modifiers::NONE, Key::ArrowLeft), []);
     }
 
     #[test]

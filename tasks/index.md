@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## polish
-- [ ] [Keyboard focus audit](keyboard-focus-audit.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 

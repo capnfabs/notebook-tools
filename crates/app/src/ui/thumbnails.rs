@@ -30,6 +30,10 @@ const STRIP_END_PT: i8 = 12;
 const DRAG_SCROLL_EDGE_PT: f32 = 32.0;
 const DRAG_SCROLL_STEP_PT: f32 = 8.0;
 
+/// Thumbnails can be clicked and dragged, but don't take the keyboard focus: ⌘←/→ go through the
+/// pages. See `decisions/2026-10-31-keyboard-focus.md`.
+const THUMB_SENSE: Sense = Sense::CLICK.union(Sense::DRAG);
+
 /// What the user did in the strip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -103,7 +107,7 @@ impl Thumbnails {
                         .tint(tint)
                         .corner_radius(THUMB_CORNER_PT)
                         .alt_text(&page.name)
-                        .sense(Sense::click_and_drag()),
+                        .sense(THUMB_SENSE),
                 ),
                 None => loading_tile(ui, tint),
             }
@@ -198,7 +202,7 @@ impl Thumbnails {
 /// Stands in for the thumbnail of a page that's loading.
 fn loading_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
     let size = Vec2::new(THUMB_SIZE_PT * 3.0 / 4.0, THUMB_SIZE_PT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(size, THUMB_SENSE);
     let fill = ui
         .visuals()
         .extreme_bg_color

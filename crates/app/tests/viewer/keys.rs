@@ -44,7 +44,7 @@ fn command_backspace_deletes_the_page() {
     show_transcript(&mut harness);
     press_command(&mut harness, egui::Key::Backspace);
     harness.get_by_label(&t!("confirm-delete", name = "b.png"));
-    press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    press_command(&mut harness, egui::Key::ArrowRight);
     press_command(&mut harness, egui::Key::Num1);
     harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
@@ -185,7 +185,7 @@ fn editing_keys_stay_with_the_text_field() {
     harness.run_ok();
     harness.get_by_role(Role::TextInput);
 
-    press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    press_command(&mut harness, egui::Key::ArrowRight);
     press_command(&mut harness, egui::Key::Backspace);
     assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
     harness.get_by_label(&t!("current-page-cleaned", name = "a.png"));

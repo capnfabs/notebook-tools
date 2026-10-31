@@ -318,3 +318,72 @@ fn growing_the_crop_asks_for_retranscription() {
     assert!(warns_missed_page(&harness));
     assert!(!warns_lines_outside(&harness));
 }
+
+#[test]
+fn a_focused_corner_is_ringed_and_moves_with_the_arrows() {
+    let mut harness = harness();
+    drop_files(
+        &mut harness,
+        &[("a.png", page_photo()), ("b.png", page_photo())],
+    );
+    click_command(&harness, Command::ViewCleaned);
+    settle(&mut harness);
+    let label = t!("corner-top-left");
+    // The ring around the focused handle.
+    let rings = |harness: &Harness<'_, NotebookApp>| -> Vec<egui::Pos2> {
+        let circles = harness
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Circle(circle) if circle.radius == 8.0 => Some(circle.center),
+                _ => None,
+            });
+        circles.collect()
+    };
+    assert!(rings(&harness).is_empty());
+
+    tab_to(&mut harness, &label);
+    let before = centre(&harness, &label);
+    let ring = rings(&harness);
+    assert!(
+        ring.len() == 1 && ring[0].distance(before) < 1.0,
+        "{ring:?}"
+    );
+
+    // The arrows nudge it, not change page; Shift nudges further.
+    for _ in 0..3 {
+        press(&mut harness, egui::Modifiers::NONE, egui::Key::ArrowRight);
+    }
+    press(&mut harness, egui::Modifiers::SHIFT, egui::Key::ArrowDown);
+    let moved = centre(&harness, &label) - before;
+    assert!((moved - egui::vec2(3.0, 10.0)).length() < 1.0, "{moved:?}");
+    assert_eq!(selected_thumbnails(&harness), ["a.png"]);
+    assert!(!disabled(&harness, &Command::ResetCorners.label()));
+    assert_eq!(focused(&harness).as_deref(), Some(label.as_str()));
+}
+
+#[test]
+fn a_held_arrow_moves_the_corner_once_let_go() {
+    let mut harness = harness();
+    cleaned_view(&mut harness);
+    let label = t!("corner-bottom-right");
+    tab_to(&mut harness, &label);
+    let before = centre(&harness, &label);
+
+    // Key repeats while held move the handle, but the page is only cleaned again once let go.
+    harness.key_down(egui::Key::ArrowLeft);
+    harness.run_ok();
+    harness.key_down(egui::Key::ArrowLeft);
+    harness.run_ok();
+    assert!(centre(&harness, &label).x < before.x - 1.5);
+    assert!(disabled(&harness, &Command::ResetCorners.label()));
+    harness.key_up(egui::Key::ArrowLeft);
+    settle(&mut harness);
+    assert!(!disabled(&harness, &Command::ResetCorners.label()));
+    assert_near(
+        f64::from(centre(&harness, &label).x),
+        f64::from(before.x - 2.0),
+        1.0,
+    );
+}
