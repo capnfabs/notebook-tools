@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use eframe::egui;
 use egui::{
-    Align, Label, Layout, Rect, Response, RichText, Shape, TextStyle, TextWrapMode, TextureHandle,
-    TextureOptions, UiBuilder, Vec2, WidgetText,
+    Align, FontSelection, Label, Layout, Rect, Response, RichText, Shape, TextStyle, TextWrapMode,
+    TextureHandle, TextureOptions, UiBuilder, Vec2, WidgetText, text::LayoutJob,
 };
 use jiff::tz::TimeZone;
 use notebook_core::cache::Cache;
@@ -40,6 +40,10 @@ const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 
 /// How long a hint stays in the status line, in seconds.
 const HINT_SECS: f64 = 4.0;
+
+/// The most lines the transcript's status takes beside its buttons, wrapped; any more and it goes
+/// above them.
+const MAX_STATUS_LINES_BESIDE: usize = 2;
 
 /// Which version of the selected page the viewer shows.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -1194,7 +1198,7 @@ impl NotebookApp {
 
     /// Where page `index`'s transcript came from, or why retranscribing it failed, and buttons to
     /// reset or retranscribe it, at the bottom of `rect`. Returns where it went, if the page has a
-    /// transcript.
+    /// transcript. See `decisions/2026-10-31-transcript-status-layout.md`.
     fn transcript_status(&mut self, ui: &mut egui::Ui, index: usize, rect: Rect) -> Option<Rect> {
         let page = self.pages.get(index)?;
         let transcript = page.transcript.as_ref()?;
@@ -1202,7 +1206,7 @@ impl NotebookApp {
         let can_transcribe = self.transcriptions.available();
         let when = when_and_by(transcript, &TimeZone::system());
         let error = self.transcriptions.error(&page.name);
-        let mut text = match error {
+        let text = match error {
             Some(error) => t!(
                 "transcript-retranscribe-failed",
                 error = error,
@@ -1215,67 +1219,76 @@ impl NotebookApp {
             .loaded
             .as_ref()
             .map(|l| transcript.fit(l.report.crop()));
+        // Each line in its own colour: only warnings look like warnings.
+        let mut lines = vec![(text, error.map(|_| ui.visuals().error_fg_color))];
+        let warn = Some(ui.visuals().warn_fg_color);
         let lines_cut_off = fit.map_or(0, |f| f.lines_cut_off);
         if lines_cut_off > 0 {
-            let lines = t!("transcript-lines-cut-off", count = lines_cut_off);
-            text = format!("{text}\n{lines}");
+            lines.push((t!("transcript-lines-cut-off", count = lines_cut_off), warn));
         }
-        let missed_page = fit.is_some_and(|f| f.missed_page());
-        if missed_page {
-            text = format!("{text}\n{}", t!("transcript-missed-page"));
+        if fit.is_some_and(|f| f.missed_page()) {
+            lines.push((t!("transcript-missed-page"), warn));
         }
-        let text = match error {
-            Some(_) => RichText::new(text).color(ui.visuals().error_fg_color),
-            None if lines_cut_off > 0 || missed_page => {
-                RichText::new(text).color(ui.visuals().warn_fg_color)
+        let job = |ui: &egui::Ui| {
+            let mut job = LayoutJob::default();
+            for (i, (line, colour)) in lines.iter().enumerate() {
+                let line = if i == 0 {
+                    line.clone()
+                } else {
+                    format!("\n{line}")
+                };
+                let line = match colour {
+                    Some(colour) => RichText::new(line).color(*colour),
+                    None => RichText::new(line),
+                };
+                line.append_to(&mut job, ui.style(), FontSelection::Default, Align::Min);
             }
-            None => RichText::new(text),
+            job
         };
-        let layout = Layout::bottom_up(Align::Min);
-        // Bottom up, so the row sits at the bottom however many lines the text wraps to.
-        let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
-            ui.horizontal(|ui| {
-                // Long text wraps in the room left of the buttons.
-                let reset_label = Command::ResetTranscript.label();
-                let force_label = Command::ForceRetranscribe.label();
-                let buttons_width: f32 = [&reset_label, &force_label]
-                    .map(|label| {
-                        let galley = WidgetText::from(label.as_str()).into_galley(
-                            ui,
-                            Some(TextWrapMode::Extend),
-                            f32::INFINITY,
-                            TextStyle::Button,
-                        );
-                        galley.size().x
-                            + 2.0 * ui.spacing().button_padding.x
-                            + ui.spacing().item_spacing.x
-                    })
-                    .iter()
-                    .sum();
-                let text_width = ui.available_width() - buttons_width;
-                ui.scope(|ui| {
-                    ui.set_max_width(text_width);
-                    ui.add(Label::new(text).wrap());
-                });
-                let reset = ui
-                    .add_enabled(corrected, egui::Button::new(reset_label))
-                    .clicked();
-                let force = ui
-                    .add_enabled(can_transcribe, egui::Button::new(force_label))
-                    .on_disabled_hover_text(t!("no-transcriber-hint"));
-                let force = with_shortcut(force, Command::ForceRetranscribe).clicked();
-                (reset, force)
-            })
-            .inner
+
+        // Buttons first, so the text gets what room they leave. Every widget here is sized before
+        // it's placed, so `Align::Max` puts its bottom at the bottom of `rect`.
+        let row = Layout::right_to_left(Align::Max);
+        let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(row), |ui| {
+            let force = egui::Button::new(Command::ForceRetranscribe.label());
+            let force = ui
+                .add_enabled(can_transcribe, force)
+                .on_disabled_hover_text(t!("no-transcriber-hint"));
+            let force = with_shortcut(force, Command::ForceRetranscribe);
+            let reset = egui::Button::new(Command::ResetTranscript.label());
+            let reset = ui.add_enabled(corrected, reset);
+            let buttons = force.rect | reset.rect;
+            // Wrapped to the room left of the buttons, to count its lines.
+            let galley = WidgetText::from(job(ui)).into_galley(
+                ui,
+                Some(TextWrapMode::Wrap),
+                ui.available_width(),
+                TextStyle::Body,
+            );
+            let beside = (galley.rows.len() <= MAX_STATUS_LINES_BESIDE).then(|| {
+                let layout = Layout::left_to_right(Align::Max);
+                ui.with_layout(layout, |ui| ui.add(Label::new(galley)))
+                    .inner
+                    .rect
+            });
+            (reset.clicked(), force.clicked(), buttons, beside)
         });
-        let (reset, force) = scope.inner;
+        let (reset, force, buttons, beside) = scope.inner;
+        // Too long to go beside the buttons: above them, full width.
+        let text = beside.unwrap_or_else(|| {
+            let above = rect.with_max_y(buttons.top() - ui.spacing().item_spacing.y);
+            let layout = Layout::bottom_up(Align::Min);
+            let builder = UiBuilder::new().max_rect(above).layout(layout);
+            let label = Label::new(job(ui)).wrap();
+            ui.scope_builder(builder, |ui| ui.add(label)).inner.rect
+        });
         if reset {
             self.request_reset(index);
         }
         if force {
             self.request_force(index);
         }
-        Some(scope.response.rect)
+        Some(text | buttons)
     }
 
     /// Page `index` being transcribed, or why it couldn't be, or a button to transcribe it.

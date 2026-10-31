@@ -954,6 +954,14 @@ fn recrop(harness: &mut Harness<'_, NotebookApp>, corners: [(f32, f32); 4]) {
     show_transcript(harness);
 }
 
+/// The page grown to most of the photo, table and all, so its status says it needs retranscribing.
+fn grow_crop(harness: &mut Harness<'_, NotebookApp>) {
+    recrop(
+        harness,
+        [(5.0, 5.0), (195.0, 5.0), (195.0, 145.0), (5.0, 145.0)],
+    );
+}
+
 /// Where the box labelled `label` is on a.png's cleaned page, as fractions of its width and height:
 /// `[x0, y0, x1, y1]`.
 fn on_page(harness: &Harness<'_, NotebookApp>, label: &str) -> [f64; 4] {
@@ -1013,11 +1021,7 @@ fn growing_the_crop_asks_for_retranscription() {
     let mut harness = harness_with(transcriber());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    // Most of the photo, table and all.
-    recrop(
-        &mut harness,
-        [(5.0, 5.0), (195.0, 5.0), (195.0, 145.0), (5.0, 145.0)],
-    );
+    grow_crop(&mut harness);
     assert!(warns_missed_page(&harness));
     assert!(!warns_lines_outside(&harness));
 }
@@ -1282,21 +1286,102 @@ fn answering(answers: Vec<Result<Fetched, OcrError>>) -> (Fetch, Arc<AtomicUsize
     (fetch, calls)
 }
 
-/// Checks the status line containing `status` has the Force button on its row, to its right and
-/// within the page's half of the window.
-fn force_beside(harness: &Harness<'_, NotebookApp>, status: &str) {
-    let text = harness.get_by_label_contains(status);
-    let text = text.accesskit_node().bounding_box().unwrap();
-    let label = Command::ForceRetranscribe.label();
-    let button = harness.get_by_label(&label);
-    let button = button.accesskit_node().bounding_box().unwrap();
+/// Where the transcript's status went relative to its buttons.
+#[derive(Debug, PartialEq)]
+enum Status {
+    Beside,
+    Above,
+}
+
+/// Checks the status line containing `status` sits with its buttons: Reset then Force at the
+/// bottom right of the page's side of the split, the text left of or above them, none of it
+/// below them. Returns which.
+fn status_placement(harness: &Harness<'_, NotebookApp>, status: &str) -> Status {
+    let bounds = |node: egui_kittest::Node<'_>| node.accesskit_node().bounding_box().unwrap();
+    let text = bounds(harness.get_by_label_contains(status));
+    let force = bounds(harness.get_by_label(&Command::ForceRetranscribe.label()));
+    let reset = bounds(harness.get_by_label(&Command::ResetTranscript.label()));
+    let all = format!("text {text:?}, reset {reset:?}, force {force:?}");
+    assert!(reset.x1 <= force.x0, "{all}");
+    assert_eq!(reset.y1, force.y1, "{all}");
+    assert!(text.y1 <= force.y1, "clipped: {all}");
+    // Against the split, left of the transcript.
+    let transcript = bounds(harness.get_by_label("# Thurs 23 Oct"));
+    let gap = transcript.x0 - force.x1;
     assert!(
-        button.y0 < text.y1 && text.y0 < button.y1,
-        "{text:?}, {button:?}"
+        (0.0..32.0).contains(&gap),
+        "{all}, transcript {transcript:?}"
     );
-    assert!(text.x1 <= button.x0, "{text:?}, {button:?}");
-    let half = harness.ctx.content_rect().center().x;
-    assert!(button.x1 <= f64::from(half), "{button:?}");
+    if text.x1 <= reset.x0 {
+        // The last line level with the buttons.
+        assert!(text.y1 > reset.y0, "{all}");
+        Status::Beside
+    } else {
+        assert!(text.y1 <= reset.y0, "overlaps: {all}");
+        Status::Above
+    }
+}
+
+/// A harness `width` wide that transcribes every page to the recorded response.
+fn harness_of_width(width: f32) -> Harness<'static, NotebookApp> {
+    Harness::builder()
+        .with_size(egui::vec2(width, 600.0))
+        .build_ui_state(
+            |ui, app: &mut NotebookApp| app.ui(ui),
+            NotebookApp::with_transcription(Some(transcriber()), None),
+        )
+}
+
+/// The colour the text `needle` is painted in.
+fn text_colour(harness: &Harness<'_, NotebookApp>, needle: &str) -> egui::Color32 {
+    harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|clipped| {
+            let egui::Shape::Text(text) = &clipped.shape else {
+                return None;
+            };
+            let job = &text.galley.job;
+            let at = job.text.find(needle)?;
+            let at = egui::text::ByteIndex(at);
+            let section = job.sections.iter().find(|s| s.byte_range.contains(&at))?;
+            Some(section.format.color)
+        })
+        .unwrap_or_else(|| panic!("{needle} isn't painted"))
+}
+
+#[test]
+fn a_short_status_sits_beside_its_buttons() {
+    // 800pt wide, so the page gets half and the buttons take most of that: one line wraps to two.
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    let status = before_mark(t!("transcript-from-claude", when = MARK));
+    assert_eq!(status_placement(&harness, &status), Status::Beside);
+}
+
+#[test]
+fn a_long_status_goes_above_its_buttons() {
+    // Room for the warning beside the buttons, but not on one line: three lines in all.
+    let mut harness = harness_of_width(1400.0);
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    grow_crop(&mut harness);
+    let status = t!("transcript-missed-page");
+    assert_eq!(status_placement(&harness, &status), Status::Above);
+}
+
+#[test]
+fn only_warnings_take_the_warning_colour() {
+    let mut harness = harness_with(transcriber());
+    drop_files(&mut harness, &[("a.png", page_photo())]);
+    show_transcript(&mut harness);
+    grow_crop(&mut harness);
+    let warn = harness.ctx.global_style().visuals.warn_fg_color;
+    assert_eq!(text_colour(&harness, &t!("transcript-missed-page")), warn);
+    let from = before_mark(t!("transcript-from-claude", when = MARK));
+    assert_ne!(text_colour(&harness, &from), warn);
 }
 
 fn overloaded() -> OcrError {
@@ -1316,7 +1401,7 @@ fn force_retranscribes_without_asking_if_uncorrected() {
     let mut harness = cached_harness(gated_fetch(fetch, gate.clone()), dir.path());
     drop_files(&mut harness, &[("a.png", page_photo())]);
     show_transcript(&mut harness);
-    force_beside(
+    status_placement(
         &harness,
         &before_mark(t!("transcript-from-claude", when = MARK)),
     );
@@ -1441,7 +1526,7 @@ fn failed_force_keeps_the_corrected_transcript_and_the_cache() {
         when = MARK
     ));
     step_until(&mut harness, &failed);
-    force_beside(&harness, &failed);
+    status_placement(&harness, &failed);
     harness.get_by_label("plumbers");
 
     // The cached answer is still Claude's.

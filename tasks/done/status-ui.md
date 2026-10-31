@@ -5,3 +5,5 @@ The status under the page (`transcript_status` in `crates/app/src/app.rs`) is fu
 - The whole block takes the warning colour, including the neutral "From cache: …" line.
 - Long warnings get clipped at the panel's bottom edge ([missed-page.png](status-ui/missed-page.png)).
 - The "Force retranscription" button floats beside the text rather than sitting with the warning it answers ([lines-cut-off.png](status-ui/lines-cut-off.png)).
+
+What I want here is in [goal.png](status-ui/goal.png).

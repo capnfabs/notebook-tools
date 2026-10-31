@@ -33,3 +33,4 @@ In the order they were finished.
 - [x] [Remove the corner backfill](remove-corner-backfill.md)
 - [x] [Clamp boxes to the image](clamp-boxes.md) (dropped)
 - [x] [Cached transcripts without credentials](cache-without-credentials.md)
+- [x] [Polish the transcript status line](status-ui.md)
