@@ -6,9 +6,9 @@ See [done/index.md](done/index.md).
 ## features
 
 ## polish
+- [ ] [Keyboard focus audit](keyboard-focus-audit.md)
 - [ ] [Keep page corners across restarts](persist-corners.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
-- [ ] [Keyboard focus audit](keyboard-focus-audit.md)
 
 ## polish (difficult / lower pri)
 - [ ] [Edit menu](edit-menu.md)
