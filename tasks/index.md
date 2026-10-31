@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## polish
-- [ ] [Gzip project files](gzip-projects.md)
 - [ ] [Show pages whose photos are missing](missing-pages.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 

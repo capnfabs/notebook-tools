@@ -9,6 +9,8 @@ base64 = "0.22"
 # Transcriptions are cached on disk, by the photo's hash.
 dirs = "7"
 epaint_default_fonts.workspace = true
+# Gzips project files.
+flate2 = "1"
 image.workspace = true
 imageproc = { workspace = true, features = ["rayon"] }
 krilla = "0.8"

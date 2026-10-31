@@ -37,3 +37,4 @@ In the order they were finished.
 - [x] [Keyboard focus audit](keyboard-focus-audit.md)
 - [x] [Keep page corners across restarts: projects](persist-corners.md)
 - [x] [Open projects by drop and from the command line](open-project-more-ways.md)
+- [x] [Gzip project files](gzip-projects.md)

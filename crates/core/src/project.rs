@@ -1,13 +1,13 @@
 //! Projects: the pages the user opened, in order, with their corners and transcripts, saved to a
-//! `.notebook` file. Photos aren't copied in: each page names its file by a path relative to the
+//! `.notebook` file, gzipped JSON. Photos aren't copied in: each page names its file by a path relative to the
 //! project, and its hash, so a moved or changed photo is noticed. Transcripts are saved whole,
 //! corrections and Claude's answer included, so a project doesn't need the cache. A photo that
 //! can't be found when the project opens leaves its page [`Missing`], kept so that saving again
 //! loses nothing.
 //!
-//! See `decisions/2026-10-31-projects.md`.
+//! See `decisions/2026-10-31-projects.md` and `decisions/2026-10-31-gzip-projects.md`.
 
-use std::io;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,7 +20,8 @@ use crate::page::{Page, Pages};
 use crate::transcript::Transcript;
 
 /// Version of the project file. Bump it when the format changes in a way an older build would
-/// misread, and keep reading the older versions. A test snapshots the format.
+/// misread, and keep reading the older versions. A test snapshots the format. It's the JSON's
+/// version: the gzip around it isn't versioned.
 pub const PROJECT_VERSION: u32 = 1;
 
 /// A project file's extension.
@@ -153,13 +154,13 @@ pub fn save(path: &Path, pages: &Pages, missing: &[Missing]) -> Result<(), SaveE
         version: PROJECT_VERSION,
         pages: saved,
     };
-    json_file::write(path, &file).map_err(SaveError::Io)
+    json_file::write_gzipped(path, &file).map_err(SaveError::Io)
 }
 
 /// Opens the project file at `path`, reading each page's photo. Photos that aren't there, or
 /// aren't the same file, leave their pages [`Missing`].
 pub fn open(path: &Path) -> Result<Opened, OpenError> {
-    let bytes = std::fs::read(path).map_err(OpenError::Io)?;
+    let bytes = json(path)?;
     let version = serde_json::from_slice::<serde_json::Value>(&bytes)
         .map_err(|e| OpenError::Format(e.to_string()))?
         .get("version")
@@ -200,6 +201,16 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
         pages: Pages::in_order(pages),
         missing,
     })
+}
+
+/// The JSON in the project file at `path`, ungzipped.
+pub fn json(path: &Path) -> Result<Vec<u8>, OpenError> {
+    let gzipped = std::fs::read(path).map_err(OpenError::Io)?;
+    let mut json = Vec::new();
+    flate2::read::GzDecoder::new(&gzipped[..])
+        .read_to_end(&mut json)
+        .map_err(|e| OpenError::Format(e.to_string()))?;
+    Ok(json)
 }
 
 /// The photo's file, if it's still the one saved.

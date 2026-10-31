@@ -3675,6 +3675,7 @@ dependencies = [
  "base64 0.22.1",
  "dirs",
  "epaint_default_fonts",
+ "flate2",
  "image",
  "imageproc",
  "insta",

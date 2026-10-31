@@ -1,5 +1,6 @@
 //! Saving and opening projects, with photos in temporary directories.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -58,7 +59,14 @@ fn summary(pages: &Pages) -> Summary {
 }
 
 fn file(path: &Path) -> Value {
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    serde_json::from_slice(&project::json(path).unwrap()).unwrap()
+}
+
+/// Writes `json` to `path`, gzipped as a project is.
+fn write_gzipped(path: &Path, json: &str) {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(json.as_bytes()).unwrap();
+    std::fs::write(path, gz.finish().unwrap()).unwrap();
 }
 
 #[test]
@@ -92,6 +100,10 @@ fn pages_corners_and_transcripts_come_back() {
     assert!(b.corrected() && b.uncertain[0].resolved);
     assert!(b.source.is_some(), "Claude's answer is kept for restyling");
 
+    assert!(
+        std::fs::read(&path).unwrap().starts_with(&[0x1f, 0x8b]),
+        "gzipped"
+    );
     let saved = file(&path);
     assert_eq!(saved["version"], PROJECT_VERSION);
     assert_eq!(saved["pages"][0]["photo"]["path"], "../photos/b.jpg");
@@ -206,14 +218,21 @@ fn pages_without_a_file_cant_be_saved() {
 fn newer_or_damaged_projects_are_refused() {
     let dir = dir("refused");
     let path = dir.path().join("p.notebook");
-    std::fs::write(&path, r#"{"version": 99, "pages": "who knows"}"#).unwrap();
+    write_gzipped(&path, r#"{"version": 99, "pages": "who knows"}"#);
     assert!(matches!(
         project::open(&path),
         Err(OpenError::NewerVersion(99))
     ));
-    std::fs::write(&path, "not json").unwrap();
+    write_gzipped(&path, "not json");
     assert!(matches!(project::open(&path), Err(OpenError::Format(_))));
-    std::fs::write(&path, r#"{"pages": []}"#).unwrap();
+    write_gzipped(&path, r#"{"pages": []}"#);
+    assert!(matches!(project::open(&path), Err(OpenError::Format(_))));
+    write_gzipped(&path, r#"{"version": 1, "pages": []}"#);
+    assert!(project::open(&path).is_ok());
+    // Not gzipped, as projects once were.
+    std::fs::write(&path, r#"{"version": 1, "pages": []}"#).unwrap();
+    assert!(matches!(project::open(&path), Err(OpenError::Format(_))));
+    std::fs::write(&path, "").unwrap();
     assert!(matches!(project::open(&path), Err(OpenError::Format(_))));
     assert!(matches!(
         project::open(&dir.path().join("none.notebook")),
@@ -262,7 +281,7 @@ fn project_file_format() {
     };
     let path = dir.path().join("p.notebook");
     project::save(&path, &Pages::in_order(vec![page]), &[]).unwrap();
-    insta::assert_snapshot!(std::fs::read_to_string(&path).unwrap());
+    insta::assert_snapshot!(String::from_utf8(project::json(&path).unwrap()).unwrap());
 }
 
 #[test]

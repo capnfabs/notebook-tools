@@ -9,6 +9,7 @@ use eframe::egui::{Key, Modifiers, ViewportCommand};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use notebook_app::{Command, NotebookApp, Pick, PickFiles, SavePath, Transcriber, t};
+use notebook_core::project;
 use serde_json::Value;
 
 use crate::common::*;
@@ -67,7 +68,7 @@ fn setup(test: &str) -> (tempfile::TempDir, PathBuf, Dialogs) {
 }
 
 fn saved(path: &Path) -> Value {
-    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    serde_json::from_slice(&project::json(path).unwrap()).unwrap()
 }
 
 fn saved_names(path: &Path) -> Vec<String> {
