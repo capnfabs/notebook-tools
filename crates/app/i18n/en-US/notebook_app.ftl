@@ -13,6 +13,11 @@ menu-window = Window
 ## Commands: menu items, and the buttons that do the same.
 
 command-settings = Settings…
+command-quit = Quit { app-name }
+command-new-project = New Project
+command-open-project = Open Project…
+command-save = Save
+command-save-as = Save As…
 command-add-pages = Add Pages…
 command-export = Export
 # Export, once there's a last export to repeat.
@@ -48,6 +53,11 @@ confirm-force = Retranscribe { $name }? Your corrections will be lost.
 confirm-force-button = Retranscribe
 confirm-reset = Reset { $name } to Claude's transcription? Your corrections will be lost.
 confirm-reset-button = Reset
+# Before closing, quitting, or starting or opening another project.
+unsaved-title = Save changes to { $name }?
+unsaved-detail = Your changes will be lost if you don't save them.
+unsaved-save = Save
+unsaved-discard = Don't Save
 
 ## The window, before and after pages are added
 
@@ -181,6 +191,30 @@ pdf-build-failed = Couldn't build the PDF: { $error }
 file-type-pdf = PDF
 file-type-markdown = Markdown
 file-type-photos = Photos
+file-type-project = notebook-tools project
+
+## Projects. See `decisions/2026-10-31-projects.md`.
+
+# A project that hasn't been saved yet.
+project-untitled = Untitled
+# The window's title, which is otherwise the project's name, when it has unsaved changes.
+window-title-edited = { $name } — Edited
+project-open-failed = Couldn't open { $path }: { $error }
+project-not-a-project = { $path } isn't a notebook-tools project, or it's damaged: { $error }
+project-newer-version = { $path } was saved by a newer version of { app-name }. Update to open it.
+project-save-failed = Couldn't save { $path }: { $error }
+# Pages dropped without a file location (rare) can't be saved in a project.
+project-no-path = Couldn't save: { $names } { $count ->
+    [one] was
+   *[other] were
+} added without a file location. Delete and add { $count ->
+    [one] it
+   *[other] them
+} again with { command-add-pages }.
+# A page whose photo wasn't found when the project opened. It's kept, and saved again as it was.
+photo-not-found = Couldn't find { $name } at { $path }. Its page is kept in the project, but hidden.
+photo-changed = { $path } has changed since the project was saved. { $name }'s page is kept in the project, but hidden.
+photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept in the project, but hidden.
 
 ## Settings
 

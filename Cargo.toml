@@ -20,7 +20,7 @@ imageproc = { version = "0.27", default-features = false }
 libheif-rs = { version = "3", default-features = false, features = ["v1_19"] }
 log = "0.4"
 rayon = "1"
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 tempfile = "3"
 

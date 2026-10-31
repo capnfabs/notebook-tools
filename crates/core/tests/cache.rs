@@ -342,6 +342,38 @@ fn entries_without_corners_are_fetched_again() {
     assert_eq!(transcript.crop, CROP);
 }
 
+/// The shape entries have had since they kept corners: changing it would need a version bump.
+#[test]
+fn entries_keep_their_shape() {
+    let (_dir, cache) = cache("shape");
+    let path = cache.entry_path(PHOTO, Model::Opus);
+    let response: serde_json::Value = serde_json::from_slice(&fixture("success")).unwrap();
+    let entry = serde_json::json!({
+        "image_size": [1200, 900],
+        "corners": CROP.corners,
+        "response": response,
+        "stored_at": 1,
+    });
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, entry.to_string()).unwrap();
+    let transcript = cache
+        .get(PHOTO, Model::Opus, &MarkdownStyle::default())
+        .expect("read");
+    assert_eq!(transcript.crop, CROP);
+    assert_eq!(
+        transcript.stored_at,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+    );
+
+    refresh_with(&cache, Model::Opus);
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let keys: Vec<&String> = written.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["corners", "image_size", "response", "stored_at"]);
+    let fallback: serde_json::Value = serde_json::from_slice(&fixture("fallback")).unwrap();
+    assert_eq!(written["response"], fallback, "as it came back");
+}
+
 #[test]
 fn entries_are_formatted_json() {
     let (_dir, cache) = cache("formatted");

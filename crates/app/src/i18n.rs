@@ -4,6 +4,7 @@
 //!
 //! See `decisions/2026-10-30-strings-in-fluent.md`.
 
+use std::path::Path;
 use std::sync::LazyLock;
 
 use i18n_embed::LanguageLoader;
@@ -11,6 +12,7 @@ use i18n_embed::fluent::{FluentLanguageLoader, fluent_language_loader};
 use notebook_core::claude_transcribe::OcrError;
 use notebook_core::decode::DecodeError;
 use notebook_core::export::PdfError;
+use notebook_core::project::{Missing, OpenError, SaveError, Why};
 use rust_embed::RustEmbed;
 
 #[doc(hidden)]
@@ -85,6 +87,58 @@ pub fn decode_error(err: &DecodeError) -> String {
         DecodeError::Unrecognized => t!("decode-unrecognized"),
         DecodeError::Image(error) => error.to_string(),
         DecodeError::Heif(error) => t!("decode-heif", error = error.as_str()),
+    }
+}
+
+/// Why the project at `path` couldn't be opened.
+pub fn open_project_error(path: &Path, err: &OpenError) -> String {
+    let path = path.display().to_string();
+    match err {
+        OpenError::Io(error) => t!(
+            "project-open-failed",
+            path = path,
+            error = error.to_string()
+        ),
+        OpenError::Format(error) => {
+            t!("project-not-a-project", path = path, error = error.as_str())
+        }
+        OpenError::NewerVersion(_) => t!("project-newer-version", path = path),
+    }
+}
+
+/// Why the project couldn't be saved to `path`.
+pub fn save_project_error(path: &Path, err: &SaveError) -> String {
+    match err {
+        SaveError::Io(error) => t!(
+            "project-save-failed",
+            path = path.display().to_string(),
+            error = error.to_string()
+        ),
+        SaveError::NoPath(names) => {
+            t!(
+                "project-no-path",
+                names = names.join(", "),
+                count = names.len()
+            )
+        }
+    }
+}
+
+/// Why a page's photo wasn't found when its project opened.
+pub fn missing_photo(missing: &Missing) -> String {
+    let name = missing.page.name.as_str();
+    let path = missing.page.photo.path.display().to_string();
+    match &missing.why {
+        Why::NotFound => t!("photo-not-found", name = name, path = path),
+        Why::Changed => t!("photo-changed", name = name, path = path),
+        Why::Unreadable(error) => {
+            t!(
+                "photo-unreadable",
+                name = name,
+                path = path,
+                error = error.as_str()
+            )
+        }
     }
 }
 

@@ -24,7 +24,11 @@ similar = "2"
 
 [dev-dependencies]
 egui_kittest.workspace = true
+# Reads the project files the tests save.
+serde_json.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21.2"
+# Asks to save before quitting from the Dock: see `src/quit.rs`.
+objc2 = "0.6"

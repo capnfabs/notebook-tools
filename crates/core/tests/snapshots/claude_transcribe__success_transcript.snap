@@ -127,4 +127,7 @@ Transcript {
     from_cache: false,
     stored_at: None,
     before_corrections: None,
+    source: Some(
+        Source { .. },
+    ),
 }

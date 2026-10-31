@@ -12,7 +12,7 @@ use super::commands::shortcut_text;
 use super::{NotebookApp, View};
 use crate::command::Command;
 use crate::eval_log::Event;
-use crate::ingest::{Ingest, Received};
+use crate::ingest::{Ingest, Pick, Received};
 use crate::t;
 use crate::ui::dialog;
 use crate::ui::dialog::{Choice, Stakes};
@@ -44,7 +44,7 @@ impl NotebookApp {
             return;
         };
         self.asked_which_files = true;
-        let received = Ingest::read_paths(&pick_files());
+        let received = Ingest::read_paths(&pick_files(Pick::Photos));
         self.add_received(received);
     }
 
@@ -60,7 +60,7 @@ impl NotebookApp {
         if !received.is_empty() {
             self.errors.clear();
         }
-        for (name, bytes) in received {
+        for (name, path, bytes) in received {
             let bytes: Arc<[u8]> = match bytes {
                 Ok(bytes) => bytes.into(),
                 Err(err) => {
@@ -68,12 +68,13 @@ impl NotebookApp {
                     continue;
                 }
             };
+            let page = Page::new(name.clone(), bytes.clone());
+            let page = match path {
+                Some(path) => page.at(path),
+                None => page,
+            };
             // Duplicate names are skipped.
-            if self
-                .pages
-                .add(Page::new(name.clone(), bytes.clone()))
-                .is_some()
-            {
+            if self.pages.add(page).is_some() {
                 self.ingest
                     .load(&name, bytes.clone(), self.clean_params.clone(), None);
                 self.transcriptions.look_up(&name, bytes);

@@ -71,7 +71,7 @@ impl SettingsDialog {
         });
         match choice? {
             Choice::Affirmative => self.draft.take(),
-            Choice::Cancel => {
+            Choice::Cancel | Choice::Discard => {
                 self.draft = None;
                 None
             }

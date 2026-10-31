@@ -21,10 +21,11 @@ reqwest = { version = "0.13", features = ["blocking"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
+# Writes JSON files atomically.
+tempfile.workspace = true
 # Measures text, to stretch each line of the PDF's text layer across its box.
 ttf-parser = "0.25"
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }
 lopdf = "0.46"
-tempfile.workspace = true

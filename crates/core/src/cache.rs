@@ -7,19 +7,17 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::claude_transcribe::{Fetched, OcrError, parse_response};
-use crate::clean::Crop;
-use crate::geom::Quad;
+use crate::claude_transcribe::{Fetched, OcrError, parse_source};
 use crate::json_file;
 use crate::llm_model::Model;
 use crate::markdown_style::MarkdownStyle;
-use crate::transcript::Transcript;
+use crate::transcript::{Source, Transcript};
 
 /// Version of cached responses, which are also kept per [`Model`]. Bump it when the schema in
 /// [`crate::claude_transcribe`] changes, since old responses won't parse; a test there checks for
@@ -33,13 +31,12 @@ pub struct Cache {
     dir: PathBuf,
 }
 
-/// What's stored: the response, plus where the image sent was cut from the photo and its size,
-/// which the response's boxes are measured in.
+/// What's stored: the response, where the image sent was cut from the photo and its size, which
+/// the response's boxes are measured in, and when.
 #[derive(Serialize, Deserialize)]
 struct Entry {
-    image_size: (u32, u32),
-    corners: Quad,
-    response: Value,
+    #[serde(flatten)]
+    source: Source,
     /// When it was stored, in seconds since the Unix epoch.
     /// See `decisions/2026-10-24-cache-status.md`.
     stored_at: u64,
@@ -156,16 +153,15 @@ impl Cache {
         let fetched = fetch()?;
         let transcript = fetched.parse(style)?;
         let stored_at = unix_secs(SystemTime::now());
-        let entry = serde_json::from_slice(&fetched.body).map(|response| Entry {
-            image_size: fetched.crop.size,
-            corners: fetched.crop.corners,
-            response,
+        let entry = transcript.source.as_ref().map(|source| Entry {
+            source: Source::clone(source),
             stored_at,
         });
-        match entry
-            .map_err(io::Error::from)
-            .and_then(|e| json_file::write(&path, &e))
-        {
+        let written = match entry {
+            Some(entry) => json_file::write(&path, &entry),
+            None => Err(io::Error::other("no response to store")),
+        };
+        match written {
             Ok(()) => Ok(Transcript {
                 stored_at: Some(from_unix_secs(stored_at)),
                 ..transcript
@@ -184,20 +180,15 @@ fn load(path: &Path, style: &MarkdownStyle) -> Option<Transcript> {
     let loaded = serde_json::from_slice::<Entry>(&bytes)
         .map_err(|e| OcrError::Parse(e.to_string()))
         .and_then(|entry| {
-            let crop = Crop {
-                corners: entry.corners,
-                size: entry.image_size,
-            };
-            let response = entry.response.to_string();
-            let transcript = parse_response(200, response.as_bytes(), crop, style)?;
-            Ok((entry, transcript))
+            let transcript = parse_source(Arc::new(entry.source), style)?;
+            Ok((entry.stored_at, transcript))
         });
     match loaded {
-        Ok((entry, transcript)) => {
+        Ok((stored_at, transcript)) => {
             log::debug!("using cached transcript {}", path.display());
             Some(Transcript {
                 from_cache: true,
-                stored_at: Some(from_unix_secs(entry.stored_at)),
+                stored_at: Some(from_unix_secs(stored_at)),
                 ..transcript
             })
         }
@@ -236,7 +227,8 @@ fn key_version(file_name: &str) -> Option<u32> {
     version.parse().ok()
 }
 
-pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+/// The SHA-256 of `bytes` in lowercase hex, as `shasum -a 256` prints it.
+pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))

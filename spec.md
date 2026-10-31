@@ -10,6 +10,7 @@ Note that this tool _costs money_ to use; you need a Claude developer account an
 - Once the pages are all detected and tidy, hit "Transcribe all" to send them all to Claude in batches (costs money!!)
 - Correct all the transcripts in the _Transcribe_ view. Uncertain words are highlighted with alternatives.
 - Once you're done, export everything to PDF and/or Markdown. If you export to PDF, you get half-decent copy-paste and search, and the full markdown transcript is embedded as an attachment so you can pull it out again later if you need it ✨
+- Save your work as a project (File ▸ Save, a `.notebook` file next to your photos), note that it points at the photos rather than copying them.
 - Transcriptions are cached so you can use them again if you need to.
 
 ## Extra tips:

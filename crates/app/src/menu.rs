@@ -31,6 +31,7 @@ impl NativeMenu {
     /// Makes this the app's menu bar, replacing winit's. Call on the main thread once the app has
     /// launched: in eframe's app creator.
     pub fn install(ctx: &egui::Context) -> Self {
+        crate::quit::install(ctx);
         let (tx, clicked) = mpsc::channel();
         let ctx = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -88,11 +89,18 @@ impl Frontend for NativeMenu {
         _ctx: &egui::Context,
         state: &dyn Fn(Command) -> CommandState,
     ) -> Vec<Command> {
+        // Quitting from the Dock, or logging out, asks the app to quit as the menu does.
+        let quit = crate::quit::take_request().then_some(Command::Quit);
         // A click can come in after the frame that last greyed the item out.
         self.clicked
             .try_iter()
+            .chain(quit)
             .filter(|&command| state(command).enabled)
             .collect()
+    }
+
+    fn set_unsaved(&mut self, unsaved: bool) {
+        crate::quit::set_unsaved(unsaved);
     }
 
     fn sync(&mut self, state: &dyn Fn(Command) -> CommandState) {
@@ -136,7 +144,6 @@ fn predefined(item: SystemItem) -> PredefinedMenuItem {
         SystemItem::Hide => PredefinedMenuItem::hide(None),
         SystemItem::HideOthers => PredefinedMenuItem::hide_others(None),
         SystemItem::ShowAll => PredefinedMenuItem::show_all(None),
-        SystemItem::Quit => PredefinedMenuItem::quit(None),
         SystemItem::CloseWindow => PredefinedMenuItem::close_window(None),
         SystemItem::Minimize => PredefinedMenuItem::minimize(None),
         SystemItem::Zoom => PredefinedMenuItem::zoom(None),
@@ -168,6 +175,10 @@ fn accelerator(shortcut: KeyboardShortcut) -> Accelerator {
         Key::Num3 => Code::Digit3,
         Key::E => Code::KeyE,
         Key::I => Code::KeyI,
+        Key::N => Code::KeyN,
+        Key::O => Code::KeyO,
+        Key::Q => Code::KeyQ,
+        Key::S => Code::KeyS,
         Key::T => Code::KeyT,
         key => panic!("no key equivalent for {key:?}: add it here"),
     };

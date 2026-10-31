@@ -10,6 +10,7 @@ mod export;
 mod focus;
 mod keys;
 mod pages;
+mod project;
 mod settings;
 mod status;
 mod transcription;

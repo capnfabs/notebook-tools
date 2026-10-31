@@ -14,6 +14,14 @@ use crate::t;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     Settings,
+    /// Asks to save unsaved changes first, as New Project and Open Project… do.
+    Quit,
+    NewProject,
+    OpenProject,
+    /// Saves to the project's file, asking where if it hasn't one.
+    Save,
+    /// Always asks where.
+    SaveAs,
     AddPages,
     /// Re-export if there's a last export, else Export….
     Export,
@@ -68,8 +76,13 @@ const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const COMMAND_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 
 impl Command {
-    pub const ALL: [Command; 19] = [
+    pub const ALL: [Command; 24] = [
         Self::Settings,
+        Self::Quit,
+        Self::NewProject,
+        Self::OpenProject,
+        Self::Save,
+        Self::SaveAs,
         Self::AddPages,
         Self::Export,
         Self::ExportAs,
@@ -93,6 +106,11 @@ impl Command {
     pub const fn spec(self) -> Spec {
         let (id, shortcut, edits_text) = match self {
             Self::Settings => ("settings", keys(Modifiers::COMMAND, Key::Comma), false),
+            Self::Quit => ("quit", keys(Modifiers::COMMAND, Key::Q), false),
+            Self::NewProject => ("new-project", keys(Modifiers::COMMAND, Key::N), false),
+            Self::OpenProject => ("open-project", keys(Modifiers::COMMAND, Key::O), false),
+            Self::Save => ("save", keys(Modifiers::COMMAND, Key::S), false),
+            Self::SaveAs => ("save-as", keys(COMMAND_SHIFT, Key::S), false),
             Self::AddPages => ("add-pages", keys(COMMAND_SHIFT, Key::I), false),
             Self::Export => ("export", keys(Modifiers::COMMAND, Key::E), false),
             Self::ExportAs => ("export-as", keys(COMMAND_SHIFT, Key::E), false),
@@ -137,6 +155,11 @@ impl Command {
     pub fn label(self) -> String {
         match self {
             Self::Settings => t!("command-settings"),
+            Self::Quit => t!("command-quit"),
+            Self::NewProject => t!("command-new-project"),
+            Self::OpenProject => t!("command-open-project"),
+            Self::Save => t!("command-save"),
+            Self::SaveAs => t!("command-save-as"),
             Self::AddPages => t!("command-add-pages"),
             Self::Export => t!("command-export"),
             Self::ExportAs => t!("command-export-as"),
@@ -171,7 +194,6 @@ pub enum SystemItem {
     Hide,
     HideOthers,
     ShowAll,
-    Quit,
     CloseWindow,
     Minimize,
     Zoom,
@@ -232,13 +254,19 @@ pub const MENUS: &[Menu] = {
                 Sys(S::HideOthers),
                 Sys(S::ShowAll),
                 Sep,
-                Sys(S::Quit),
+                Do(C::Quit),
             ],
         },
         Menu {
             id: MenuId::File,
             items: &[
+                Do(C::NewProject),
+                Do(C::OpenProject),
+                Sep,
                 Do(C::AddPages),
+                Sep,
+                Do(C::Save),
+                Do(C::SaveAs),
                 Sep,
                 Do(C::Export),
                 Do(C::ExportAs),
@@ -294,6 +322,10 @@ pub trait Frontend {
 
     /// Shows what each command can do, e.g. by greying out menu items. Called once a frame.
     fn sync(&mut self, _state: &dyn Fn(Command) -> CommandState) {}
+
+    /// Whether quitting now would lose unsaved changes, for quitting from outside the app. Called
+    /// once a frame.
+    fn set_unsaved(&mut self, _unsaved: bool) {}
 }
 
 /// Takes commands from egui's key presses, for where there's no native menu bar (and tests).

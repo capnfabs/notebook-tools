@@ -7,11 +7,15 @@
 mod corrections;
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::SystemTime;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 
+use crate::claude_transcribe::{OcrError, parse_source};
 use crate::clean::Crop;
+use crate::geom::Quad;
 use crate::llm_model::Usage;
 use crate::markdown_style::MarkdownStyle;
 
@@ -25,8 +29,8 @@ const STRIKE: &str = "~~";
 /// `[x0, y0, x1, y1]` in pixels of the image sent.
 pub type Bbox = [f32; 4];
 
-/// A page's transcription, as Claude returned it.
-#[derive(Clone, Debug, PartialEq)]
+/// A page's transcription, as Claude returned it. Projects save it as it is (`crate::project`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Transcript {
     pub lines: Vec<Line>,
     pub uncertain: Vec<Uncertain>,
@@ -40,22 +44,52 @@ pub struct Transcript {
     /// What the request cost; for a cached transcript, what it cost when it was made.
     pub usage: Usage,
     /// Loaded from the [`crate::cache`] rather than just transcribed.
+    #[serde(skip)]
     pub from_cache: bool,
     /// When the [`crate::cache`] stored it. `None` if it wasn't stored.
     pub stored_at: Option<SystemTime>,
     /// The lines and uncertain words before the user's first correction, for
     /// [`Transcript::reset`]. `None` until then.
     pub before_corrections: Option<Box<BeforeCorrections>>,
+    /// Claude's answer as it came back, which [`Transcript::restyled`] reads again. `None` for
+    /// transcripts made up in tests.
+    pub source: Option<Arc<Source>>,
+}
+
+/// Claude's answer as it came back, with where the image sent was cut from the photo and its size,
+/// which the answer's boxes are measured in. The [`crate::cache`] stores it, and projects keep it
+/// with their transcripts so a style change can read it again.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub image_size: (u32, u32),
+    pub corners: Quad,
+    pub response: Value,
+}
+
+impl Source {
+    pub fn crop(&self) -> Crop {
+        Crop {
+            corners: self.corners,
+            size: self.image_size,
+        }
+    }
+}
+
+/// The response is long, and the rest is in the transcript.
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Source").finish_non_exhaustive()
+    }
 }
 
 /// A [`Transcript`]'s text before the user corrected it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BeforeCorrections {
     pub lines: Vec<Line>,
     pub uncertain: Vec<Uncertain>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Line {
     pub text_md: String,
     /// `None` for paragraph breaks, or if Claude's box wasn't four numbers.
@@ -64,7 +98,7 @@ pub struct Line {
 }
 
 /// A word or phrase Claude wasn't sure of.
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Uncertain {
     /// Index into [`Transcript::lines`]. Claude sometimes miscounts this by one or so.
     pub line: usize,
@@ -73,25 +107,26 @@ pub struct Uncertain {
     #[serde(deserialize_with = "lenient_bbox")]
     pub bbox: Option<Bbox>,
     pub alternatives: Vec<String>,
-    /// The user corrected or accepted this word. Never part of Claude's answer.
-    #[serde(skip)]
+    /// The user corrected or accepted this word. Never part of Claude's answer, whose schema
+    /// doesn't have it, but saved in projects.
+    #[serde(default)]
     pub resolved: bool,
-    /// Where the word was, if the user deleted it, so a reading can be put back there. Never part
-    /// of Claude's answer.
-    #[serde(skip)]
+    /// Where the word was, if the user deleted it, so a reading can be put back there. Like
+    /// `resolved`, only in projects.
+    #[serde(default)]
     pub deleted: Option<Deleted>,
 }
 
 /// Where a deleted [`Uncertain`] word was: `at` bytes into line `line`, which lost a space on
 /// `space`'s side along with it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Deleted {
     pub line: usize,
     pub at: usize,
     pub space: Option<Side>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Before,
     After,
@@ -134,7 +169,23 @@ impl Transcript {
             from_cache: false,
             stored_at: None,
             before_corrections: None,
+            source: None,
         }
+    }
+
+    /// Claude's answer read again in `style`, from wherever this one came. Corrections are lost,
+    /// so callers check [`Self::corrected`]. Fails without a [`Source`], or if the answer no longer
+    /// parses.
+    pub fn restyled(&self, style: &MarkdownStyle) -> Result<Transcript, OcrError> {
+        let source = self
+            .source
+            .clone()
+            .ok_or_else(|| OcrError::Parse("no answer to read again".to_owned()))?;
+        Ok(Transcript {
+            from_cache: self.from_cache,
+            stored_at: self.stored_at,
+            ..parse_source(source, style)?
+        })
     }
 
     /// The page as markdown: one line per handwritten line, plus a blank line before a rule that

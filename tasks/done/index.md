@@ -35,3 +35,4 @@ In the order they were finished.
 - [x] [Cached transcripts without credentials](cache-without-credentials.md)
 - [x] [Polish the transcript status line](status-ui.md)
 - [x] [Keyboard focus audit](keyboard-focus-audit.md)
+- [x] [Keep page corners across restarts: projects](persist-corners.md)

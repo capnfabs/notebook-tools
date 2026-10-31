@@ -43,11 +43,6 @@ impl<K: Send + 'static, T: Send + 'static> Jobs<K, T> {
         }
     }
 
-    /// Whether [`Self::set_waker`] has been called.
-    pub fn has_waker(&self) -> bool {
-        self.waker.is_some()
-    }
-
     /// Calls `waker` whenever a job finishes, from the thread it ran on.
     pub fn set_waker(&mut self, waker: Waker) {
         self.waker = Some(waker);
@@ -57,7 +52,7 @@ impl<K: Send + 'static, T: Send + 'static> Jobs<K, T> {
         let (tx, waker) = (self.tx.clone(), self.waker.clone());
         self.running += 1;
         (self.spawn)(Box::new(move || {
-            // The receiver lives as long as the app, so a failed send only happens during shutdown.
+            // The receiver goes when the app does, or when another project replaces its jobs.
             tx.send((key, work())).ok();
             if let Some(waker) = waker {
                 waker();

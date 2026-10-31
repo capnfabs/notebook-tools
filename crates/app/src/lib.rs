@@ -13,6 +13,8 @@ mod ingest;
 mod jobs;
 #[cfg(target_os = "macos")]
 pub mod menu;
+#[cfg(target_os = "macos")]
+pub mod quit;
 mod timing;
 mod transcriptions;
 mod ui;
@@ -21,5 +23,5 @@ pub use app::NotebookApp;
 pub use command::Command;
 pub use eval_log::{EvalLog, Event, Via};
 pub use export::SavePath;
-pub use ingest::{Load, PickFiles};
+pub use ingest::{Load, Pick, PickFiles};
 pub use transcriptions::{Fetch, OnTranscribeCompleted, Transcriber};

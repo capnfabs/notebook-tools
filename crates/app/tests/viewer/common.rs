@@ -256,13 +256,58 @@ pub fn drop_files(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8
 
 /// Drops `files` without waiting for them to load.
 pub fn start_dropping(harness: &mut Harness<'_, NotebookApp>, files: &[(&str, Vec<u8>)]) {
+    start_dropping_from(harness, Path::new("/Users/someone/Desktop"), files);
+}
+
+/// Drops `files` as if from `dir`, without waiting for them to load.
+fn start_dropping_from(
+    harness: &mut Harness<'_, NotebookApp>,
+    dir: &Path,
+    files: &[(&str, Vec<u8>)],
+) {
     for (name, bytes) in files {
         harness.input_mut().dropped_files.push(Arc::new(TestFile {
-            path: PathBuf::from("/Users/someone/Desktop").join(name),
+            path: dir.join(name),
             bytes: bytes.clone(),
         }));
     }
     harness.step();
+}
+
+/// Writes `files` to `dir` and drops them from there, so a project can find them again.
+pub fn drop_files_in(
+    harness: &mut Harness<'_, NotebookApp>,
+    dir: &Path,
+    files: &[(&str, Vec<u8>)],
+) {
+    for (name, bytes) in files {
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    start_dropping_from(harness, dir, files);
+    settle(harness);
+}
+
+/// Asks to close the window, as its close button does, and returns what the app told the window
+/// to do in that frame.
+pub fn close_window(harness: &mut Harness<'_, NotebookApp>) -> Vec<egui::ViewportCommand> {
+    let root = harness
+        .input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default();
+    root.events.push(egui::ViewportEvent::Close);
+    step_for_commands(harness)
+}
+
+/// Steps one frame, and returns what the app told the window to do in it.
+pub fn step_for_commands(harness: &mut Harness<'_, NotebookApp>) -> Vec<egui::ViewportCommand> {
+    harness.step();
+    harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map(|v| v.commands.clone())
+        .unwrap_or_default()
 }
 
 /// Loads pages as the app does, but only while `gate` isn't held for writing.

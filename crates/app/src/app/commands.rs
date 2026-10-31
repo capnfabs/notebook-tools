@@ -5,6 +5,7 @@ use eframe::egui;
 use egui::Response;
 use notebook_core::transcript::Transcript;
 
+use super::project::After;
 use super::{NotebookApp, View};
 use crate::command::{Command, CommandState};
 use crate::t;
@@ -19,8 +20,10 @@ impl NotebookApp {
         let can_view = self.transcriptions.can_show();
         let can_export = can_view && self.export.running().is_none();
         match command {
-            Command::Settings => true,
-            Command::AddPages => self.pick_files.is_some(),
+            Command::Settings | Command::Quit | Command::NewProject => true,
+            Command::OpenProject | Command::AddPages => self.pick_files.is_some(),
+            Command::Save => self.save_path.is_some() && self.has_unsaved_changes(),
+            Command::SaveAs => self.save_path.is_some() && self.can_save_as(),
             Command::Export | Command::ExportAs => page.is_some() && can_export,
             Command::ViewOriginal | Command::ViewCleaned => page.is_some(),
             Command::PlaceCorners => page.is_some_and(|p| p.loaded.is_some()),
@@ -82,6 +85,7 @@ impl NotebookApp {
             || self.confirm_transcribe_all
             || self.export.dialog_open()
             || self.settings_dialog.is_open()
+            || self.confirming_unsaved()
     }
 
     /// Runs the commands given since the last frame.
@@ -101,6 +105,15 @@ impl NotebookApp {
         let index = self.selected_index();
         match command {
             Command::Settings => self.settings_dialog.open(self.transcriptions.settings()),
+            Command::Quit => self.after_saving(ctx, After::Quit),
+            Command::NewProject => self.after_saving(ctx, After::NewProject),
+            Command::OpenProject => self.after_saving(ctx, After::OpenProject),
+            Command::Save => {
+                self.save();
+            }
+            Command::SaveAs => {
+                self.save_as();
+            }
             Command::AddPages => self.add_picked(),
             Command::Export if self.export.can_reexport() => {
                 self.export.reexport(ctx, &self.pages, index);

@@ -113,7 +113,7 @@ impl CleanReport {
 
 /// Where an image was cut from its photo: the corners in the photo it was straightened from, and
 /// its size in pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Crop {
     pub corners: Quad,
     pub size: (u32, u32),

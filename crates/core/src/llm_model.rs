@@ -49,8 +49,9 @@ impl Model {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(from = "RawUsage")]
+/// Read and written in the API's shape, so a project saves it as Claude sent it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "RawUsage", into = "RawUsage")]
 pub struct Usage {
     pub input_tokens: u64,
     /// Including thinking.
@@ -66,7 +67,7 @@ impl Usage {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct RawUsage {
     input_tokens: u64,
     output_tokens: u64,
@@ -74,7 +75,7 @@ struct RawUsage {
     output_tokens_details: Option<OutputTokensDetails>,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct OutputTokensDetails {
     #[serde(default)]
     thinking_tokens: u64,
@@ -86,6 +87,18 @@ impl From<RawUsage> for Usage {
             input_tokens: raw.input_tokens,
             output_tokens: raw.output_tokens,
             thinking_tokens: raw.output_tokens_details.map_or(0, |d| d.thinking_tokens),
+        }
+    }
+}
+
+impl From<Usage> for RawUsage {
+    fn from(usage: Usage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            output_tokens_details: Some(OutputTokensDetails {
+                thinking_tokens: usage.thinking_tokens,
+            }),
         }
     }
 }

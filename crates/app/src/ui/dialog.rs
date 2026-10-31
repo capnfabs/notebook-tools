@@ -1,6 +1,7 @@
 //! Modal dialogs laid out the macOS way: buttons at the bottom right, the affirmative one
-//! rightmost. Enter picks the affirmative button, unless a widget has the keyboard focus, and
-//! Escape cancels.
+//! rightmost, and a button that discards work, like Don't Save, at the bottom left. Enter picks the
+//! affirmative button, unless a widget has the keyboard focus, ⌘⌫ the discarding one, and Escape
+//! cancels.
 //!
 //! See `decisions/2026-10-23-dialog-buttons.md`.
 
@@ -30,6 +31,8 @@ pub enum Stakes {
 pub enum Choice {
     Affirmative,
     Cancel,
+    /// Go ahead without doing what the dialog offers, as Don't Save does.
+    Discard,
 }
 
 /// A modal dialog `width` points wide. `content` adds the dialog's body, then its buttons with
@@ -63,10 +66,41 @@ pub fn buttons(
     stakes: Stakes,
     enabled: bool,
 ) -> Option<Choice> {
+    ui.add_space(PADDING / 2.0);
+    right_buttons(ui, affirmative, stakes, enabled)
+}
+
+/// [`buttons`], plus `discard` at the bottom left, which ⌘⌫ clicks too.
+pub fn buttons_with_discard(
+    ui: &mut egui::Ui,
+    affirmative: &str,
+    discard: &str,
+    stakes: Stakes,
+) -> Option<Choice> {
+    let pressed = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Backspace));
+    ui.add_space(PADDING / 2.0);
+    ui.horizontal(|ui| {
+        let discarded = ui.button(discard).clicked() || pressed;
+        let choice = right_buttons(ui, affirmative, stakes, true);
+        if discarded {
+            Some(Choice::Discard)
+        } else {
+            choice
+        }
+    })
+    .inner
+}
+
+/// Cancel and the affirmative button, right to left.
+fn right_buttons(
+    ui: &mut egui::Ui,
+    affirmative: &str,
+    stakes: Stakes,
+    enabled: bool,
+) -> Option<Choice> {
     let unfocused = ui.memory(|m| m.focused().is_none());
     let entered =
         enabled && unfocused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
-    ui.add_space(PADDING / 2.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         let visuals = ui.visuals();
         let (fill, text) = match stakes {

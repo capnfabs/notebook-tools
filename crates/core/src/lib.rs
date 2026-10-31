@@ -16,6 +16,7 @@ pub mod llm_model;
 pub mod loaded;
 pub mod markdown_style;
 pub mod page;
+pub mod project;
 pub mod reframe;
 pub mod settings;
 #[cfg(test)]

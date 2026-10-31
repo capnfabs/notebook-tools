@@ -5,7 +5,7 @@ use eframe::egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use notebook_app::i18n::ocr_error;
-use notebook_app::{Command, NotebookApp, PickFiles, SavePath, Transcriber, t};
+use notebook_app::{Command, NotebookApp, Pick, PickFiles, SavePath, Transcriber, t};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -165,7 +165,10 @@ fn add_pages_adds_the_picked_files() {
     for path in &paths {
         std::fs::write(path, png()).unwrap();
     }
-    let pick_files: PickFiles = Arc::new(move || paths.clone());
+    let pick_files: PickFiles = Arc::new(move |pick| {
+        assert_eq!(pick, Pick::Photos);
+        paths.clone()
+    });
     let mut harness = harness_for(NotebookApp::default().with_file_picker(pick_files));
 
     press(&mut harness, COMMAND_SHIFT, egui::Key::I);

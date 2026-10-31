@@ -4,7 +4,9 @@
 See [done/index.md](done/index.md).
 
 ## polish
-- [ ] [Keep page corners across restarts](persist-corners.md)
+- [ ] [Show pages whose photos are missing](missing-pages.md)
+- [ ] [Open projects by drop and from the command line](open-project-more-ways.md)
+- [ ] [Gzip project files](gzip-projects.md)
 - [ ] [Live-edit cleanup params](live-clean-params.md)
 
 ## polish (difficult / lower pri)
@@ -14,3 +16,4 @@ See [done/index.md](done/index.md).
 - [ ] [Decide: spread detection approach + reading order](spread-detection.md)
 - [ ] [Bundle libheif for distribution](heic-distribution.md)
 - [ ] [Corner detection: hard photos](outline-detection.md)
+- [ ] [Relink moved photos](relink-photos.md)

@@ -1,8 +1,9 @@
 //! Starts the app with real credentials, cache, settings file and native dialogs. Tests build
 //! [`NotebookApp`] with stand-ins for these instead.
 
-use notebook_app::{NotebookApp, t};
+use notebook_app::{NotebookApp, Pick, t};
 use notebook_core::cache::Cache;
+use notebook_core::project;
 use notebook_core::settings::Settings;
 
 fn main() -> eframe::Result {
@@ -36,10 +37,10 @@ fn save_dialog() -> notebook_app::SavePath {
             .extension()
             .unwrap_or_default()
             .to_string_lossy();
-        let kind = if extension == "pdf" {
-            t!("file-type-pdf")
-        } else {
-            t!("file-type-markdown")
+        let kind = match &*extension {
+            "pdf" => t!("file-type-pdf"),
+            project::EXTENSION => t!("file-type-project"),
+            _ => t!("file-type-markdown"),
         };
         rfd::FileDialog::new()
             .add_filter(kind, &[&*extension])
@@ -48,16 +49,21 @@ fn save_dialog() -> notebook_app::SavePath {
     })
 }
 
-/// Asks which photos to add with the system's open dialog.
+/// Asks which photos to add, or which project to open, with the system's open dialog.
 fn file_picker() -> notebook_app::PickFiles {
-    std::sync::Arc::new(|| {
-        rfd::FileDialog::new()
+    std::sync::Arc::new(|pick| match pick {
+        Pick::Photos => rfd::FileDialog::new()
             .add_filter(
                 t!("file-type-photos"),
                 &["jpg", "jpeg", "png", "heic", "heif"],
             )
             .pick_files()
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        Pick::Project => rfd::FileDialog::new()
+            .add_filter(t!("file-type-project"), &[project::EXTENSION])
+            .pick_file()
+            .into_iter()
+            .collect(),
     })
 }
 

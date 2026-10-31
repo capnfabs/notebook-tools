@@ -7,6 +7,7 @@
 //! - [`views`]: the selected page in the Original, Cleaned and Transcribed views.
 //! - [`transcript_panel`]: the transcript's status and transcription progress.
 //! - [`chrome`]: the drop zone, toolbar, page strip and status line.
+//! - [`project`]: New, Open, Save and Save As, and asking to save before changes are lost.
 //! - [`textures`]: the images those show, decoded off the UI thread.
 //!
 //! See `decisions/2026-10-31-code-layout.md`.
@@ -14,6 +15,7 @@
 mod chrome;
 mod commands;
 mod pages;
+mod project;
 mod textures;
 mod transcript_panel;
 mod views;
@@ -24,10 +26,8 @@ use std::sync::Arc;
 use eframe::egui;
 use notebook_core::cache::Cache;
 use notebook_core::clean::CleanParams;
-use notebook_core::llm_model::Model;
 use notebook_core::page::Pages;
 use notebook_core::settings::Settings;
-use notebook_core::transcript::Transcript;
 use textures::Textures;
 
 use crate::command::{EguiKeys, Frontend};
@@ -106,10 +106,17 @@ pub struct NotebookApp {
     settings_path: Option<PathBuf>,
     eval_log: EvalLog,
     input: Input,
-    /// Asks which files to add as pages. Without one, Add Pages… is disabled.
+    /// Asks which files to add as pages, or which project to open. Without one, Add Pages… and
+    /// Open Project… are disabled.
     pick_files: Option<PickFiles>,
-    /// The file picker was opened since [`Self::frame_time_for_logs`] last looked.
+    /// Asks where to save exports and projects. Without one, they can't be saved to a file.
+    save_path: Option<SavePath>,
+    /// The file picker or the project's save dialog was opened since
+    /// [`Self::frame_time_for_logs`] last looked.
     asked_which_files: bool,
+    project: project::Project,
+    /// Repaints the UI when work finishes off the UI thread. Set on the first frame.
+    waker: Option<Waker>,
     /// A passing note for the status line, and the time (`InputState::time`) it goes.
     hint: Option<(String, f64)>,
 }
@@ -124,15 +131,17 @@ impl NotebookApp {
         }
     }
 
-    /// Without one, exporting to a file does nothing.
+    /// Asks where to save exports and projects with `save_path`. Without one, exporting to a file
+    /// and saving the project do nothing.
     pub fn with_save_path(self, save_path: SavePath) -> Self {
         Self {
-            export: Export::new(Some(save_path)),
+            export: Export::new(Some(save_path.clone())),
+            save_path: Some(save_path),
             ..self
         }
     }
 
-    /// Asks which files to add with `pick_files`, for Add Pages….
+    /// Asks which files to add, or which project to open, with `pick_files`.
     pub fn with_file_picker(self, pick_files: PickFiles) -> Self {
         Self {
             pick_files: Some(pick_files),
@@ -192,13 +201,12 @@ impl NotebookApp {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // Set here because the context only exists once the UI runs.
-        if !self.transcriptions.has_waker() {
+        if self.waker.is_none() {
             let ctx = ctx.clone();
-            let waker: Waker = Arc::new(move || ctx.request_repaint());
-            self.transcriptions.set_waker(waker.clone());
-            self.ingest.set_waker(waker.clone());
-            self.textures.set_waker(waker);
+            self.waker = Some(Arc::new(move || ctx.request_repaint()));
+            self.set_wakers();
         }
+        self.handle_close_request(&ctx);
         self.run_commands(&ctx);
         self.add_dropped(&ctx);
         self.add_loaded(&ctx);
@@ -212,17 +220,27 @@ impl NotebookApp {
             self.show_viewer(ui);
         }
         self.show_settings_dialog(&ctx);
+        self.unsaved_dialog(&ctx);
+        self.update_title(&ctx);
         let states = self.command_states(&ctx);
         self.input.0.sync(&|c| states[c as usize].clone());
+        let unsaved = self.has_unsaved_changes();
+        self.input.0.set_unsaved(unsaved);
+    }
+
+    /// Has work done off the UI thread repaint the UI when it finishes.
+    fn set_wakers(&mut self) {
+        let Some(waker) = self.waker.clone() else {
+            return;
+        };
+        self.transcriptions.set_waker(waker.clone());
+        self.ingest.set_waker(waker.clone());
+        self.textures.set_waker(waker);
     }
 
     /// Gives pages the transcripts that came back since the last frame.
     fn take_transcriptions(&mut self) {
         while let Some(done) = self.transcriptions.next() {
-            if done.restyled {
-                self.restyled(done.name, done.transcript);
-                continue;
-            }
             // The page may have been deleted meanwhile. Only a forced retranscription replaces a
             // transcript: a late cache hit mustn't undo the user's corrections.
             if let Some(page) = self.pages.find_mut(&done.name)
@@ -265,11 +283,12 @@ impl NotebookApp {
         }
     }
 
-    /// Reads the page named `name`'s transcript from the cache again if it's in another style than
-    /// the settings', unless the user has corrected it: that would lose their corrections.
+    /// Reads the page named `name`'s transcript again from Claude's answer if it's in another
+    /// style than the settings', unless the user has corrected it: that would lose their
+    /// corrections.
     fn restyle_if_stale(&mut self, name: &str) {
         let style = &self.transcriptions.settings().markdown;
-        let Some(page) = self.pages.find(name) else {
+        let Some(page) = self.pages.find_mut(name) else {
             return;
         };
         let Some(transcript) = &page.transcript else {
@@ -278,30 +297,13 @@ impl NotebookApp {
         if transcript.corrected() || transcript.style == *style {
             return;
         }
-        let model = Model::from_id(&transcript.model).unwrap_or_default();
-        let bytes = page.bytes.clone();
-        self.transcriptions.restyle(name, bytes, model);
-    }
-
-    /// Puts `transcript`, read again in the settings' style, in place of the page named `name`'s,
-    /// unless the user corrected it meanwhile or the style changed again.
-    fn restyled(&mut self, name: String, transcript: Transcript) {
-        let style = &self.transcriptions.settings().markdown;
-        let Some(page) = self.pages.find_mut(&name) else {
-            return;
-        };
-        let Some(old) = &page.transcript else {
-            return;
-        };
-        if old.corrected() || transcript.style != *style {
-            return;
+        match transcript.restyled(style) {
+            Ok(restyled) => {
+                page.transcript = Some(restyled);
+                self.transcript_view = TranscriptView::default();
+            }
+            Err(err) => log::warn!("{name}: couldn't restyle the transcript: {err}"),
         }
-        // Where it came from is still where the page's transcript came from.
-        page.transcript = Some(Transcript {
-            from_cache: old.from_cache,
-            ..transcript
-        });
-        self.transcript_view = TranscriptView::default();
     }
 }
 

@@ -15,12 +15,21 @@ use notebook_core::loaded::Loaded;
 use crate::jobs::Jobs;
 use crate::jobs::Waker;
 
-/// A dropped or picked file's name and contents, or why it couldn't be read.
-pub type Received = (String, Result<Vec<u8>, String>);
+/// A dropped or picked file's name, where it is if known, and its contents or why they couldn't be
+/// read.
+pub type Received = (String, Option<PathBuf>, Result<Vec<u8>, String>);
 
-/// Asks which files to add as pages: none if the user cancelled. Tests stand in for the file
-/// picker.
-pub type PickFiles = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+/// Asks which files to pick: none if the user cancelled. Tests stand in for the file picker.
+pub type PickFiles = Arc<dyn Fn(Pick) -> Vec<PathBuf> + Send + Sync>;
+
+/// What [`PickFiles`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Photos to add as pages.
+    Photos,
+    /// One project to open.
+    Project,
+}
 
 /// Loads a page from its file's bytes, cropped to the user's corners if given. Tests stand in for
 /// [`Loaded::new`] to hold loads up.
@@ -52,6 +61,12 @@ impl Ingest {
         }
     }
 
+    /// Loads with the same loader, with nothing loading: for another project. Pages still loading
+    /// here finish, but nothing collects them.
+    pub fn emptied(&self) -> Self {
+        Self::new(self.load.clone())
+    }
+
     /// Calls `waker` whenever a page finishes loading.
     pub fn set_waker(&mut self, waker: Waker) {
         self.jobs.set_waker(waker);
@@ -61,16 +76,22 @@ impl Ingest {
     /// go at the end in the order they're added.
     pub fn read_drops(&self, ctx: &egui::Context) -> Vec<Received> {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        let received = dropped
-            .iter()
-            .map(|file| (file_name(file.path()), file.bytes()));
+        let received = dropped.iter().map(|file| {
+            (
+                file_name(file.path()),
+                dropped_path(file.path()),
+                file.bytes(),
+            )
+        });
         by_name(received.collect())
     }
 
     /// The files at `paths`, in filename order like [`Self::read_drops`].
     pub fn read_paths(paths: &[PathBuf]) -> Vec<Received> {
         let read = |path: &PathBuf| std::fs::read(path).map_err(|e| e.to_string());
-        let received = paths.iter().map(|path| (file_name(path), read(path)));
+        let received = paths
+            .iter()
+            .map(|path| (file_name(path), Some(path.clone()), read(path)));
         by_name(received.collect())
     }
 
@@ -104,6 +125,11 @@ impl Ingest {
 fn by_name(mut received: Vec<Received>) -> Vec<Received> {
     received.sort_by(|a, b| a.0.cmp(&b.0));
     received
+}
+
+/// Where a dropped file is: its path, unless it was dropped with only a name.
+fn dropped_path(path: &Path) -> Option<PathBuf> {
+    path.is_absolute().then(|| path.to_path_buf())
 }
 
 fn file_name(path: &Path) -> String {

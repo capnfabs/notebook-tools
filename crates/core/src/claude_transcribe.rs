@@ -8,6 +8,7 @@
 //! Client: `decisions/2026-10-23-claude-raw-http.md`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -22,7 +23,7 @@ use crate::geom::{Quad, rect_corners};
 use crate::imaging::{jpeg, max_side_within, shrink_to_fit};
 use crate::llm_model::{Model, Usage};
 use crate::markdown_style::{MarkdownStyle, restyle};
-use crate::transcript::{Line, Transcript, Uncertain};
+use crate::transcript::{Line, Source, Transcript, Uncertain};
 
 /// How hard Claude thinks: `low`, `medium`, `high`, `xhigh` or `max`.
 pub const EFFORT: &str = "high";
@@ -300,8 +301,20 @@ pub fn parse_response(
     if !(200..300).contains(&status) {
         return Err(api_error(status, body));
     }
-    let response: Response =
+    let response: Value =
         serde_json::from_slice(body).map_err(|e| OcrError::Parse(e.to_string()))?;
+    let source = Source {
+        image_size: crop.size,
+        corners: crop.corners,
+        response,
+    };
+    parse_source(Arc::new(source), style)
+}
+
+/// Turns a successful response into a [`Transcript`] in `style`, which keeps it.
+pub fn parse_source(source: Arc<Source>, style: &MarkdownStyle) -> Result<Transcript, OcrError> {
+    let response =
+        Response::deserialize(&source.response).map_err(|e| OcrError::Parse(e.to_string()))?;
     if let Some(err) = stop_error(&response) {
         return Err(err);
     }
@@ -317,17 +330,19 @@ pub fn parse_response(
         serde_json::from_str(text).map_err(|e| OcrError::Parse(e.to_string()))?;
     restyle(&mut answer.lines, &mut answer.uncertain, style);
     let (lines, uncertain) = (answer.lines, answer.uncertain);
-    let style = style.clone();
     let mut transcript = Transcript::new(
         lines,
         uncertain,
-        crop,
-        style,
+        source.crop(),
+        style.clone(),
         response.model,
         response.usage,
     );
     transcript.widen_to_strikes();
-    Ok(transcript)
+    Ok(Transcript {
+        source: Some(source),
+        ..transcript
+    })
 }
 
 /// The error an error-status response describes, or its start if it isn't in the API's shape.

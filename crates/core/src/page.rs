@@ -1,7 +1,9 @@
 //! The pages the user opened, in order.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::cache::sha256_hex;
 use crate::geom::Quad;
 use crate::loaded::Loaded;
 use crate::transcript::Transcript;
@@ -14,7 +16,11 @@ use crate::transcript::Transcript;
 /// `decisions/2026-10-28-pages-cleaned-on-load.md`.
 pub struct Page {
     pub name: String,
+    /// Where the file is, if known: a project saves it. Pages dropped as bytes alone have none.
+    pub path: Option<PathBuf>,
     pub bytes: Arc<[u8]>,
+    /// [`sha256_hex`] of `bytes`, which a project checks the file against when it opens.
+    pub sha256: String,
     /// Filled in off the UI thread, as loading decodes and cleans the whole photo.
     pub loaded: Option<Loaded>,
     /// Claude's transcription, once there is one.
@@ -29,10 +35,20 @@ impl Page {
     pub fn new(name: String, bytes: Arc<[u8]>) -> Self {
         Self {
             name,
+            path: None,
+            sha256: sha256_hex(&bytes),
             bytes,
             loaded: None,
             transcript: None,
             corners: None,
+        }
+    }
+
+    /// The page, read from the file at `path`.
+    pub fn at(self, path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            ..self
         }
     }
 }
@@ -43,6 +59,18 @@ impl Page {
 pub struct Pages(Vec<Page>);
 
 impl Pages {
+    /// `pages` in the order given, as a project saved them. Later pages with a name already used
+    /// are dropped.
+    pub fn in_order(pages: Vec<Page>) -> Self {
+        let mut kept: Vec<Page> = Vec::with_capacity(pages.len());
+        for page in pages {
+            if !kept.iter().any(|p| p.name == page.name) {
+                kept.push(page);
+            }
+        }
+        Self(kept)
+    }
+
     /// Inserts `page` in filename order, or at the end once the pages have been rearranged, and
     /// returns its index. Returns `None` if a page with that name is already present.
     pub fn add(&mut self, page: Page) -> Option<usize> {
@@ -199,6 +227,18 @@ mod tests {
         pages.find_mut("a.png").unwrap().corners = Some([[1.0; 2]; 4]);
         assert_eq!(pages.get(1).unwrap().corners, Some([[1.0; 2]; 4]));
         assert!(pages.find_mut("c.png").is_none());
+    }
+
+    #[test]
+    fn keeps_the_order_given() {
+        let pages = Pages::in_order(vec![page("b.png"), page("a.png"), page("b.png")]);
+        assert_eq!(names(&pages), ["b.png", "a.png"]);
+        assert!(!pages.is_sorted());
+    }
+
+    #[test]
+    fn pages_know_their_hash() {
+        assert_eq!(page("a.png").sha256, sha256_hex(&png(2, 2)));
     }
 
     #[test]
