@@ -8,7 +8,6 @@ See [done/index.md](done/index.md).
 - [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
 - [ ] [Claude auth approach](claude-auth.md)
-- [ ] [Audit repo and strip anything PII-ish](audit-and-strip.md)
 
 
 ## future milestones

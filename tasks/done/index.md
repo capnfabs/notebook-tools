@@ -39,3 +39,4 @@ In the order they were finished.
 - [x] [Open projects by drop and from the command line](open-project-more-ways.md)
 - [x] [Gzip project files](gzip-projects.md)
 - [x] [Switch cache cleaning to manual](manual-cache-clean.md)
+- [x] [Audit repo and strip anything PII-ish](audit-and-strip.md)
