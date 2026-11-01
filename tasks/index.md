@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## polish
-- [ ] [Switch cache cleaning to manual](manual-cache-clean.md)
 - [ ] [Relink moved photos](relink-photos.md)
 - [ ] [Bundle libheif for distribution](heic-distribution.md)
 - [ ] [Claude auth approach](claude-auth.md)

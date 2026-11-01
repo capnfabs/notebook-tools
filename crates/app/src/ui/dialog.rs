@@ -66,8 +66,29 @@ pub fn buttons(
     stakes: Stakes,
     enabled: bool,
 ) -> Option<Choice> {
+    buttons_saying(ui, affirmative, &t!("dialog-cancel"), stakes, enabled)
+}
+
+/// [`buttons`], with Cancel saying `cancel` instead, such as Don't Delete.
+pub fn buttons_saying(
+    ui: &mut egui::Ui,
+    affirmative: &str,
+    cancel: &str,
+    stakes: Stakes,
+    enabled: bool,
+) -> Option<Choice> {
     ui.add_space(PADDING / 2.0);
-    right_buttons(ui, affirmative, stakes, enabled)
+    right_buttons(ui, affirmative, cancel, stakes, enabled)
+}
+
+/// A button saying `text` that looks as `stakes` say: emphasised if safe, red if it destroys
+/// something.
+pub fn button(ui: &egui::Ui, text: &str, stakes: Stakes) -> egui::Button<'static> {
+    let fill = match stakes {
+        Stakes::Safe => ui.visuals().hyperlink_color,
+        Stakes::Dangerous => DANGER_FILL,
+    };
+    egui::Button::new(RichText::new(text).color(Color32::WHITE)).fill(fill)
 }
 
 /// [`buttons`], plus `discard` at the bottom left, which ⌘⌫ clicks too.
@@ -81,7 +102,7 @@ pub fn buttons_with_discard(
     ui.add_space(PADDING / 2.0);
     ui.horizontal(|ui| {
         let discarded = ui.button(discard).clicked() || pressed;
-        let choice = right_buttons(ui, affirmative, stakes, true);
+        let choice = right_buttons(ui, affirmative, &t!("dialog-cancel"), stakes, true);
         if discarded {
             Some(Choice::Discard)
         } else {
@@ -95,6 +116,7 @@ pub fn buttons_with_discard(
 fn right_buttons(
     ui: &mut egui::Ui,
     affirmative: &str,
+    cancel: &str,
     stakes: Stakes,
     enabled: bool,
 ) -> Option<Choice> {
@@ -102,15 +124,10 @@ fn right_buttons(
     let entered =
         enabled && unfocused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        let visuals = ui.visuals();
-        let (fill, text) = match stakes {
-            Stakes::Safe => (visuals.hyperlink_color, Color32::WHITE),
-            Stakes::Dangerous => (DANGER_FILL, Color32::WHITE),
-        };
-        let button = egui::Button::new(RichText::new(affirmative).color(text)).fill(fill);
+        let button = button(ui, affirmative, stakes);
         // Right to left, so the first added is rightmost.
         let affirmative = ui.add_enabled(enabled, button).clicked() || entered;
-        let cancel = ui.button(t!("dialog-cancel")).clicked();
+        let cancel = ui.button(cancel).clicked();
         match (affirmative, cancel) {
             (true, _) => Some(Choice::Affirmative),
             (false, true) => Some(Choice::Cancel),

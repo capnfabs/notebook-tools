@@ -104,7 +104,11 @@ impl NotebookApp {
         }
         let index = self.selected_index();
         match command {
-            Command::Settings => self.settings_dialog.open(self.transcriptions.settings()),
+            Command::Settings => {
+                let cache = self.transcriptions.cache().cloned();
+                self.settings_dialog
+                    .open(self.transcriptions.settings(), cache);
+            }
             Command::Quit => self.after_saving(ctx, After::Quit),
             Command::NewProject => self.after_saving(ctx, After::NewProject),
             Command::OpenProject => self.after_saving(ctx, After::PickProject),

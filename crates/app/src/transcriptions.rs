@@ -135,7 +135,7 @@ type JobKey = (String, Kind);
 pub struct Transcriptions {
     /// Sends pages to Claude. Without one, nothing is sent.
     transcriber: Option<Transcriber>,
-    /// Without one, nothing is looked up.
+    /// Without one, or while the settings switch caching off, nothing is looked up or stored.
     cache: Option<Cache>,
     /// By page name and what they do.
     jobs: Jobs<JobKey, Outcome>,
@@ -204,16 +204,26 @@ impl Transcriptions {
 
     /// Whether pages can have transcripts: sent to Claude, or found in the cache.
     pub fn can_show(&self) -> bool {
-        self.transcriber.is_some() || self.cache.is_some()
+        self.transcriber.is_some() || self.active_cache().is_some()
+    }
+
+    /// The system cache, whether or not the settings use it.
+    pub fn cache(&self) -> Option<&Cache> {
+        self.cache.as_ref()
+    }
+
+    /// The system cache, unless the settings switch caching off: then pages are neither looked up
+    /// nor stored. See `decisions/2026-11-01-manual-cache-clearing.md`.
+    fn active_cache(&self) -> Option<&Cache> {
+        self.cache
+            .as_ref()
+            .filter(|_| self.settings.cache_transcripts)
     }
 
     /// Looks the page named `name` up in the cache, which can be done straight away: nothing is
     /// sent. A hit comes out of [`Self::next`].
     pub fn look_up(&mut self, name: &str, bytes: Arc<[u8]>) {
-        if self.cache.is_none() {
-            return;
-        }
-        let Some(cache) = self.cache.clone() else {
+        let Some(cache) = self.active_cache().cloned() else {
             return;
         };
         self.checking.insert(name.to_owned());
@@ -280,7 +290,8 @@ impl Transcriptions {
                 job.settings.model.id()
             );
             self.running.insert(job.name.clone());
-            let (transcriber, cache) = (transcriber.clone(), self.cache.clone());
+            // The cache as the settings are now, not as they were when the page was queued.
+            let (transcriber, cache) = (transcriber.clone(), self.active_cache().cloned());
             let key = (job.name.clone(), job.kind);
             self.spawn(key, move || transcriber.run(&job, cache.as_ref()).map(Some));
         }

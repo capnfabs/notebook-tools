@@ -225,10 +225,18 @@ photo-not-found = Couldn't find { $name } at { $path }. Its page is kept in the 
 photo-changed = { $path } has changed since the project was saved. { $name }'s page is kept in the project, but hidden.
 photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept in the project, but hidden.
 
-## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`.
+## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`
+## and `decisions/2026-11-01-manual-cache-clearing.md`.
 
-cli-usage = Usage: { app-name } [PROJECT.notebook]
-cli-not-a-project = { $path } isn't a .notebook project. Usage: { app-name } [PROJECT.notebook]
+cli-usage = Usage: { app-name } [PROJECT.notebook | --clear-caches-only]
+cli-not-a-project = { $path } isn't a .notebook project. { cli-usage }
+cli-no-cache-dir = No cache directory on this system
+cli-no-cache = No cache at { $dir }
+cli-cache-cleared = Removed { $count ->
+    [one] 1 cached transcript
+   *[other] { $count } cached transcripts
+} from { $dir }
+cli-clear-failed = Couldn't clear { $dir }: { $error }
 
 ## Settings
 
@@ -251,6 +259,28 @@ underline-asterisks = *asterisks*
 settings-underlined-lines = Underlined lines
 # A heading level, written as markdown: $marks is one "#" per level.
 settings-heading = { $marks } Heading
+# The system transcript cache. See `decisions/2026-11-01-manual-cache-clearing.md`.
+settings-caching = Transcript caching
+settings-cache-location = Cache location
+settings-cache-enable = Enable system transcript caching
+settings-cache-explanation = Transcripts of OCR'd pages are cached both in .notebook project files and in your system's cache storage, so that pages and their transcripts can be reused across projects, and you don't need to retranscribe if you throw away a draft project. Switching this off won't affect .notebook project files.
+settings-cache-clear = Clear cache
+settings-cache-count = { $count ->
+    [0] The cache is empty
+    [one] 1 transcript cached
+   *[other] { $count } transcripts cached
+}
+settings-cache-clear-failed = Couldn't clear the cache: { $error }
+confirm-clear-cache = { $count ->
+    [one] There is 1 transcript in the system cache currently. Delete it?
+   *[other] There are { $count } transcripts in the system cache currently. Delete them?
+}
+confirm-cache-off = { $count ->
+    [one] You've switched off system transcript caching, but there is 1 transcript in the system cache currently. Delete it?
+   *[other] You've switched off system transcript caching, but there are { $count } transcripts in the system cache currently. Delete them?
+}
+confirm-cache-off-button = Delete
+confirm-cache-off-keep = Don't delete
 settings-save = Save
 
 ## Transcription errors

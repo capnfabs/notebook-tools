@@ -1,10 +1,13 @@
-//! The Settings dialog: which model transcribes, with what each is good for, and how Claude's
-//! markup is written. It edits a copy of the settings, which Save hands back.
+//! The Settings dialog: which model transcribes, with what each is good for, how Claude's markup
+//! is written, and whether transcripts are cached. It edits a copy of the settings, which Save
+//! hands back. Clearing the cache isn't a setting: it happens once the user confirms it.
 //!
-//! See `decisions/2026-10-30-settings-dialog.md`.
+//! See `decisions/2026-10-30-settings-dialog.md` and
+//! `decisions/2026-11-01-manual-cache-clearing.md`.
 
 use eframe::egui;
 use egui::{RichText, Sense, Stroke, TextStyle, Ui, Vec2};
+use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
@@ -42,41 +45,182 @@ fn underline_example(marker: &str) -> String {
     }
 }
 
+/// What the dialog did, for the app to act on.
+pub enum Outcome {
+    /// The user saved these settings.
+    Saved(Settings),
+    /// The cache couldn't be cleared, for this reason.
+    ClearFailed(String),
+}
+
+/// Which question about clearing the cache is being asked.
+#[derive(Clone, Copy)]
+enum Confirm {
+    /// Over the dialog, after Clear Cache.
+    Clear,
+    /// After saving with caching switched off, while the cache still has entries.
+    SwitchedOff,
+}
+
 #[derive(Default)]
 pub struct SettingsDialog {
     /// The settings being edited, while the dialog is open.
     draft: Option<Settings>,
+    /// Whether the settings cached transcripts when the dialog opened.
+    was_caching: bool,
+    /// The system cache, if there is one.
+    cache: Option<Cache>,
+    /// How many entries the cache has, as of opening the dialog or clearing it.
+    cached: usize,
+    confirm: Option<Confirm>,
 }
 
 impl SettingsDialog {
-    /// Opens the dialog on `current`.
-    pub fn open(&mut self, current: &Settings) {
+    /// Opens the dialog on `current`, with `cache` to show and clear.
+    pub fn open(&mut self, current: &Settings, cache: Option<Cache>) {
         self.draft = Some(current.clone());
+        self.was_caching = current.cache_transcripts;
+        self.cache = cache;
+        self.cached = self.count();
+        self.confirm = None;
     }
 
+    /// Whether the dialog, or a question it asks, is showing.
     pub fn is_open(&self) -> bool {
-        self.draft.is_some()
+        self.draft.is_some() || self.confirm.is_some()
     }
 
-    /// The dialog, if it's open. Returns the edited settings when the user saves them.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<Settings> {
+    /// The dialog and the question it's asking, if any. Returns what the user did that the app
+    /// must act on.
+    pub fn show(&mut self, ctx: &egui::Context) -> Option<Outcome> {
+        let saved = self.show_settings(ctx).map(Outcome::Saved);
+        let cleared = self.show_confirm(ctx);
+        saved.or(cleared)
+    }
+
+    /// The settings, if they're being edited. Returns them when the user saves them.
+    fn show_settings(&mut self, ctx: &egui::Context) -> Option<Settings> {
         let draft = self.draft.as_mut()?;
+        // A question over the dialog has Enter, and the dialog's buttons wait for it.
+        let asking = self.confirm.is_some();
+        let (cache, cached) = (self.cache.as_ref(), self.cached);
+        let mut clear = false;
         let choice = dialog::show(ctx, "settings", 420.0, |ui| {
             ui.heading(t!("settings-title"));
             ui.add_space(8.0);
             model(ui, &mut draft.model);
             ui.add_space(12.0);
             markdown(ui, &mut draft.markdown);
-            dialog::buttons(ui, &t!("settings-save"), Stakes::Safe, true)
+            ui.add_space(12.0);
+            clear = caching(ui, &mut draft.cache_transcripts, cache, cached);
+            dialog::buttons(ui, &t!("settings-save"), Stakes::Safe, !asking)
         });
+        if clear {
+            self.confirm = Some(Confirm::Clear);
+        }
         match choice? {
-            Choice::Affirmative => self.draft.take(),
+            Choice::Affirmative => {
+                let saved = self.draft.take()?;
+                if self.was_caching && !saved.cache_transcripts {
+                    self.cached = self.count();
+                    if self.cached > 0 {
+                        self.confirm = Some(Confirm::SwitchedOff);
+                    }
+                }
+                Some(saved)
+            }
             Choice::Cancel | Choice::Discard => {
                 self.draft = None;
+                self.confirm = None;
                 None
             }
         }
     }
+
+    /// The question about clearing the cache, if one's being asked. Clears it if the user says to,
+    /// returning why that failed if it did.
+    fn show_confirm(&mut self, ctx: &egui::Context) -> Option<Outcome> {
+        let confirm = self.confirm?;
+        let count = self.cached;
+        let (question, button, keep) = match confirm {
+            Confirm::Clear => (
+                t!("confirm-clear-cache", count = count),
+                t!("settings-cache-clear"),
+                t!("dialog-cancel"),
+            ),
+            Confirm::SwitchedOff => (
+                t!("confirm-cache-off", count = count),
+                t!("confirm-cache-off-button"),
+                t!("confirm-cache-off-keep"),
+            ),
+        };
+        let choice = dialog::show(ctx, "clear cache", 360.0, |ui| {
+            ui.label(question);
+            dialog::buttons_saying(ui, &button, &keep, Stakes::Dangerous, true)
+        })?;
+        self.confirm = None;
+        if choice != Choice::Affirmative {
+            return None;
+        }
+        let cleared = self.cache.as_ref()?.clear();
+        self.cached = self.count();
+        match cleared {
+            Ok(count) => {
+                log::info!("Cleared {count} cached transcriptions");
+                None
+            }
+            Err(err) => {
+                log::warn!("couldn't clear the cache: {err}");
+                let error = t!("settings-cache-clear-failed", error = err.to_string());
+                Some(Outcome::ClearFailed(error))
+            }
+        }
+    }
+
+    /// How many entries the cache has; none if it can't be read.
+    fn count(&self) -> usize {
+        let Some(cache) = &self.cache else {
+            return 0;
+        };
+        cache.count().unwrap_or_else(|err| {
+            log::warn!("couldn't count {}: {err}", cache.dir().display());
+            0
+        })
+    }
+}
+
+/// Where the cache is, whether to use it, and a button to clear its `cached` entries, which
+/// returns whether it was clicked. Without a cache, only the switch.
+fn caching(ui: &mut Ui, enabled: &mut bool, cache: Option<&Cache>, cached: usize) -> bool {
+    ui.label(RichText::new(t!("settings-caching")).strong());
+    if let Some(cache) = cache {
+        ui.horizontal(|ui| {
+            let label = ui.label(t!("settings-cache-location"));
+            // Read-only, but selectable and copyable, and in the Tab order.
+            let dir = cache.dir().display().to_string();
+            let mut dir = dir.as_str();
+            ui.add(egui::TextEdit::singleline(&mut dir).desired_width(f32::INFINITY))
+                .labelled_by(label.id);
+        });
+    }
+    ui.checkbox(enabled, t!("settings-cache-enable"));
+    ui.label(
+        RichText::new(t!("settings-cache-explanation"))
+            .small()
+            .weak(),
+    );
+    if cache.is_none() {
+        return false;
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        // Red, as it deletes what's cached; it asks first.
+        let clear = dialog::button(ui, &t!("settings-cache-clear"), Stakes::Dangerous);
+        let clicked = ui.add_enabled(cached > 0, clear).clicked();
+        ui.label(RichText::new(t!("settings-cache-count", count = cached)).weak());
+        clicked
+    })
+    .inner
 }
 
 fn model(ui: &mut Ui, model: &mut Model) {

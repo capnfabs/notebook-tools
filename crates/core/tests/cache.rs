@@ -386,42 +386,25 @@ fn entries_are_formatted_json() {
 }
 
 #[test]
-fn pruning_removes_only_older_versions_entries() {
-    let (dir, cache) = cache("prune");
-    let fetches = Cell::new(0);
-    transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
+fn counting_finds_entries_of_every_version() {
+    let (dir, cache) = cache("count");
+    assert_eq!(
+        Cache::new(dir.path().join("missing")).count().unwrap(),
+        0,
+        "missing"
+    );
+    transcribe(&cache, PHOTO, 200, "success", &Cell::new(0)).unwrap();
     let current = cache.entry_path(PHOTO, Model::Opus);
     let hash = current.file_name().unwrap().to_str().unwrap()[..64].to_owned();
-    let file = |name: String| {
-        let path = dir.path().join(name);
-        std::fs::write(&path, "{}").unwrap();
-        path
-    };
-    let older = [
-        file(format!("{hash}-v{}-opus.json", CACHE_VERSION - 1)),
-        file(format!("{hash}-v{}.json", CACHE_VERSION - 1)),
-    ];
-    let kept = [
-        current,
-        file(format!("{hash}-v{}-sonnet.json", CACHE_VERSION + 1)),
-        file("notes.txt".to_owned()),
-    ];
-
-    assert_eq!(cache.prune().unwrap(), older.len());
-    for path in &older {
-        assert!(!path.exists(), "{} kept", path.display());
+    for name in [
+        format!("{hash}-v{}-opus.json", CACHE_VERSION - 1),
+        format!("{hash}-v{}.json", CACHE_VERSION - 1),
+        format!("{hash}-v{}-sonnet.json", CACHE_VERSION + 1),
+        "notes.txt".to_owned(),
+    ] {
+        std::fs::write(dir.path().join(name), "{}").unwrap();
     }
-    for path in &kept {
-        assert!(path.exists(), "{} removed", path.display());
-    }
-    transcribe(&cache, PHOTO, 200, "success", &fetches).unwrap();
-    assert_eq!(fetches.get(), 1, "current entry still used");
-}
-
-#[test]
-fn pruning_a_missing_cache_does_nothing() {
-    let (dir, _cache) = cache("prune_missing");
-    assert_eq!(Cache::new(dir.path().join("missing")).prune().unwrap(), 0);
+    assert_eq!(cache.count().unwrap(), 4);
 }
 
 #[test]

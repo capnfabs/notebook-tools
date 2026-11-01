@@ -11,13 +11,26 @@ use crate::json_file;
 use crate::llm_model::Model;
 use crate::markdown_style::MarkdownStyle;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Which Claude new and forced transcriptions go to.
     pub model: Model,
     /// How Claude's markup is written in transcripts.
     pub markdown: MarkdownStyle,
+    /// Whether transcripts are looked up in and stored to the system cache. Projects keep theirs
+    /// either way. See `decisions/2026-11-01-manual-cache-clearing.md`.
+    pub cache_transcripts: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            model: Model::default(),
+            markdown: MarkdownStyle::default(),
+            cache_transcripts: true,
+        }
+    }
 }
 
 impl Settings {
@@ -66,6 +79,7 @@ mod tests {
                 underline: "*".to_owned(),
                 underlined_line_heading: 3,
             },
+            cache_transcripts: false,
         };
         settings.save(&path(&dir)).unwrap();
         assert_eq!(Settings::load(&path(&dir)), settings);
@@ -95,6 +109,10 @@ mod tests {
         assert_eq!(
             settings.markdown.underlined_line_heading,
             MarkdownStyle::default().underlined_line_heading
+        );
+        assert!(
+            settings.cache_transcripts,
+            "caching is on unless switched off"
         );
     }
 }

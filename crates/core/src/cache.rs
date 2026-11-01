@@ -2,8 +2,9 @@
 //! or [`CACHE_VERSION`] is bumped. An entry is the raw response, parsed on every load just like a
 //! live one. Each [`Model`] has its own entry for a photo, and either will do for a page. Entries
 //! keep the corners the photo was cropped to, so boxes can follow the page if its corners move.
-//! Entries from older versions are removed by [`Cache::prune`]. See
-//! `decisions/2026-10-31-transcription-cache.md` and `decisions/2026-10-30-boxes-follow-corners.md`.
+//! Entries from older versions stay until the user clears the cache, in Settings or with
+//! `notebook-tools --clear-caches-only`. See `decisions/2026-10-31-transcription-cache.md`,
+//! `decisions/2026-11-01-manual-cache-clearing.md` and `decisions/2026-10-30-boxes-follow-corners.md`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -47,7 +48,8 @@ impl Cache {
         Self { dir: dir.into() }
     }
 
-    /// The user's cache directory. `scripts/clear-cache.sh` removes it with [`Self::clear`].
+    /// The user's cache directory. `notebook-tools --clear-caches-only` (which
+    /// `scripts/clear-cache.sh` runs) removes it with [`Self::clear`].
     pub fn default_dir() -> Option<PathBuf> {
         Some(dirs::cache_dir()?.join("notebook-tools/transcriptions"))
     }
@@ -62,43 +64,32 @@ impl Cache {
             .join(format!("{}.json", key(page_bytes, CACHE_VERSION, model)))
     }
 
-    /// Removes entries from versions before [`CACHE_VERSION`], returning how many went. Newer
-    /// versions' are kept for the newer build that wrote them, and other files are left alone. A
-    /// missing directory has nothing to prune; an entry that can't be removed only logs.
-    pub fn prune(&self) -> io::Result<usize> {
+    /// How many entries there are, of any version: other files don't count. A missing directory
+    /// has none.
+    pub fn count(&self) -> io::Result<usize> {
         let dir = match std::fs::read_dir(&self.dir) {
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
             dir => dir?,
         };
-        let mut removed = 0;
-        for path in dir.map(|e| e.map(|e| e.path())) {
-            let path = path?;
-            let obsolete = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(key_version)
-                .is_some_and(|version| version < CACHE_VERSION);
-            if !obsolete {
-                continue;
-            }
-            match std::fs::remove_file(&path) {
-                Ok(()) => removed += 1,
-                Err(err) => log::warn!("couldn't prune {}: {err}", path.display()),
+        let mut count = 0;
+        for entry in dir {
+            let entry = entry?;
+            let is_entry = entry.file_name().to_str().and_then(key_version).is_some();
+            if is_entry && entry.file_type()?.is_file() {
+                count += 1;
             }
         }
-        Ok(removed)
+        Ok(count)
     }
 
-    /// Removes the cache directory and everything in it, returning how many files went. A missing
-    /// directory has nothing to clear.
+    /// Removes the cache directory and everything in it, returning how many entries went, as
+    /// [`Self::count`] counts them. A missing directory has nothing to clear.
     pub fn clear(&self) -> io::Result<usize> {
-        let files = match std::fs::read_dir(&self.dir) {
-            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
-            dir => dir?.filter(|e| e.as_ref().is_ok_and(|e| e.path().is_file())),
-        };
-        let count = files.count();
-        std::fs::remove_dir_all(&self.dir)?;
-        Ok(count)
+        let count = self.count()?;
+        match std::fs::remove_dir_all(&self.dir) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(0),
+            removed => removed.map(|()| count),
+        }
     }
 
     /// The photo's transcript by `model` in `style`, if there's a readable entry.

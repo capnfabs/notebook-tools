@@ -38,7 +38,7 @@ use crate::jobs::Waker;
 use crate::t;
 use crate::transcriptions::{Transcriber, Transcriptions};
 use crate::ui::corners::Corners;
-use crate::ui::settings::SettingsDialog;
+use crate::ui::settings::{self, SettingsDialog};
 use crate::ui::split::Split;
 use crate::ui::thumbnails::Thumbnails;
 use crate::ui::transcript_view::TranscriptView;
@@ -266,8 +266,13 @@ impl NotebookApp {
     /// The Settings dialog, if it's open. Saved settings apply from now on, and restyle the
     /// transcripts the user hasn't corrected.
     fn show_settings_dialog(&mut self, ctx: &egui::Context) {
-        let Some(settings) = self.settings_dialog.show(ctx) else {
-            return;
+        let settings = match self.settings_dialog.show(ctx) {
+            Some(settings::Outcome::Saved(settings)) => settings,
+            Some(settings::Outcome::ClearFailed(error)) => {
+                self.errors.push(error);
+                return;
+            }
+            None => return,
         };
         if let Some(path) = &self.settings_path
             && let Err(err) = settings.save(path)

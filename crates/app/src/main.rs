@@ -1,7 +1,9 @@
 //! Starts the app with real credentials, cache, settings file and native dialogs, and the project
-//! named on the command line open, if any (`decisions/2026-10-31-open-by-drop-and-argument.md`).
-//! Tests build [`NotebookApp`] with stand-ins for these instead.
+//! named on the command line open, if any (`decisions/2026-10-31-open-by-drop-and-argument.md`);
+//! or clears the cache and exits, if the command line says to. Tests build [`NotebookApp`] with
+//! stand-ins for these instead.
 
+use notebook_app::cli::{self, Launch};
 use notebook_app::{NotebookApp, Pick, t};
 use notebook_core::cache::Cache;
 use notebook_core::project;
@@ -9,8 +11,18 @@ use notebook_core::settings::Settings;
 
 fn main() -> eframe::Result {
     env_logger::init();
-    let project = match notebook_app::cli::project_to_open(std::env::args_os().skip(1)) {
-        Ok(project) => project,
+    let project = match cli::launch(std::env::args_os().skip(1)) {
+        Ok(Launch::Open(project)) => project,
+        Ok(Launch::ClearCaches) => match cli::clear_caches(Cache::default_dir()) {
+            Ok(done) => {
+                println!("{done}");
+                return Ok(());
+            }
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        },
         Err(err) => {
             eprintln!("{err}");
             std::process::exit(2);
@@ -91,13 +103,6 @@ fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
     match &cache {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
         None => log::warn!("No cache directory: transcriptions won't be cached"),
-    }
-    if let Some(cache) = cache.clone() {
-        std::thread::spawn(move || match cache.prune() {
-            Ok(0) => {}
-            Ok(removed) => log::info!("Pruned {removed} obsolete cached transcriptions"),
-            Err(err) => log::warn!("Couldn't prune the cache: {err}"),
-        });
     }
     let Some(credentials) = Credentials::from_env() else {
         log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");

@@ -38,3 +38,4 @@ In the order they were finished.
 - [x] [Keep page corners across restarts: projects](persist-corners.md)
 - [x] [Open projects by drop and from the command line](open-project-more-ways.md)
 - [x] [Gzip project files](gzip-projects.md)
+- [x] [Switch cache cleaning to manual](manual-cache-clean.md)
