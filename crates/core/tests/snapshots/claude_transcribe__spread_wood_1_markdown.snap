@@ -1,6 +1,6 @@
 ---
 source: crates/core/tests/claude_transcribe.rs
-expression: markdown
+expression: transcript.markdown()
 ---
 (& Wanderweg finally)
 - I walked under a chestnut tree that was dropping

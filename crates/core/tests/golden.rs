@@ -34,14 +34,14 @@ struct Fixture {
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "spread-wood-1",
-        corners: [[97.0, 38.0], [875.0, 61.0], [899.0, 705.0], [68.0, 704.0]],
+        corners: [[171.0, 77.0], [878.0, 75.0], [897.0, 672.0], [152.0, 682.0]],
         hard: false,
     },
-    // Shadowed bottom of the page is as bright as the wood beside it.
+    // The bottom of the right page is in shadow.
     Fixture {
         name: "spread-wood-2",
-        corners: [[141.0, 43.0], [914.0, 66.0], [920.0, 702.0], [125.0, 699.0]],
-        hard: true,
+        corners: [[134.0, 68.0], [854.0, 68.0], [864.0, 663.0], [128.0, 671.0]],
+        hard: false,
     },
     // Light grey table, about as bright as the paper; the next page is partly in shot. The
     // corners are the left page's.

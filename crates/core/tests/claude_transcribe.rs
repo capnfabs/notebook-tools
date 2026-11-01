@@ -11,7 +11,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{RECORDED_CROP, fixtures_dir, photo, response};
+use common::{RECORDED_CROP, photo, response};
 use image::{Rgba, RgbaImage};
 use notebook_core::claude_transcribe::{
     Credentials, EFFORT, OcrError, encode_jpeg, image_to_send, parse_response, request_body, send,
@@ -20,7 +20,6 @@ use notebook_core::clean::{CleanParams, Crop};
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::transcript::{Span, Transcript};
-use serde::Deserialize;
 
 fn parse(name: &str) -> Result<Transcript, OcrError> {
     parse_response(
@@ -81,14 +80,25 @@ fn parses_success() {
     insta::assert_snapshot!("success_markdown", transcript.markdown());
 }
 
+/// The size of the image the live test sent for `spread-wood-1.jpg` when it was recorded.
+const SPREAD_WOOD_1_SENT: (u32, u32) = (732, 615);
+
 /// A real response for `spread-wood-1.jpg`, recorded by the live test.
 #[test]
 fn parses_recorded_response() {
-    let transcript = parse("spread-wood-1").unwrap();
+    let (w, h) = SPREAD_WOOD_1_SENT;
+    let transcript = parse_response(
+        200,
+        &response("spread-wood-1"),
+        Crop::whole(w, h),
+        &MarkdownStyle::default(),
+    )
+    .unwrap();
+    assert_boxes_in_bounds(&transcript);
     assert_eq!(transcript.model, Model::Opus.id());
     assert!(transcript.usage.output_tokens > 0);
-    assert_eq!(transcript.usage.thinking_tokens, 1393);
-    // Two of these claim a line one off from where their text is.
+    assert_eq!(transcript.usage.thinking_tokens, 1708);
+    // Three of these claim a line one to three off from where their text is.
     let spans = transcript.uncertain_spans();
     assert_eq!(spans.len(), 5);
     for (u, span) in transcript.uncertain.iter().zip(spans) {
@@ -102,62 +112,21 @@ fn span_text(transcript: &Transcript, span: Option<Span>) -> Option<&str> {
     transcript.lines[line].text_md.get(range)
 }
 
-/// One request made by the bbox spike, as in its `runs.json`.
-#[derive(Deserialize)]
-struct SpikeRun {
-    photo: String,
-    variant: String,
-    sent_size: (u32, u32),
-    status: Option<u16>,
-    error: Option<String>,
-}
-
-/// Real responses for photos `spread-wood-3` to `-6` at every effort and three image sizes,
-/// recorded by a since-deleted spike: see `tasks/done/bbox-spike.md`.
+/// Claude often answers without a thinking block.
 #[test]
-fn parses_bbox_spike_responses() {
-    let dir = fixtures_dir().join("claude/bbox-spike");
-    let runs: Vec<SpikeRun> =
-        serde_json::from_slice(&std::fs::read(dir.join("runs.json")).unwrap()).unwrap();
-    assert!(!runs.is_empty());
-    let (mut words, mut unfound) = (0, 0);
-    for run in runs {
-        let photo = run.photo.trim_end_matches(".jpg");
-        let name = format!("{photo}-{}", run.variant);
-        // Never answered, so nothing was recorded.
-        let Some(status) = run.status else { continue };
-        let body = std::fs::read(dir.join(format!("{name}.json"))).unwrap();
-        match (
-            parse_response(
-                status,
-                &body,
-                Crop::whole(run.sent_size.0, run.sent_size.1),
-                &MarkdownStyle::default(),
-            ),
-            run.error,
-        ) {
-            (Ok(transcript), None) => {
-                assert!(transcript.usage.output_tokens > 0, "{name}");
-                assert_boxes_in_bounds(&transcript);
-                for (u, span) in transcript
-                    .uncertain
-                    .iter()
-                    .zip(transcript.uncertain_spans())
-                {
-                    words += 1;
-                    match span_text(&transcript, span) {
-                        Some(text) => assert_eq!(text, u.text, "{name}"),
-                        None => unfound += 1,
-                    }
-                }
-            }
-            (Err(err), Some(recorded)) => assert_eq!(err.to_string(), recorded, "{name}"),
-            (parsed, recorded) => panic!("{name}: parsed {parsed:?}, recorded {recorded:?}"),
-        }
-    }
-    // Searching only near each word's claimed line missed 24: the index can be far off. See
-    // `decisions/2026-10-23-bbox-accuracy.md`.
-    assert_eq!((words, unfound), (123, 0));
+fn parses_answer_without_thinking() {
+    let mut body: serde_json::Value = serde_json::from_slice(&response("success")).unwrap();
+    let content = body["content"].as_array_mut().unwrap();
+    content.retain(|block| block["type"] != "thinking");
+    assert_eq!(content.len(), 1);
+    let transcript = parse_response(
+        200,
+        &serde_json::to_vec(&body).unwrap(),
+        RECORDED_CROP,
+        &MarkdownStyle::default(),
+    )
+    .unwrap();
+    assert_eq!(transcript.lines, parse("success").unwrap().lines);
 }
 
 #[test]

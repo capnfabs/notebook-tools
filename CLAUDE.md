@@ -18,6 +18,11 @@
 - Tests: UI tests in `crates/app/tests/viewer/` (one module per feature, helpers in `common.rs`); core's in `crates/core/tests/` with fixtures in `tests/fixtures/` (recorded API responses in `fixtures/claude/`).
 - `scripts/check.sh` (fmt, clippy, tests) must pass before work is done.
 
+# personal content
+
+- This repo is (or will be) public. Before committing anything personal (photos, recorded transcriptions, names, places, dates, anything from the user's notebooks or life), check with the user first and list exactly what's new or changed.
+- The pre-commit hook (`.githooks/pre-commit`; `scripts/check.sh` fails until it's on: `git config core.hooksPath .githooks`) rejects images not in `scripts/reviewed-images.txt` and image metadata. Only the user approves images (`scripts/check-images.sh --approve PATH`). See `decisions/2026-11-01-image-guardrails.md`.
+
 # impl
 
 - user-facing text goes in `crates/app/i18n/en-US/notebook_app.ftl`, looked up with `t!` (`crates/app/src/i18n.rs`); tests use the same lookup. See `decisions/2026-10-30-strings-in-fluent.md`.

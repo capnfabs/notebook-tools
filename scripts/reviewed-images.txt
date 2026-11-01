@@ -1,0 +1,6 @@
+# Images a human has checked show nothing personal, as `<git blob id> <path>`.
+# Only the user adds to this, with `scripts/check-images.sh --approve PATH`.
+39777615d624feae4d3bf2c58303e120fdf5ac2f crates/core/tests/fixtures/spread-wood-1.jpg
+a68bed642d5217ba436c252e182004924757a7c8 crates/core/tests/fixtures/spread-wood-2.jpg
+3bf367158db22cb32c9a8360ce47252323f97c4a crates/core/tests/golden/spread-wood-1.png
+f4cc631f95e97bfc15e401bfca7b146d06ce83a3 crates/core/tests/golden/spread-wood-2.png
