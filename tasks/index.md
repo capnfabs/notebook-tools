@@ -3,10 +3,12 @@
 ## completed
 See [done/index.md](done/index.md).
 
-## polish
+## M0
+- [ ] [HEIC through ImageIO on macOS](heic-distribution.md)
+- [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
-- [ ] [Bundle libheif for distribution](heic-distribution.md)
 - [ ] [Claude auth approach](claude-auth.md)
+- [ ] [Audit repo and strip anything PII-ish](audit-and-strip.md)
 
 
 ## future milestones
@@ -15,3 +17,4 @@ See [done/index.md](done/index.md).
 - [ ] ["Show me" untranscribed pages](show-untranscribed.md)
 - [ ] [Decide: spread detection approach + reading order](spread-detection.md)
 - [ ] [Corner detection: hard photos](outline-detection.md)
+- [ ] [HEIC on non-mac builds](non-mac-heic.md)
