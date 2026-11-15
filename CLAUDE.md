@@ -16,7 +16,7 @@
 - `crates/app` (`notebook_app`, binary `notebook-tools`): the egui UI. `app/` is `NotebookApp`, its methods split by job (see `app/mod.rs`); `command.rs` + `menu.rs` are commands, shortcuts and the macOS menu, and `quit.rs` asks to save when macOS quits the app; `ingest`, `transcriptions`, `export` run work off the UI thread; `ui/` holds widgets.
 - A new command: add it to `Command` and `MENUS` in `crates/app/src/command.rs`, its label to the strings file, and what it can do to `NotebookApp::can`.
 - Tests: UI tests in `crates/app/tests/viewer/` (one module per feature, helpers in `common.rs`); core's in `crates/core/tests/` with fixtures in `tests/fixtures/` (recorded API responses in `fixtures/claude/`).
-- `scripts/check.sh` (fmt, clippy, tests) must pass before work is done.
+- `scripts/check.sh` (fmt, clippy, tests on macOS, then clippy + tests in a Linux container) must pass before work is done; `--mac-only` is fine while iterating.
 
 # personal content
 

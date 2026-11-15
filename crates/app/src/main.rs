@@ -40,6 +40,9 @@ fn main() -> eframe::Result {
                 Some(path) => app.with_settings_file(path),
                 None => app,
             };
+            // Only the macOS menu needs the context.
+            #[cfg(not(target_os = "macos"))]
+            let _ = cc;
             #[cfg(target_os = "macos")]
             let app = app.with_frontend(Box::new(notebook_app::menu::NativeMenu::install(
                 &cc.egui_ctx,

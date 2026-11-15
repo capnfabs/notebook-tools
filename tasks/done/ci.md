@@ -6,3 +6,5 @@ Open questions:
 - Something virtualized maybe? Using https://github.com/apple/container?
 - Should we run this as part of the preflight script (scripts/check.sh)? Probably if it's cheap?
 - `decisions/2026-11-01-image-guardrails.md` says no CI copy of the image check; revisit?
+
+Done: `scripts/check-linux.sh`, run by `scripts/check.sh`. See `decisions/2026-11-15-local-linux-ci.md`.

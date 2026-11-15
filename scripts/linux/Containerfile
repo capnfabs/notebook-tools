@@ -1,0 +1,19 @@
+# The Linux image `scripts/check-linux.sh` builds and tests in. See
+# `decisions/2026-11-15-local-linux-ci.md`.
+#
+# Trixie is the first Debian with libheif 1.19, which libheif-rs's `v1_19` feature needs; the
+# libde265 plugin is what decodes HEIC. rfd links GTK 3.
+FROM debian:trixie-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl pkg-config \
+        libgtk-3-dev libheif-dev libheif-plugin-libde265 \
+    && rm -rf /var/lib/apt/lists/*
+
+# From `rust-toolchain.toml`, which the script reads.
+ARG RUST_VERSION
+ENV RUSTUP_HOME=/usr/local/rustup PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | CARGO_HOME=/usr/local/cargo sh -s -- -y --no-modify-path --profile minimal \
+            --default-toolchain "$RUST_VERSION" --component clippy,rustfmt

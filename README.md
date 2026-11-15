@@ -20,9 +20,15 @@ scripts/run.sh --offline
 
 ## Test
 
+These scripts are a bit cursed / have a bit of tech debt; they assume that they're always going to be running on OSX.
+
 ```sh
-# lo-fi CI: formatting, clippy and every test
+# lo-fi CI: formatting, clippy and every test, on macOS then Linux
+# (Linux needs apple/container: once per boot, `container system start`)
 scripts/check.sh
+
+# macOS only, quicker while iterating
+scripts/check.sh --mac-only
 
 # update golden tests
 UPDATE_GOLDEN=1 cargo test -p notebook_core --test golden

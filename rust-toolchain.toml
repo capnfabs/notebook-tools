@@ -1,0 +1,6 @@
+# One Rust for the Mac and the Linux check (`scripts/check-linux.sh`), so their clippy lints agree.
+# See `decisions/2026-11-15-local-linux-ci.md`.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
