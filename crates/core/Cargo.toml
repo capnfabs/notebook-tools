@@ -14,7 +14,6 @@ flate2 = "1"
 image.workspace = true
 imageproc = { workspace = true, features = ["rayon"] }
 krilla = "0.8"
-libheif-rs.workspace = true
 log.workspace = true
 # Markdown as plain text, for the PDF's text layer.
 pulldown-cmark = { version = "0.13.5", default-features = false }
@@ -27,6 +26,15 @@ sha2 = "0.11"
 tempfile.workspace = true
 # Measures text, to stretch each line of the PDF's text layer across its box.
 ttf-parser = "0.25"
+
+# HEIC: ImageIO on macOS, libheif elsewhere. See `decisions/2026-11-01-heic-through-imageio.md`.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFData", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "CGImageProperties", "objc2-core-graphics"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+libheif-rs.workspace = true
 
 [dev-dependencies]
 insta = { version = "1", features = ["json"] }

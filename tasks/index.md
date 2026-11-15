@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## M0
-- [ ] [HEIC through ImageIO on macOS](heic-distribution.md)
 - [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
 - [ ] [Claude auth approach](claude-auth.md)

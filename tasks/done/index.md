@@ -40,3 +40,4 @@ In the order they were finished.
 - [x] [Gzip project files](gzip-projects.md)
 - [x] [Switch cache cleaning to manual](manual-cache-clean.md)
 - [x] [Audit repo and strip anything PII-ish](audit-and-strip.md)
+- [x] [HEIC through ImageIO on macOS](heic-distribution.md)

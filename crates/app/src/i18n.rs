@@ -86,7 +86,7 @@ pub fn decode_error(err: &DecodeError) -> String {
     match err {
         DecodeError::Unrecognized => t!("decode-unrecognized"),
         DecodeError::Image(error) => error.to_string(),
-        DecodeError::Heif(error) => t!("decode-heif", error = error.as_str()),
+        DecodeError::Heic(error) => t!("decode-heic", error = error.as_str()),
     }
 }
 

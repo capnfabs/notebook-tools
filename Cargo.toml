@@ -15,8 +15,8 @@ egui_kittest = "0.37.0"
 epaint_default_fonts = "0.37"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 imageproc = { version = "0.27", default-features = false }
-# Links the system libheif through pkg-config (`brew install libheif`): see
-# `decisions/2026-10-31-image-decoding.md`.
+# HEIC off macOS, linking the system libheif through pkg-config: see
+# `decisions/2026-11-01-heic-through-imageio.md`.
 libheif-rs = { version = "3", default-features = false, features = ["v1_19"] }
 log = "0.4"
 rayon = "1"

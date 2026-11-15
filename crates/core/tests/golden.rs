@@ -88,10 +88,16 @@ fn fixtures_have_no_metadata() {
             continue;
         }
         let bytes = std::fs::read(&path).unwrap();
-        // EXIF (which holds GPS location) lives in an APP1 segment starting "Exif\0\0".
+        // EXIF (which holds GPS location) is "Exif\0\0" then a TIFF header, in a JPEG's APP1
+        // segment or a HEIC's Exif item. A stripped HEIC keeps an empty Exif item, whose entry in
+        // the item list also reads "Exif\0\0", but no TIFF header follows it.
+        let exif =
+            |w: &[u8]| w.starts_with(b"Exif\0\0") && (&w[6..] == b"II*\0" || &w[6..] == b"MM\0*");
         assert!(
-            !bytes.windows(6).any(|w| w == b"Exif\0\0"),
-            "{} has EXIF metadata; strip it with `exiftool -all= -overwrite_original`",
+            !bytes.windows(10).any(exif),
+            "{} has EXIF metadata; strip it with `exiftool -all= -overwrite_original` (for a \
+             HEIC, `-gps:all= -xmp:all= -exif:all= -makernotes:all=`: `-all=` breaks it for \
+             ImageIO)",
             path.display()
         );
     }

@@ -298,4 +298,4 @@ ocr-parse = unexpected response from Claude: { $error }
 ## Photo errors
 
 decode-unrecognized = not a JPEG, PNG or HEIC image
-decode-heif = couldn't decode HEIC: { $error }
+decode-heic = couldn't decode HEIC: { $error }

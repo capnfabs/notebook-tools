@@ -2,11 +2,8 @@ Notebook-tools is a tool for OCR-ing a handwritten notebook.
 
 ## Build
 
-Needs Rust and libheif (1.19+) + pkg-config:
-
-```sh
-brew install libheif pkg-config
-```
+On macOS, needs only Rust: HEIC goes through the system's ImageIO. Elsewhere, also libheif (1.19+)
+and pkg-config, e.g. `apt install libheif-dev pkg-config`.
 
 The app is the `notebook_app` package; its binary is called `notebook-tools`.
 

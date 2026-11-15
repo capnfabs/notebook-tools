@@ -1,13 +1,19 @@
 //! Turns image files into upright pixels. Each format has a [`Decoder`]; [`decode`] picks the one
 //! that recognizes the file. Nothing past here knows which format a page came from.
 //!
-//! See `decisions/2026-10-31-image-decoding.md`.
+//! See `decisions/2026-10-31-image-decoding.md`; HEIC goes through ImageIO on macOS and libheif
+//! elsewhere, `decisions/2026-11-01-heic-through-imageio.md`.
 
 use std::fmt;
 use std::io::Cursor;
 
+use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder as _, ImageFormat, ImageReader, RgbaImage};
-use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
+
+#[cfg(target_os = "macos")]
+mod image_io;
+#[cfg(not(target_os = "macos"))]
+mod libheif;
 
 /// Decodes one image format.
 trait Decoder: Sync {
@@ -17,14 +23,21 @@ trait Decoder: Sync {
     fn decode(&self, bytes: &[u8]) -> Result<RgbaImage, DecodeError>;
 }
 
-const DECODERS: &[&dyn Decoder] = &[&ImageCrate, &Heif];
+/// This platform's HEIC decoder.
+#[cfg(target_os = "macos")]
+const HEIC: &dyn Decoder = &image_io::ImageIo;
+#[cfg(not(target_os = "macos"))]
+const HEIC: &dyn Decoder = &libheif::Heif;
+
+const DECODERS: &[&dyn Decoder] = &[&ImageCrate, HEIC];
 
 #[derive(Debug)]
 pub enum DecodeError {
     /// No decoder recognizes the file.
     Unrecognized,
     Image(image::ImageError),
-    Heif(String),
+    /// The HEIC decoder failed, saying why.
+    Heic(String),
 }
 
 impl fmt::Display for DecodeError {
@@ -32,7 +45,7 @@ impl fmt::Display for DecodeError {
         match self {
             Self::Unrecognized => write!(f, "not a JPEG, PNG or HEIC image"),
             Self::Image(err) => err.fmt(f),
-            Self::Heif(err) => write!(f, "couldn't decode HEIC: {err}"),
+            Self::Heic(err) => write!(f, "couldn't decode HEIC: {err}"),
         }
     }
 }
@@ -54,6 +67,18 @@ pub fn decode(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
         .decode(bytes)
 }
 
+/// Whether `bytes` start like a HEIC: an ISO box `ftyp` first, then the major brand.
+fn is_heic(bytes: &[u8]) -> bool {
+    const BRANDS: [&[u8]; 4] = [b"heic", b"heix", b"heim", b"mif1"];
+    bytes.get(4..8) == Some(b"ftyp") && bytes.get(8..12).is_some_and(|b| BRANDS.contains(&b))
+}
+
+/// `img` turned upright, given the EXIF-style `orientation` it was stored with.
+fn upright(mut img: DynamicImage, orientation: Orientation) -> RgbaImage {
+    img.apply_orientation(orientation);
+    img.into_rgba8()
+}
+
 /// JPEG and PNG, through the `image` crate, applying the EXIF orientation.
 struct ImageCrate;
 
@@ -71,43 +96,7 @@ impl Decoder for ImageCrate {
             .map_err(image::ImageError::IoError)?
             .into_decoder()?;
         let orientation = decoder.orientation()?;
-        let mut img = DynamicImage::from_decoder(decoder)?;
-        img.apply_orientation(orientation);
-        Ok(img.into_rgba8())
-    }
-}
-
-/// HEIC, as iPhones take, through libheif.
-struct Heif;
-
-impl Decoder for Heif {
-    fn recognizes(&self, bytes: &[u8]) -> bool {
-        // An ISO box `ftyp` first, then the major brand.
-        const BRANDS: [&[u8]; 4] = [b"heic", b"heix", b"heim", b"mif1"];
-        bytes.get(4..8) == Some(b"ftyp") && bytes.get(8..12).is_some_and(|b| BRANDS.contains(&b))
-    }
-
-    fn decode(&self, bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
-        let heif = |err: libheif_rs::HeifError| DecodeError::Heif(err.to_string());
-        let context = HeifContext::read_from_bytes(bytes).map_err(heif)?;
-        let handle = context.primary_image_handle().map_err(heif)?;
-        // Applies the file's rotation and mirroring, which is how iPhones record orientation in
-        // HEIC; its EXIF orientation is only informational, so it isn't applied again.
-        let image = LibHeif::new()
-            .decode(&handle, ColorSpace::Rgb(RgbChroma::Rgba), None)
-            .map_err(heif)?;
-        let plane = image
-            .planes()
-            .interleaved
-            .ok_or_else(|| DecodeError::Heif("no RGBA plane".into()))?;
-        let (w, h) = (plane.width, plane.height);
-        let row = w as usize * 4;
-        let pixels = (0..h as usize)
-            .flat_map(|y| &plane.data[y * plane.stride..][..row])
-            .copied()
-            .collect();
-        RgbaImage::from_raw(w, h, pixels)
-            .ok_or_else(|| DecodeError::Heif(format!("short {w}x{h} RGBA plane")))
+        Ok(upright(DynamicImage::from_decoder(decoder)?, orientation))
     }
 }
 
@@ -138,6 +127,8 @@ mod tests {
         bytes
     }
 
+    const HEIC_HEADER: &[u8] = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
+
     #[test]
     fn decodes_png() {
         let img = decode(&png(3, 2)).unwrap();
@@ -152,6 +143,16 @@ mod tests {
     }
 
     #[test]
+    fn upright_rotates_clockwise() {
+        // The top-left pixel ends up top-right after a quarter turn clockwise.
+        let mut img = RgbaImage::new(3, 2);
+        img.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        let turned = upright(DynamicImage::ImageRgba8(img), Orientation::Rotate90);
+        assert_eq!(turned.dimensions(), (2, 3));
+        assert_eq!(turned.get_pixel(1, 0), &Rgba([255, 0, 0, 255]));
+    }
+
+    #[test]
     fn rejects_non_images() {
         assert!(matches!(
             decode(b"just some notes"),
@@ -161,21 +162,17 @@ mod tests {
 
     #[test]
     fn each_decoder_recognizes_only_its_formats() {
-        let heic = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
         assert!(ImageCrate.recognizes(&png(1, 1)));
         assert!(ImageCrate.recognizes(&rotated_jpeg(1, 1)));
-        assert!(!ImageCrate.recognizes(heic));
-        assert!(Heif.recognizes(heic));
-        assert!(!Heif.recognizes(&png(1, 1)));
-        assert!(!Heif.recognizes(b"\0\0\0\x18ftypisom"), "an MP4");
-        assert!(!Heif.recognizes(b"ftyp"));
+        assert!(!ImageCrate.recognizes(HEIC_HEADER));
+        assert!(HEIC.recognizes(HEIC_HEADER));
+        assert!(!HEIC.recognizes(&png(1, 1)));
+        assert!(!HEIC.recognizes(b"\0\0\0\x18ftypisom"), "an MP4");
+        assert!(!HEIC.recognizes(b"ftyp"));
     }
 
     #[test]
     fn broken_heic_is_an_error() {
-        assert!(matches!(
-            decode(b"\0\0\0\x18ftypheic\0\0\0\0mif1heic"),
-            Err(DecodeError::Heif(_))
-        ));
+        assert!(matches!(decode(HEIC_HEADER), Err(DecodeError::Heic(_))));
     }
 }
