@@ -121,6 +121,10 @@ fn a_rejected_key_isnt_saved() {
 
 /// Offline, or the API's busy: the key may be fine, so it's saved, and the user is told it wasn't
 /// checked.
+///
+/// The warning is a hint, gone after a few seconds of the harness's clock, which runs a quarter of
+/// a second a frame. Settling would step through the transcription that starts once the key's
+/// saved, and a slow one outlasts the hint, so this looks for it after every frame.
 #[test]
 fn a_key_that_couldnt_be_checked_is_saved_with_a_warning() {
     let check: CheckKey = Arc::new(|_| Err(OcrError::Network("offline".into())));
@@ -129,12 +133,12 @@ fn a_key_that_couldnt_be_checked_is_saved_with_a_warning() {
     drop_files(harness, &[("a.png", page_photo())]);
     press_command(harness, Key::T);
     enter_key(harness, KEY);
-    save_key(harness);
+    harness.get_by_label(&t!("api-key-save")).click();
+    let warning = before_mark(t!("api-key-unverified", error = MARK));
+    step_until(harness, &warning);
 
     assert!(!asking(harness));
     assert_eq!(app.store.load(), Stored::Has(KEY.into()));
-    let warning = before_mark(t!("api-key-unverified", error = MARK));
-    assert!(harness.query_by_label_contains(&warning).is_some());
     step_until(harness, "# Thurs 23 Oct");
 }
 

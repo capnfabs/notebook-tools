@@ -46,3 +46,4 @@ In the order they were finished.
 - [x] [Claude auth: `ant` login as a fallback](claude-auth-ant.md)
 - [x] [macOS app bundle and signing](macos-app-bundle.md)
 - [x] [Show pages whose photos are missing](missing-pages.md)
+- [x] [Flaky test: unverified API key warning](flaky-unverified-key-test.md)
