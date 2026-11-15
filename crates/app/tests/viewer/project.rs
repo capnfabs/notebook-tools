@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use eframe::egui::{Key, Modifiers, ViewportCommand};
 use egui_kittest::Harness;
@@ -15,11 +15,12 @@ use serde_json::Value;
 use crate::common::*;
 
 /// Stand-ins for the save dialog and the file picker, which answer with `answer` and count what
-/// they're asked.
+/// they're asked, and for Finder, asking the last app made to open files.
 #[derive(Clone)]
 struct Dialogs {
     answer: Arc<Mutex<Option<PathBuf>>>,
     saves: Arc<AtomicUsize>,
+    finder: Arc<Mutex<Option<mpsc::Sender<Vec<PathBuf>>>>>,
 }
 
 impl Dialogs {
@@ -27,6 +28,19 @@ impl Dialogs {
         Self {
             answer: Arc::new(Mutex::new(Some(path.to_path_buf()))),
             saves: Arc::new(AtomicUsize::new(0)),
+            finder: Arc::default(),
+        }
+    }
+
+    /// Hands the app the files at `paths` `via` a drop or Finder, and waits for what that
+    /// started.
+    fn give(&self, harness: &mut Harness<'_, NotebookApp>, via: Given, paths: &[&Path]) {
+        match via {
+            Given::Dropped => drop_paths(harness, paths),
+            Given::FromFinder => {
+                let finder = self.finder.lock().unwrap().clone().unwrap();
+                open_from_finder(harness, &finder, paths);
+            }
         }
     }
 
@@ -55,9 +69,23 @@ impl Dialogs {
         let app = NotebookApp::with_transcription(Some(Transcriber::new(fetch)), None)
             .with_save_path(save_path)
             .with_file_picker(pick_files);
+        let (app, finder) = opening_from_finder(app);
+        *self.finder.lock().unwrap() = Some(finder);
         harness_for(app)
     }
 }
+
+/// How the app is handed files: both follow the same rules. See
+/// `decisions/2026-11-15-macos-bundle.md`.
+#[derive(Clone, Copy, Debug)]
+enum Given {
+    /// Dropped on the window.
+    Dropped,
+    /// Opened from Finder or the Dock.
+    FromFinder,
+}
+
+const GIVEN: [Given; 2] = [Given::Dropped, Given::FromFinder];
 
 /// A test directory, and dialogs that answer with `notes.notebook` in it.
 fn setup(test: &str) -> (tempfile::TempDir, PathBuf, Dialogs) {
@@ -374,67 +402,98 @@ fn save_project(dir: &Path, dialogs: &Dialogs, photos: &[&str]) {
 
 #[test]
 fn dropping_a_project_asks_to_save_then_opens_it() {
-    let (dir, path, dialogs) = setup("drop_project");
-    save_project(dir.path(), &dialogs, &["a.png"]);
-    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
-    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+    for via in GIVEN {
+        let (dir, path, dialogs) = setup(&format!("drop_project_{via:?}"));
+        save_project(dir.path(), &dialogs, &["a.png"]);
+        let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+        drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
 
-    drop_paths(&mut harness, &[&path]);
-    assert!(asks_to_save(&harness));
-    assert_eq!(thumbnails(&harness), ["b.png"], "not yet");
-    harness.get_by_label(&t!("unsaved-discard")).click();
-    settle(&mut harness);
-    assert_eq!(thumbnails(&harness), ["a.png"]);
-    assert_eq!(title(&harness), "notes");
+        dialogs.give(&mut harness, via, &[&path]);
+        assert!(asks_to_save(&harness), "{via:?}");
+        assert_eq!(thumbnails(&harness), ["b.png"], "not yet, {via:?}");
+        harness.get_by_label(&t!("unsaved-discard")).click();
+        settle(&mut harness);
+        assert_eq!(thumbnails(&harness), ["a.png"], "{via:?}");
+        assert_eq!(title(&harness), "notes", "{via:?}");
+    }
 }
 
 #[test]
 fn files_dropped_with_a_project_are_left_out() {
-    let (dir, path, dialogs) = setup("drop_project_and_photos");
-    save_project(dir.path(), &dialogs, &["a.png"]);
-    let photo = dir.path().join("c.png");
-    std::fs::write(&photo, png()).unwrap();
-    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+    for via in GIVEN {
+        let (dir, path, dialogs) = setup(&format!("drop_project_and_photos_{via:?}"));
+        save_project(dir.path(), &dialogs, &["a.png"]);
+        let photo = dir.path().join("c.png");
+        std::fs::write(&photo, png()).unwrap();
+        let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
 
-    drop_paths(&mut harness, &[&photo, &path]);
-    assert!(!asks_to_save(&harness), "nothing to lose");
-    assert_eq!(thumbnails(&harness), ["a.png"]);
-    assert_eq!(title(&harness), "notes", "c.png wasn't added");
-    let left_out = t!("drop-others-left-out", count = 1);
-    assert!(harness.query_by_label(&left_out).is_some());
+        dialogs.give(&mut harness, via, &[&photo, &path]);
+        assert!(!asks_to_save(&harness), "nothing to lose, {via:?}");
+        assert_eq!(thumbnails(&harness), ["a.png"], "{via:?}");
+        assert_eq!(title(&harness), "notes", "c.png wasn't added, {via:?}");
+        let left_out = t!("drop-others-left-out", count = 1);
+        assert!(harness.query_by_label(&left_out).is_some(), "{via:?}");
+    }
 }
 
 #[test]
 fn dropping_two_projects_opens_neither() {
-    let (dir, path, dialogs) = setup("drop_two_projects");
-    save_project(dir.path(), &dialogs, &["a.png"]);
-    let other = dir.path().join("other.notebook");
-    std::fs::copy(&path, &other).unwrap();
-    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
-    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+    for via in GIVEN {
+        let (dir, path, dialogs) = setup(&format!("drop_two_projects_{via:?}"));
+        save_project(dir.path(), &dialogs, &["a.png"]);
+        let other = dir.path().join("other.notebook");
+        std::fs::copy(&path, &other).unwrap();
+        let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+        drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
 
-    drop_paths(&mut harness, &[&path, &other]);
-    assert!(!asks_to_save(&harness));
-    assert_eq!(thumbnails(&harness), ["b.png"]);
-    let error = t!("drop-several-projects");
-    assert!(harness.query_by_label(&error).is_some());
+        dialogs.give(&mut harness, via, &[&path, &other]);
+        assert!(!asks_to_save(&harness), "{via:?}");
+        assert_eq!(thumbnails(&harness), ["b.png"], "{via:?}");
+        let error = t!("drop-several-projects");
+        assert!(harness.query_by_label(&error).is_some(), "{via:?}");
+    }
 }
 
 #[test]
 fn a_project_dropped_while_asking_to_save_is_ignored() {
-    let (dir, path, dialogs) = setup("drop_project_while_asking");
-    save_project(dir.path(), &dialogs, &["a.png"]);
-    let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
-    drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
-    press_command(&mut harness, Key::N);
-    assert!(asks_to_save(&harness));
+    for via in GIVEN {
+        let (dir, path, dialogs) = setup(&format!("drop_project_while_asking_{via:?}"));
+        save_project(dir.path(), &dialogs, &["a.png"]);
+        let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
+        drop_files_in(&mut harness, dir.path(), &[("b.png", png())]);
+        press_command(&mut harness, Key::N);
+        assert!(asks_to_save(&harness), "{via:?}");
 
-    drop_paths(&mut harness, &[&path]);
-    answer(&mut harness, &t!("unsaved-discard"));
-    assert!(!asks_to_save(&harness));
-    assert!(
-        harness.query_by_label(&t!("drop-zone-title")).is_some(),
-        "the new project the user asked for, not the one dropped"
+        dialogs.give(&mut harness, via, &[&path]);
+        answer(&mut harness, &t!("unsaved-discard"));
+        assert!(!asks_to_save(&harness), "{via:?}");
+        assert!(
+            harness.query_by_label(&t!("drop-zone-title")).is_some(),
+            "the new project the user asked for, not the one dropped, {via:?}"
+        );
+    }
+}
+
+/// Photos opened from Finder or the Dock are added as pages, like dropped ones; those that
+/// launched the app arrive before its first frame, and are added then.
+#[test]
+fn photos_opened_from_finder_are_added_as_pages() {
+    let dir = test_dir("finder_photos");
+    let (a, b) = (dir.path().join("a.png"), dir.path().join("b.png"));
+    for path in [&a, &b] {
+        std::fs::write(path, png()).unwrap();
+    }
+    let (app, finder) = opening_from_finder(NotebookApp::default());
+    finder.send(vec![b.clone()]).unwrap();
+    let mut harness = harness_for(app);
+    settle(&mut harness);
+    assert_eq!(thumbnails(&harness), ["b.png"]);
+
+    open_from_finder(&mut harness, &finder, &[&a]);
+    assert_eq!(
+        thumbnails(&harness),
+        ["a.png", "b.png"],
+        "in filename order"
     );
 }
 

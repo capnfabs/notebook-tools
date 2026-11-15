@@ -24,6 +24,9 @@ pub const OFFLINE: &str = "--offline";
 /// again with every build. Credentials come from the environment or `ant`.
 pub const NO_KEYCHAIN: &str = "--no-keychain";
 
+/// How an argument macOS adds when Finder launches the app starts (`-psn_0_12345`). Ignored.
+pub const PROCESS_SERIAL_NUMBER: &str = "-psn_";
+
 /// What the command line asks for.
 pub enum Launch {
     /// Start the app, with `project` open, if any; without credentials if `offline`, and without
@@ -41,6 +44,8 @@ pub enum Launch {
 /// opened; or what's wrong with them.
 pub fn launch(args: impl IntoIterator<Item = OsString>) -> Result<Launch, String> {
     let mut args: Vec<OsString> = args.into_iter().collect();
+    // Older macOS names the process this way when Finder launches the app.
+    args.retain(|arg| !arg.to_string_lossy().starts_with(PROCESS_SERIAL_NUMBER));
     if let [arg] = args.as_slice()
         && arg == CLEAR_CACHES
     {

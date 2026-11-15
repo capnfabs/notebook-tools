@@ -12,8 +12,8 @@ use notebook_app::{NotebookApp, Pick, t};
 use notebook_core::cache::Cache;
 use notebook_core::credentials::ant::{Ant, LoggedIn};
 use notebook_core::credentials::{self, Credentials, Source};
-use notebook_core::project;
 use notebook_core::settings::Settings;
+use notebook_core::{decode, project};
 
 /// How long the window waits for `ant` to say whether it's logged in, once it's ready to open.
 const ANT_WAIT: Duration = Duration::from_secs(3);
@@ -44,9 +44,12 @@ fn main() -> eframe::Result {
     let env = (!offline).then(credentials::from_env).flatten();
     // Only needed without the environment's credentials; asked while the window opens.
     let ant = (!offline && env.is_none()).then(ant_login);
+    // Before eframe starts, as the files that launched the app arrive before it builds the app.
+    #[cfg(target_os = "macos")]
+    let opened_files = notebook_app::finder_open::install();
     eframe::run_native(
         &t!("app-name"),
-        eframe::NativeOptions::default(),
+        notebook_app::native_options(),
         Box::new(move |cc| {
             let cache = cache();
             let app = NotebookApp::with_transcription(None, cache.clone());
@@ -67,9 +70,12 @@ fn main() -> eframe::Result {
             #[cfg(not(target_os = "macos"))]
             let _ = cc;
             #[cfg(target_os = "macos")]
-            let app = app.with_frontend(Box::new(notebook_app::menu::NativeMenu::install(
-                &cc.egui_ctx,
-            )));
+            let app = {
+                notebook_app::finder_open::set_context(&cc.egui_ctx);
+                app.with_opened_files(opened_files).with_frontend(Box::new(
+                    notebook_app::menu::NativeMenu::install(&cc.egui_ctx),
+                ))
+            };
             // Last, so the transcripts are restyled in the settings' style.
             let app = match project {
                 Some((path, opened)) => app.with_project(&path, opened),
@@ -104,10 +110,7 @@ fn save_dialog() -> notebook_app::SavePath {
 fn file_picker() -> notebook_app::PickFiles {
     std::sync::Arc::new(|pick| match pick {
         Pick::Photos => rfd::FileDialog::new()
-            .add_filter(
-                t!("file-type-photos"),
-                &["jpg", "jpeg", "png", "heic", "heif"],
-            )
+            .add_filter(t!("file-type-photos"), &decode::EXTENSIONS)
             .pick_files()
             .unwrap_or_default(),
         Pick::Project => rfd::FileDialog::new()

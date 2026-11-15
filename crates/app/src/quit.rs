@@ -10,8 +10,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui;
-use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{class, msg_send, sel};
+use objc2::runtime::{AnyObject, Imp, Sel};
+use objc2::sel;
+
+use crate::app_delegate::{self, NotAdded};
 
 /// `NSApplicationTerminateReply`.
 const TERMINATE_CANCEL: usize = 0;
@@ -31,30 +33,21 @@ pub fn install(ctx: &egui::Context) {
     CONTEXT.set(ctx.clone()).ok();
     // SAFETY: on the main thread, after launch, so the application and its delegate exist. The
     // method's signature matches `TYPES` and `applicationShouldTerminate:`.
-    unsafe {
-        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
-        let delegate: *mut AnyObject = msg_send![app, delegate];
-        let Some(delegate) = delegate.as_ref() else {
-            log::warn!("no application delegate: quitting from the Dock won't ask to save");
-            return;
-        };
-        let class = delegate.class() as *const AnyClass as *mut AnyClass;
+    let added = unsafe {
         let imp: Imp = std::mem::transmute::<
             extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject) -> usize,
             Imp,
         >(should_terminate);
-        let added = objc2::ffi::class_addMethod(
-            class,
-            sel!(applicationShouldTerminate:),
-            imp,
-            TYPES.as_ptr(),
-        );
-        if !added.as_bool() {
-            log::warn!("the application delegate already decides whether to quit; leaving it");
-            return;
+        app_delegate::add_method(sel!(applicationShouldTerminate:), imp, TYPES)
+    };
+    match added {
+        Ok(()) => {}
+        Err(NotAdded::NoDelegate) => {
+            log::warn!("no application delegate: quitting from the Dock won't ask to save");
         }
-        // AppKit may have noted what the delegate does when it was set.
-        let _: () = msg_send![app, setDelegate: delegate];
+        Err(NotAdded::AlreadyThere) => {
+            log::warn!("the application delegate already decides whether to quit; leaving it");
+        }
     }
 }
 

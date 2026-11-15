@@ -1,5 +1,6 @@
 # Images a human has checked show nothing personal, as `<git blob id> <path>`.
 # Only the user adds to this, with `scripts/check-images.sh --approve PATH`.
+ccd914592e8ed952ea27e6e24a5b532f755c14c2 crates/app/macos/AppIcon.icon/Assets/notebook.png
 02c94aa86e34b3b69bae5238d128f481f3aabe10 crates/core/tests/fixtures/page-grey-table.heic
 ca85011702be5f84ea875b67928668f57b866252 crates/core/tests/fixtures/page-grey-table.jpg
 5f902b37e7048ad109225e5b05fa151e5d45053c crates/core/tests/fixtures/page-rotated.heic

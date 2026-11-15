@@ -78,6 +78,20 @@ fn a_project_opens() {
     assert_eq!(opened.pages.len(), 1);
 }
 
+/// Older macOS passes a process serial number when Finder launches the app.
+#[test]
+fn finders_process_serial_number_is_ignored() {
+    let psn = || OsString::from("-psn_0_12345");
+    assert!(opened([psn()]).is_none());
+    let dir = test_dir("psn");
+    let path = saved_project(dir.path());
+    assert_eq!(opened([psn(), path.clone().into()]).unwrap().0, path);
+    assert!(matches!(
+        launch([psn(), CLEAR_CACHES.into()]),
+        Ok(Launch::ClearCaches)
+    ));
+}
+
 #[test]
 fn anything_else_is_an_error() {
     let dir = test_dir("errors");

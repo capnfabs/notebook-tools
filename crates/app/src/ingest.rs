@@ -23,6 +23,10 @@ pub type Received = (String, Option<PathBuf>, Result<Vec<u8>, String>);
 /// Asks which files to pick: none if the user cancelled. Tests stand in for the file picker.
 pub type PickFiles = Arc<dyn Fn(Pick) -> Vec<PathBuf> + Send + Sync>;
 
+/// Files the system asked the app to open, a batch at a time: on macOS, from Finder or the Dock
+/// (`crate::finder_open`). Each batch is taken as if it had been dropped on the window.
+pub type OpenedFiles = std::sync::mpsc::Receiver<Vec<PathBuf>>;
+
 /// What [`PickFiles`] asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pick {

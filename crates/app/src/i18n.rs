@@ -164,7 +164,7 @@ mod tests {
 
     use super::*;
 
-    /// Message ids in `notebook_app.ftl`.
+    /// Message ids in `notebook_app.ftl`. Terms (`-name`) are left out: only messages use them.
     fn message_ids() -> Vec<String> {
         let ftl = Path::new(env!("CARGO_MANIFEST_DIR")).join("i18n/en-US/notebook_app.ftl");
         let ftl = std::fs::read_to_string(ftl).unwrap();
@@ -172,7 +172,8 @@ mod tests {
             .filter_map(|line| {
                 let (id, _) = line.split_once(" =")?;
                 let id_like = id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-                (id_like && !id.is_empty()).then(|| id.to_owned())
+                let term = id.starts_with('-');
+                (id_like && !id.is_empty() && !term).then(|| id.to_owned())
             })
             .collect()
     }

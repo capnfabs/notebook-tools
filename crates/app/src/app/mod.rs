@@ -34,7 +34,7 @@ use crate::auth::Auth;
 use crate::command::{EguiKeys, Frontend};
 use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
-use crate::ingest::{Ingest, Load, PickFiles};
+use crate::ingest::{Ingest, Load, OpenedFiles, PickFiles};
 use crate::jobs::Waker;
 use crate::t;
 use crate::transcriptions::{Transcriber, Transcriptions};
@@ -116,6 +116,8 @@ pub struct NotebookApp {
     /// Asks which files to add as pages, or which project to open. Without one, Add Pages… and
     /// Open Project… are disabled.
     pick_files: Option<PickFiles>,
+    /// Files the system asks the app to open, taken as drops.
+    opened_files: Option<OpenedFiles>,
     /// Asks where to save exports and projects. Without one, they can't be saved to a file.
     save_path: Option<SavePath>,
     /// The file picker or the project's save dialog was opened since
@@ -159,6 +161,14 @@ impl NotebookApp {
     pub fn with_file_picker(self, pick_files: PickFiles) -> Self {
         Self {
             pick_files: Some(pick_files),
+            ..self
+        }
+    }
+
+    /// Takes each batch of files that comes out of `opened` as if it had been dropped on the window.
+    pub fn with_opened_files(self, opened: OpenedFiles) -> Self {
+        Self {
+            opened_files: Some(opened),
             ..self
         }
     }
@@ -223,6 +233,7 @@ impl NotebookApp {
         self.handle_close_request(&ctx);
         self.run_commands(&ctx);
         self.add_dropped(&ctx);
+        self.add_opened(&ctx);
         self.add_loaded(&ctx);
         self.textures.poll(&ctx);
         self.export.poll(&ctx);

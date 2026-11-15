@@ -18,7 +18,7 @@ use notebook_core::loaded::Loaded;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -351,6 +351,24 @@ pub fn drop_paths(harness: &mut Harness<'_, NotebookApp>, paths: &[&Path]) {
             bytes: std::fs::read(path).unwrap(),
         }));
     }
+    settle(harness);
+}
+
+/// `app`, taking the files sent down what's returned as Finder and the Dock ask it to open them.
+pub fn opening_from_finder(app: NotebookApp) -> (NotebookApp, mpsc::Sender<Vec<PathBuf>>) {
+    let (send, receive) = mpsc::channel();
+    (app.with_opened_files(receive), send)
+}
+
+/// Asks the app to open `paths` together, as Finder or the Dock does, through `finder` from
+/// [`opening_from_finder`], and waits for what that started.
+pub fn open_from_finder(
+    harness: &mut Harness<'_, NotebookApp>,
+    finder: &mpsc::Sender<Vec<PathBuf>>,
+    paths: &[&Path],
+) {
+    let paths = paths.iter().map(|path| path.to_path_buf()).collect();
+    finder.send(paths).unwrap();
     settle(harness);
 }
 

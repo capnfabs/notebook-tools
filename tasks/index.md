@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## M0
-- [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
 
 
@@ -15,3 +14,5 @@ See [done/index.md](done/index.md).
 - [ ] [Decide: spread detection approach + reading order](spread-detection.md)
 - [ ] [Corner detection: hard photos](outline-detection.md)
 - [ ] [HEIC on non-mac builds](non-mac-heic.md)
+- [ ] [macOS: Developer ID signing and notarization](macos-developer-id.md)
+- [ ] [Logs when opened from Finder](finder-logs.md)

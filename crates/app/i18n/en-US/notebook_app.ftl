@@ -1,7 +1,9 @@
 # Everything the app says to the user. Looked up with `t!` (`src/i18n.rs`); see
 # `decisions/2026-10-30-strings-in-fluent.md`. Syntax: https://projectfluent.org/fluent/guide/
 
-app-name = notebook-tools
+app-name = Notebook Tools
+# The program run from the terminal: a term, as only the messages below use it.
+-cli-program = notebook-tools
 
 ## The menu bar. The app menu is named after the app.
 
@@ -200,7 +202,7 @@ pdf-build-failed = Couldn't build the PDF: { $error }
 file-type-pdf = PDF
 file-type-markdown = Markdown
 file-type-photos = Photos
-file-type-project = notebook-tools project
+file-type-project = { app-name } project
 
 ## Projects. See `decisions/2026-10-31-projects.md`.
 
@@ -209,7 +211,7 @@ project-untitled = Untitled
 # The window's title, which is otherwise the project's name, when it has unsaved changes.
 window-title-edited = { $name } — Edited
 project-open-failed = Couldn't open { $path }: { $error }
-project-not-a-project = { $path } isn't a notebook-tools project, or it's damaged: { $error }
+project-not-a-project = { $path } isn't a { app-name } project, or it's damaged: { $error }
 project-newer-version = { $path } was saved by a newer version of { app-name }. Update to open it.
 project-save-failed = Couldn't save { $path }: { $error }
 # Pages dropped without a file location (rare) can't be saved in a project.
@@ -228,7 +230,7 @@ photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept
 ## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`
 ## and `decisions/2026-11-01-manual-cache-clearing.md`.
 
-cli-usage = Usage: { app-name } [--offline] [PROJECT.notebook] | { app-name } --clear-caches-only
+cli-usage = Usage: { -cli-program } [--offline] [PROJECT.notebook] | { -cli-program } --clear-caches-only
 cli-no-keychain-release = --no-keychain is only for development builds.
 cli-not-a-project = { $path } isn't a .notebook project. { cli-usage }
 cli-no-cache-dir = No cache directory on this system

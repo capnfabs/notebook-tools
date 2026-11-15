@@ -30,5 +30,7 @@ tempfile.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21.2"
-# Asks to save before quitting from the Dock: see `src/quit.rs`.
+# Asks to save before quitting from the Dock (`src/quit.rs`), and opens files from Finder
+# (`src/finder_open.rs`).
 objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSNotification", "NSString", "NSURL"] }

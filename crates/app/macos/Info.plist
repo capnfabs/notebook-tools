@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS app bundle's Info.plist. `scripts/bundle-macos.sh` copies it into the bundle, setting
+  both versions to the workspace's Cargo version. `crates/app/tests/bundle_plist.rs` checks it
+  agrees with the code: the bundle id is the keychain service, the photo types are the open
+  dialog's. See `decisions/2026-11-15-macos-bundle.md`.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleName</key>
+	<string>Notebook Tools</string>
+	<key>CFBundleDisplayName</key>
+	<string>Notebook Tools</string>
+	<key>CFBundleExecutable</key>
+	<string>notebook-tools</string>
+	<key>CFBundleIdentifier</key>
+	<string>net.ftamp.notebook-tools</string>
+	<!-- Compiled from AppIcon.icon: the name finds it in Assets.car, the file in older macOS. -->
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<!-- Projects are this app's own. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Notebook Tools Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>net.ftamp.notebook-tools.project</string>
+			</array>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
+		</dict>
+		<!-- Photos open with it (Open With, the Dock), but it never becomes their default app. -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Photo</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.jpeg</string>
+				<string>public.png</string>
+				<string>public.heic</string>
+				<string>public.heif</string>
+			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>net.ftamp.notebook-tools.project</string>
+			<key>UTTypeDescription</key>
+			<string>Notebook Tools Project</string>
+			<!-- Gzipped JSON, but not offered to archive tools. -->
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>notebook</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

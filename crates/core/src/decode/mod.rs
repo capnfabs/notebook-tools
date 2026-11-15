@@ -15,6 +15,11 @@ mod image_io;
 #[cfg(not(target_os = "macos"))]
 mod libheif;
 
+/// The extensions of the photos the app opens, lowercase: the open dialog's filter, and the photo
+/// document type in the macOS bundle's `crates/app/macos/Info.plist`. Decoding goes by the bytes,
+/// not the extension.
+pub const EXTENSIONS: [&str; 5] = ["jpg", "jpeg", "png", "heic", "heif"];
+
 /// Decodes one image format.
 trait Decoder: Sync {
     /// Whether `bytes` look like this decoder's format, from their first few bytes.

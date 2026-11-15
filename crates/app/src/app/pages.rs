@@ -60,9 +60,33 @@ impl NotebookApp {
     /// Adds the files dropped this frame as pages, or opens the project dropped among them,
     /// leaving the rest out. See `decisions/2026-10-31-open-by-drop-and-argument.md`.
     pub(super) fn add_dropped(&mut self, ctx: &egui::Context) {
-        match Ingest::dropped(ctx) {
+        let dropping = Ingest::dropped(ctx);
+        self.take_files(ctx, dropping, |ingest| ingest.read_drops(ctx));
+    }
+
+    /// Takes the files the system asked the app to open since the last frame as if each batch had
+    /// been dropped on the window. See `decisions/2026-11-15-macos-bundle.md`.
+    pub(super) fn add_opened(&mut self, ctx: &egui::Context) {
+        let Some(opened) = &self.opened_files else {
+            return;
+        };
+        let batches: Vec<_> = opened.try_iter().collect();
+        for paths in batches {
+            let dropping = Dropping::of(paths.iter().map(|path| Some(path.as_path())));
+            self.take_files(ctx, dropping, |_| Ingest::read_paths(&paths));
+        }
+    }
+
+    /// Does what `dropping` some files does, with `read` reading them if they're to be pages.
+    fn take_files(
+        &mut self,
+        ctx: &egui::Context,
+        dropping: Dropping,
+        read: impl FnOnce(&Ingest) -> Vec<Received>,
+    ) {
+        match dropping {
             Dropping::AddPages => {
-                let received = self.ingest.read_drops(ctx);
+                let received = read(&self.ingest);
                 self.add_received(received);
             }
             // The question already asked is answered first.
