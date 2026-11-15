@@ -3,6 +3,7 @@
 //! `decisions/2026-10-29-two-viewer-textures.md`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui;
@@ -30,6 +31,8 @@ pub(super) enum Showing {
     Full(TextureHandle),
     /// Its thumbnail until the full image is decoded, or nothing while the page loads.
     Placeholder(Option<TextureHandle>),
+    /// Its photo is missing, for this reason: it never loads.
+    Missing(String),
 }
 
 impl Showing {
@@ -37,6 +40,7 @@ impl Showing {
         match self {
             Self::Full(texture) => Some(texture),
             Self::Placeholder(texture) => texture.as_ref(),
+            Self::Missing(_) => None,
         }
     }
 }
@@ -136,6 +140,10 @@ impl Textures {
     /// image it replaces or its thumbnail, while the full image is decoded off the UI thread. While
     /// the page is cleaned again with new corners, the cleaned image is a placeholder too.
     pub(super) fn get(&mut self, ctx: &egui::Context, page: &Page, cleaned: bool) -> Showing {
+        if let Some(why) = page.missing_photo() {
+            let path = page.path.as_deref().unwrap_or(Path::new(""));
+            return Showing::Missing(crate::i18n::missing_photo(why, path));
+        }
         let Some(loaded) = &page.loaded else {
             return Showing::Placeholder(None);
         };

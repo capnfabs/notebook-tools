@@ -1,0 +1,3 @@
+# Pages keyed by something other than their name
+
+A page's name (its file name) is its primary key: `Pages` refuses duplicates, and selection, loading and transcription jobs, textures, dialogs, corner editing, the transcript view, the eval log and project files all find pages by it. Two photos called `IMG_0001.jpg` from different folders or cameras can't both be pages, and a photo named like a missing page is turned away (`decisions/2026-11-15-missing-pages-shown.md`). Give pages an ID of their own, so names can repeat; decide what the project file saves and how older ones open. Check `relink-photos.md` ("The page keeps its name: it's the page's ID") first.

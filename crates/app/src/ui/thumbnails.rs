@@ -1,10 +1,16 @@
 //! The strip of page thumbnails along the bottom of the window: clicking one selects its page,
-//! dragging one moves its page.
+//! dragging one moves its page. A page whose photo is missing gets a placeholder: see
+//! `decisions/2026-11-15-missing-pages-shown.md`.
+
+use std::path::Path;
 
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{Color32, Margin, Rect, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
 use notebook_core::page::Pages;
+
+use crate::t;
+use crate::ui::icons;
 
 /// Display size of the thumbnails in the bottom strip, in egui points (physical pixels =
 /// points x `pixels_per_point`). Keep at most `THUMBNAIL_SIDE_PX` / 2 so 2x displays stay sharp.
@@ -59,8 +65,8 @@ pub struct Thumbnails {
 
 impl Thumbnails {
     /// The strip, scrolling sideways, of `pages` with their `textures` by name, page `selected`
-    /// framed. A page without a texture is still loading, and gets a spinner. Returns what the user
-    /// did, if anything.
+    /// framed. A page without a texture is still loading, and gets a spinner, unless its photo is
+    /// missing. Returns what the user did, if anything.
     pub fn show<'a>(
         &mut self,
         ui: &mut egui::Ui,
@@ -100,18 +106,28 @@ impl Thumbnails {
             } else {
                 Color32::WHITE
             };
-            let response = match textures(&page.name) {
-                Some(texture) => ui.add(
-                    egui::Image::new(texture)
-                        .max_size(Vec2::splat(THUMB_SIZE_PT))
-                        .tint(tint)
-                        .corner_radius(THUMB_CORNER_PT)
-                        .alt_text(&page.name)
-                        .sense(THUMB_SENSE),
-                ),
-                None => loading_tile(ui, tint),
-            }
-            .on_hover_text(&page.name);
+            let response = match (page.missing_photo(), textures(&page.name)) {
+                (Some(why), _) => {
+                    let path = page.path.as_deref().unwrap_or(Path::new(""));
+                    let why = crate::i18n::missing_photo(why, path);
+                    missing_tile(ui, tint).on_hover_text(t!(
+                        "missing-thumbnail",
+                        name = page.name.as_str(),
+                        why = why
+                    ))
+                }
+                (None, Some(texture)) => ui
+                    .add(
+                        egui::Image::new(texture)
+                            .max_size(Vec2::splat(THUMB_SIZE_PT))
+                            .tint(tint)
+                            .corner_radius(THUMB_CORNER_PT)
+                            .alt_text(&page.name)
+                            .sense(THUMB_SENSE),
+                    )
+                    .on_hover_text(&page.name),
+                (None, None) => loading_tile(ui, tint).on_hover_text(&page.name),
+            };
             let active = i == selected;
             response.widget_info(|| WidgetInfo::selected(Role::Image, true, active, &page.name));
             response.dnd_set_drag_payload(DraggedPage(i));
@@ -201,6 +217,26 @@ impl Thumbnails {
 
 /// Stands in for the thumbnail of a page that's loading.
 fn loading_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
+    let response = empty_tile(ui, tint);
+    let spinner = Rect::from_center_size(response.rect.center(), Vec2::splat(THUMB_SIZE_PT / 4.0));
+    egui::Spinner::new().paint_at(ui, spinner);
+    response
+}
+
+/// Stands in for the thumbnail of a page whose photo is missing.
+fn missing_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
+    let response = empty_tile(ui, tint);
+    let colour = ui
+        .visuals()
+        .warn_fg_color
+        .gamma_multiply(tint.a() as f32 / 255.0);
+    let icon = Rect::from_center_size(response.rect.center(), Vec2::splat(THUMB_SIZE_PT / 3.0));
+    icons::paint_warning(ui.painter(), icon, colour);
+    response
+}
+
+/// An empty tile the size of a portrait thumbnail, faded by `tint` while it's dragged.
+fn empty_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
     let size = Vec2::new(THUMB_SIZE_PT * 3.0 / 4.0, THUMB_SIZE_PT);
     let (rect, response) = ui.allocate_exact_size(size, THUMB_SENSE);
     let fill = ui
@@ -208,7 +244,5 @@ fn loading_tile(ui: &mut egui::Ui, tint: Color32) -> egui::Response {
         .extreme_bg_color
         .gamma_multiply(tint.a() as f32 / 255.0);
     ui.painter().rect_filled(rect, THUMB_CORNER_PT, fill);
-    let spinner = Rect::from_center_size(rect.center(), Vec2::splat(THUMB_SIZE_PT / 4.0));
-    egui::Spinner::new().paint_at(ui, spinner);
     response
 }

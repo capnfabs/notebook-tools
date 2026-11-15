@@ -1,4 +1,5 @@
-//! The pages the user opened, in order.
+//! The pages the user opened, in order. A page whose photo wasn't found when its project opened
+//! is still a page, without its photo: see `decisions/2026-11-15-missing-pages-shown.md`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,9 +19,12 @@ pub struct Page {
     pub name: String,
     /// Where the file is, if known: a project saves it. Pages dropped as bytes alone have none.
     pub path: Option<PathBuf>,
-    pub bytes: Arc<[u8]>,
-    /// [`sha256_hex`] of `bytes`, which a project checks the file against when it opens.
+    /// The file's bytes, or why they couldn't be read when the page's project opened.
+    pub bytes: Result<Arc<[u8]>, Why>,
+    /// [`sha256_hex`] of the file, which a project checks it against when it opens.
     pub sha256: String,
+    /// The file's size in bytes.
+    pub len: u64,
     /// Filled in off the UI thread, as loading decodes and cleans the whole photo.
     pub loaded: Option<Loaded>,
     /// Claude's transcription, once there is one.
@@ -37,11 +41,37 @@ impl Page {
             name,
             path: None,
             sha256: sha256_hex(&bytes),
-            bytes,
+            len: bytes.len() as u64,
+            bytes: Ok(bytes),
             loaded: None,
             transcript: None,
             corners: None,
         }
+    }
+
+    /// A page whose photo, the file at `path` with this hash and size, couldn't be read, and
+    /// `why`. It never loads, and can't be transcribed.
+    pub fn missing(name: String, path: PathBuf, sha256: String, len: u64, why: Why) -> Self {
+        Self {
+            name,
+            path: Some(path),
+            bytes: Err(why),
+            sha256,
+            len,
+            loaded: None,
+            transcript: None,
+            corners: None,
+        }
+    }
+
+    /// The photo's bytes, unless it's missing.
+    pub fn bytes(&self) -> Option<&Arc<[u8]>> {
+        self.bytes.as_ref().ok()
+    }
+
+    /// Why the photo is missing, if it is.
+    pub fn missing_photo(&self) -> Option<&Why> {
+        self.bytes.as_ref().err()
     }
 
     /// The page, read from the file at `path`.
@@ -51,6 +81,17 @@ impl Page {
             ..self
         }
     }
+}
+
+/// Why a page's photo wasn't found when its project opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// There's no file at its path.
+    NotFound,
+    /// The file at its path isn't the photo the project was saved with.
+    Changed,
+    /// The file couldn't be read.
+    Unreadable(String),
 }
 
 /// Pages with no duplicate names, in filename order until the user rearranges them.
@@ -237,8 +278,23 @@ mod tests {
     }
 
     #[test]
-    fn pages_know_their_hash() {
-        assert_eq!(page("a.png").sha256, sha256_hex(&png(2, 2)));
+    fn pages_know_their_hash_and_size() {
+        let page = page("a.png");
+        assert_eq!(page.sha256, sha256_hex(&png(2, 2)));
+        assert_eq!(page.len, png(2, 2).len() as u64);
+        assert!(page.missing_photo().is_none());
+    }
+
+    #[test]
+    fn missing_pages_have_no_photo() {
+        let path = PathBuf::from("/photos/a.png");
+        let page = Page::missing("a.png".into(), path.clone(), "ab".into(), 3, Why::NotFound);
+        assert!(page.bytes().is_none());
+        assert_eq!(page.missing_photo(), Some(&Why::NotFound));
+        assert_eq!(
+            (page.path, page.sha256, page.len),
+            (Some(path), "ab".into(), 3)
+        );
     }
 
     #[test]

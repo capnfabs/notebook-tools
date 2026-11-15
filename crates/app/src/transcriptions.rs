@@ -259,16 +259,19 @@ impl Transcriptions {
         self.enqueue(page, params, Kind::Force, true);
     }
 
-    /// Queues `page`, cropped to its corners as they are now.
+    /// Queues `page`, cropped to its corners as they are now, unless its photo is missing.
     fn enqueue(&mut self, page: &Page, params: CleanParams, kind: Kind, first: bool) {
         let name = &page.name;
+        let Some(bytes) = page.bytes() else {
+            return;
+        };
         if self.transcriber.is_none() || self.queued_or_running(name) {
             return;
         }
         self.errors.remove(name);
         let job = Job {
             name: name.clone(),
-            bytes: page.bytes.clone(),
+            bytes: bytes.clone(),
             params,
             corners: page.corners,
             kind,

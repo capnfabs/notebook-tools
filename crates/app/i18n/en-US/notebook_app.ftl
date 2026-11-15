@@ -179,6 +179,7 @@ export-blocked = Couldn't export. { $reasons }
 # $names are the pages', joined with ", ".
 export-not-transcribed = Not transcribed yet: { $names }
 export-still-loading = Still loading: { $names }
+export-photo-missing = Photo missing: { $names }
 export-no-pages = No pages to export
 # $name is the page's when there's one.
 export-copied = { $count ->
@@ -222,10 +223,26 @@ project-no-path = Couldn't save: { $names } { $count ->
     [one] it
    *[other] them
 } again with { command-add-pages }.
-# A page whose photo wasn't found when the project opened. It's kept, and saved again as it was.
-photo-not-found = Couldn't find { $name } at { $path }. Its page is kept in the project, but hidden.
-photo-changed = { $path } has changed since the project was saved. { $name }'s page is kept in the project, but hidden.
-photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept in the project, but hidden.
+# Pages whose photos weren't found when the project opened. They're shown as placeholders, and saved
+# again as they were. $names are the pages', joined with ", ".
+photos-missing = { $count ->
+    [one] A photo is missing: { $names }
+   *[other] { $count } photos are missing: { $names }
+}
+# Adding a photo with the same name as a page whose photo is missing.
+already-missing = { $name } is already a page, with its photo missing.
+
+## A page whose photo is missing, in place of its image
+
+missing-photo-title = Photo missing
+# Why, under the title and in the thumbnail's tooltip.
+photo-not-found = Couldn't find it at { $path }.
+photo-changed = { $path } has changed since the project was saved.
+photo-unreadable = Couldn't read { $path }: { $error }
+# The thumbnail's tooltip: $why is one of the above.
+missing-thumbnail = { $name }: { $why }
+# In place of the transcript, and on the disabled Force Retranscribe button.
+cant-transcribe-missing = Can't transcribe { $name } until its photo is found.
 
 ## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`
 ## and `decisions/2026-11-01-manual-cache-clearing.md`.

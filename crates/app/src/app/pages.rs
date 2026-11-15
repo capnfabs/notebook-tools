@@ -120,11 +120,18 @@ impl NotebookApp {
                 Some(path) => page.at(path),
                 None => page,
             };
-            // Duplicate names are skipped.
+            // Duplicate names are skipped, saying so if the page they'd be is missing its photo.
             if self.pages.add(page).is_some() {
                 self.ingest
                     .load(&name, bytes.clone(), self.clean_params.clone(), None);
                 self.transcriptions.look_up(&name, bytes);
+            } else if self
+                .pages
+                .find(&name)
+                .is_some_and(|p| p.missing_photo().is_some())
+            {
+                self.errors
+                    .push(t!("already-missing", name = name.as_str()));
             }
         }
     }
@@ -138,7 +145,7 @@ impl NotebookApp {
             let Some(index) = self.pages.position(&name).filter(|&i| {
                 self.pages.get(i).is_some_and(|p| {
                     let corners = loaded.as_ref().map_or(p.corners, |l| l.corners);
-                    Arc::ptr_eq(&p.bytes, &bytes) && corners == p.corners
+                    p.bytes().is_some_and(|b| Arc::ptr_eq(b, &bytes)) && corners == p.corners
                 })
             }) else {
                 continue;
@@ -224,11 +231,16 @@ impl NotebookApp {
         }
     }
 
-    /// Pages without a transcript that aren't being transcribed, including any that failed.
+    /// Pages without a transcript that aren't being transcribed, including any that failed, and
+    /// not those whose photos are missing, which can't be.
     pub(super) fn untranscribed(&self) -> Vec<&Page> {
         self.pages
             .iter()
-            .filter(|p| p.transcript.is_none() && !self.transcriptions.queued_or_running(&p.name))
+            .filter(|p| {
+                p.transcript.is_none()
+                    && p.bytes().is_some()
+                    && !self.transcriptions.queued_or_running(&p.name)
+            })
             .collect()
     }
 
@@ -392,6 +404,7 @@ impl NotebookApp {
         };
         // Without credentials, it waits for the user to ask, rather than asking for a key.
         if page.transcript.is_none()
+            && page.bytes().is_some()
             && self.transcriptions.error(&page.name).is_none()
             && self.transcriptions.can_send()
         {
@@ -446,9 +459,12 @@ impl NotebookApp {
     }
 
     /// Puts page `index`'s corners at `corners`, or back where cleaning finds them, and cleans it
-    /// again with them.
+    /// again with them. A page whose photo is missing keeps its corners.
     pub(super) fn set_corners(&mut self, index: usize, corners: Option<Quad>) {
         let Some(page) = self.pages.get_mut(index) else {
+            return;
+        };
+        let Some(bytes) = page.bytes().cloned() else {
             return;
         };
         page.corners = corners;
@@ -456,8 +472,7 @@ impl NotebookApp {
             return;
         }
         let params = self.clean_params.clone();
-        self.ingest
-            .load(&page.name, page.bytes.clone(), params, corners);
+        self.ingest.load(&page.name, bytes, params, corners);
     }
 
     /// Moves page `from` to index `to`, keeping the shown page shown. See

@@ -317,7 +317,7 @@ fn a_damaged_project_leaves_the_open_one_alone() {
 }
 
 #[test]
-fn missing_photos_are_reported_and_kept() {
+fn missing_photos_are_shown_and_kept() {
     let (dir, path, dialogs) = setup("missing");
     let mut harness = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
     drop_files_in(
@@ -332,9 +332,8 @@ fn missing_photos_are_reported_and_kept() {
     let mut reopened = dialogs.app(Arc::new(|_, _, _, _| Ok(recorded())));
     press_command(&mut reopened, Key::O);
     settle(&mut reopened);
-    assert_eq!(thumbnails(&reopened), ["b.png"]);
-    let missing = dir.path().join("a.png").display().to_string();
-    let error = t!("photo-not-found", name = "a.png", path = missing);
+    assert_eq!(thumbnails(&reopened), ["a.png", "b.png"]);
+    let error = t!("photos-missing", count = 1, names = "a.png");
     assert!(reopened.query_by_label(&error).is_some());
     assert_eq!(title(&reopened), "notes", "nothing changed");
 
@@ -548,9 +547,8 @@ fn a_project_named_on_the_command_line_starts_open() {
     assert_eq!(opened_path, path);
     let mut harness = harness_for(NotebookApp::default().with_project(&path, opened));
     settle(&mut harness);
-    assert_eq!(thumbnails(&harness), ["b.png"]);
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
     assert_eq!(title(&harness), "notes", "nothing changed");
-    let missing = dir.path().join("a.png").display().to_string();
-    let error = t!("photo-not-found", name = "a.png", path = missing);
+    let error = t!("photos-missing", count = 1, names = "a.png");
     assert!(harness.query_by_label(&error).is_some());
 }

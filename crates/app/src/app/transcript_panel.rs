@@ -33,6 +33,13 @@ impl NotebookApp {
         rect: Rect,
     ) -> Option<Rect> {
         let lines = self.status_lines(ui, index)?;
+        let page = self.pages.get(index)?;
+        // Why Force Retranscribe is disabled.
+        let disabled_why = if page.missing_photo().is_some() {
+            t!("cant-transcribe-missing", name = page.name.as_str())
+        } else {
+            t!("no-transcriber-hint")
+        };
 
         // Buttons first, so the text gets what room they leave. Every widget here is sized before
         // it's placed, so `Align::Max` puts its bottom at the bottom of `rect`.
@@ -40,7 +47,7 @@ impl NotebookApp {
         let scope = ui.scope_builder(UiBuilder::new().max_rect(rect).layout(row), |ui| {
             let force = self
                 .command_button(ui, Command::ForceRetranscribe)
-                .on_disabled_hover_text(t!("no-transcriber-hint"));
+                .on_disabled_hover_text(disabled_why);
             let reset = self.command_button(ui, Command::ResetTranscript);
             let buttons = force.rect | reset.rect;
             // Wrapped to the room left of the buttons, to count its lines.
@@ -114,7 +121,10 @@ impl NotebookApp {
             return;
         };
         let name = &page.name;
-        let start = if self.transcriptions.queued_or_running(name) {
+        let start = if page.missing_photo().is_some() {
+            ui.label(t!("cant-transcribe-missing", name = name.as_str()));
+            false
+        } else if self.transcriptions.queued_or_running(name) {
             spinner(ui, &t!("transcribing-page", name = name.as_str()));
             false
         } else if let Some(err) = self.transcriptions.error(name) {

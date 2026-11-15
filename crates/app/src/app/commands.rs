@@ -16,6 +16,8 @@ impl NotebookApp {
     pub(super) fn can(&self, command: Command) -> bool {
         let index = self.selected_index();
         let page = self.pages.get(index);
+        // A page whose photo is missing can't be transcribed, or have its corners changed.
+        let has_photo = page.is_some_and(|p| p.bytes().is_some());
         // Without credentials, transcribing asks for a key, if the app can keep one.
         let can_ask_for_key = self.auth.is_some();
         let can_transcribe = self.transcriptions.can_send() || can_ask_for_key;
@@ -29,11 +31,12 @@ impl NotebookApp {
             Command::Export | Command::ExportAs => page.is_some() && can_export,
             Command::ViewOriginal | Command::ViewCleaned => page.is_some(),
             Command::PlaceCorners => page.is_some_and(|p| p.loaded.is_some()),
-            Command::ResetCorners => page.is_some_and(|p| p.corners.is_some()),
+            Command::ResetCorners => has_photo && page.is_some_and(|p| p.corners.is_some()),
             Command::ViewTranscribed => page.is_some() && can_view,
-            Command::Transcribe => page.is_some() && can_transcribe,
+            Command::Transcribe => has_photo && can_transcribe,
             Command::ForceRetranscribe => {
-                can_transcribe
+                has_photo
+                    && can_transcribe
                     && page.is_some_and(|p| {
                         p.transcript.is_some() && !self.transcriptions.queued_or_running(&p.name)
                     })

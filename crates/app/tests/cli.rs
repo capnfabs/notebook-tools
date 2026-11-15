@@ -34,9 +34,7 @@ fn error(args: &[&Path]) -> String {
 }
 
 /// The project the command line `args` open, if any, and whether it's offline.
-fn launched(
-    args: impl IntoIterator<Item = OsString>,
-) -> (Option<(PathBuf, project::Opened)>, bool) {
+fn launched(args: impl IntoIterator<Item = OsString>) -> (Option<(PathBuf, Pages)>, bool) {
     match launch(args) {
         Ok(Launch::Open {
             project, offline, ..
@@ -47,7 +45,7 @@ fn launched(
 }
 
 /// The project the command line `args` open, if any, online.
-fn opened(args: impl IntoIterator<Item = OsString>) -> Option<(PathBuf, project::Opened)> {
+fn opened(args: impl IntoIterator<Item = OsString>) -> Option<(PathBuf, Pages)> {
     let (project, offline) = launched(args);
     assert!(!offline);
     project
@@ -60,7 +58,7 @@ fn saved_project(dir: &Path) -> PathBuf {
     let mut pages = Pages::default();
     pages.add(Page::new("a.png".into(), Arc::from(&b"a photo"[..])).at(photo));
     let path = dir.join("notes.notebook");
-    project::save(&path, &pages, &[]).unwrap();
+    project::save(&path, &pages).unwrap();
     path
 }
 
@@ -75,7 +73,7 @@ fn a_project_opens() {
     let path = saved_project(dir.path());
     let (opened_path, opened) = opened([path.clone().into()]).unwrap();
     assert_eq!(opened_path, path);
-    assert_eq!(opened.pages.len(), 1);
+    assert_eq!(opened.len(), 1);
 }
 
 /// Older macOS passes a process serial number when Finder launches the app.

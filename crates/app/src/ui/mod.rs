@@ -5,6 +5,7 @@ pub mod api_key;
 pub mod corners;
 pub mod dialog;
 pub mod focus;
+pub mod icons;
 pub mod settings;
 pub mod split;
 pub mod thumbnails;

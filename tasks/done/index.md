@@ -45,3 +45,4 @@ In the order they were finished.
 - [x] [Claude auth approach](claude-auth.md)
 - [x] [Claude auth: `ant` login as a fallback](claude-auth-ant.md)
 - [x] [macOS app bundle and signing](macos-app-bundle.md)
+- [x] [Show pages whose photos are missing](missing-pages.md)

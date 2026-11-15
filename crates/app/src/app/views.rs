@@ -9,7 +9,7 @@ use super::NotebookApp;
 use super::textures::Showing;
 use crate::command::Command;
 use crate::t;
-use crate::ui::{split, transcript_view};
+use crate::ui::{icons, split, transcript_view};
 
 impl NotebookApp {
     /// What the viewer shows of the selected page: its photo, or its `cleaned` image.
@@ -30,13 +30,19 @@ impl NotebookApp {
         }
     }
 
-    /// The selected page's photo with its corners to drag, beside the page cleaned with them.
+    /// The selected page's photo with its corners to drag, beside the page cleaned with them. A
+    /// page whose photo is missing says so once, under its (greyed out) corner buttons.
     pub(super) fn show_cleaned(&mut self, ui: &mut egui::Ui) {
         let index = self.selected_index();
         let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
             return;
         };
         let rect = ui.available_rect_before_wrap();
+        if let Some(showing @ Showing::Missing(_)) = self.showing(ui.ctx(), false) {
+            let rect = self.show_corner_buttons(ui, index, rect);
+            self.show_page(ui, &name, &showing, rect, false);
+            return;
+        }
         let gap = ui.spacing().item_spacing.x * 2.0;
         let limits = split::Limits::default();
         let (photo_rect, cleaned_rect) = self.cleaned_split.show(
@@ -114,7 +120,7 @@ impl NotebookApp {
 
     /// The page named `name`, its `cleaned` image or its photo, as large as fits in `rect`,
     /// centred, returning where it went. A placeholder gets a spinner, and a page that's loading
-    /// only a spinner.
+    /// only a spinner. A page whose photo is missing says why instead.
     pub(super) fn show_page(
         &self,
         ui: &mut egui::Ui,
@@ -123,6 +129,10 @@ impl NotebookApp {
         rect: Rect,
         cleaned: bool,
     ) -> Option<Rect> {
+        if let Showing::Missing(why) = showing {
+            show_missing(ui, why, rect);
+            return None;
+        }
         let spinner = Rect::from_center_size(rect.center(), Vec2::splat(32.0));
         let Some(texture) = showing.texture() else {
             egui::Spinner::new().paint_at(ui, spinner);
@@ -133,6 +143,7 @@ impl NotebookApp {
             (Showing::Placeholder(_), true) => t!("current-page-cleaned-loading", name = name),
             (Showing::Full(_), true) => t!("current-page-cleaned", name = name),
             (Showing::Full(_), false) => t!("current-page", name = name),
+            (Showing::Missing(_), _) => return None,
         };
         let image = egui::Image::new(texture).shrink_to_fit().alt_text(alt_text);
         // Give the image exactly the rect it's drawn in. In a justified layout its response
@@ -204,4 +215,20 @@ impl NotebookApp {
             });
         }
     }
+}
+
+/// In place of a page whose photo is missing: that it is, and `why`, centred in `rect`. Nothing
+/// here takes the focus.
+fn show_missing(ui: &mut egui::Ui, why: &str, rect: Rect) {
+    let layout = egui::Layout::top_down(egui::Align::Center);
+    ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
+        // Roughly centred: the title and a line or two of reason.
+        ui.add_space((rect.height() / 2.0 - 48.0).max(0.0));
+        let warn = ui.visuals().warn_fg_color;
+        let (icon, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+        icons::paint_warning(ui.painter(), icon, warn);
+        let title = egui::RichText::new(t!("missing-photo-title")).heading();
+        ui.add(egui::Label::new(title.color(warn)).selectable(false));
+        ui.add(egui::Label::new(why).wrap().selectable(false));
+    });
 }

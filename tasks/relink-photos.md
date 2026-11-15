@@ -1,6 +1,6 @@
 # Relink moved photos
 
-Depends on `missing-pages.md`: a missing page is already a placeholder in the strip that says why its photo is missing. Projects name photos by relative path + SHA-256 + size (`notebook_core::project::Photo`); deferred from `decisions/2026-10-31-projects.md`. Finding many at once by scanning folders: `relink-many.md`.
+A missing page is a placeholder that says why its photo is missing, with `Page::bytes` `Err(Why)` (`decisions/2026-11-15-missing-pages-shown.md`); relinking fills it in, and the page loads. Projects name photos by relative path + SHA-256 + size (`notebook_core::project::Photo`); deferred from `decisions/2026-10-31-projects.md`. Finding many at once by scanning folders: `relink-many.md`.
 
 ## 1. Remember each photo's EXIF IDs
 Fields, chosen from the user's library (17.6k photos, 2026-11-15):
@@ -15,7 +15,7 @@ Save them in `Photo` as optional fields, so older projects still open (no `PROJE
 PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO gives it in `kCGImagePropertyMakerAppleDictionary`, keyed by tag number: PhotoIdentifier is `0x002b` (43), a UUID string (`exiftool -a -G1 -H -Apple:PhotoIdentifier FILE` on an iPhone HEIC); elsewhere it needs a small MakerNote parser. Let's try to do it on Mac _and_ non-mac platforms but if it's too hard `non-mac-heic.md` can pick up the slack.
 
 ## 2. Relink one page
-- The placeholder gets **Relink…**: a file chooser that opens in the photo's old folder, or its nearest parent that still exists. No automatic search when a project opens.
+- The placeholder (`show_missing` in `crates/app/src/app/views.rs`) gets **Relink…**: a file chooser that opens in the photo's old folder, or its nearest parent that still exists. No automatic search when a project opens.
 - A photo **changed in place** (same path, different bytes) also gets **Use Changed File**: the same checks as below, without the chooser.
 - Compare the chosen file with what the project saved:
   - **Same SHA-256**: a perfect match. Relink without asking, whatever its filename.
@@ -28,7 +28,7 @@ PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO give
   - same pixel size: kept;
   - same aspect, different size: corners and transcript boxes scaled (`reframe` may help);
   - otherwise: corners dropped (re-detected), transcript kept but flagged as made from the old photo.
-- The page keeps its name: it's the page's ID (unique, sort order, job/texture keys, `Missing::after`, export). Only path, hash, size and EXIF change. A relink is an unsaved change ("Edited").
+- The page keeps its name: it's the page's ID (unique, sort order, job/texture keys, export; until `page-ids.md`). Only path, hash, size and EXIF change. A relink is an unsaved change ("Edited").
 
 ## Tests
 - Core: the match tiers (hash, EXIF only, none), including a differing PhotoIdentifier beating an equal time and whole-second times; EXIF (PhotoIdentifier too) read from JPEG and HEIC. The pre-commit hook rejects committed images with metadata, so build the EXIF in test code (as `decode`'s orientation test does) rather than committing photos; ask the user if a real HEIC fixture is unavoidable, corner and box scaling, old projects without EXIF still open.

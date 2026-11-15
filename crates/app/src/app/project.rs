@@ -6,12 +6,14 @@
 //! than by noting each change, so none can be missed. See `decisions/2026-10-31-projects.md`.
 //!
 //! A project also opens when dropped on the window, or named on the command line: see
-//! `decisions/2026-10-31-open-by-drop-and-argument.md`.
+//! `decisions/2026-10-31-open-by-drop-and-argument.md`. Pages whose photos are missing when it
+//! opens are shown in their place: see `decisions/2026-11-15-missing-pages-shown.md`.
 
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use notebook_core::project::{self, EXTENSION, Missing, Opened, SavedPage};
+use notebook_core::page::Pages;
+use notebook_core::project::{self, EXTENSION, SavedPage};
 
 use super::NotebookApp;
 use crate::export::Export;
@@ -35,8 +37,6 @@ pub(super) enum After {
 pub(super) struct Project {
     /// `None` until it's saved.
     path: Option<PathBuf>,
-    /// Pages whose photos weren't found when it opened, kept to save again.
-    missing: Vec<Missing>,
     /// The pages as last saved or opened.
     saved: Vec<SavedPage>,
     /// Asking to save before doing this, until the user answers.
@@ -196,7 +196,7 @@ impl NotebookApp {
     }
 
     fn save_to(&mut self, path: &Path) -> bool {
-        match project::save(path, &self.pages, &self.project.missing) {
+        match project::save(path, &self.pages) {
             Ok(()) => {
                 self.project.path = Some(path.to_path_buf());
                 self.mark_saved();
@@ -231,7 +231,7 @@ impl NotebookApp {
     /// [`Self::after_saving`]. If it can't be opened, this one stays.
     pub fn open_project(&mut self, path: &Path) {
         match project::open(path) {
-            Ok(opened) => self.show_opened(path, opened),
+            Ok(pages) => self.show_opened(path, pages),
             Err(err) => {
                 log::warn!("couldn't open {}: {err:?}", path.display());
                 self.errors
@@ -240,35 +240,46 @@ impl NotebookApp {
         }
     }
 
-    /// Starts with `opened`, the project at `path`, open: for opening one named on the command
+    /// Starts with `pages`, the project at `path`, open: for opening one named on the command
     /// line, which was read before the window opened.
-    pub fn with_project(mut self, path: &Path, opened: Opened) -> Self {
-        self.show_opened(path, opened);
+    pub fn with_project(mut self, path: &Path, pages: Pages) -> Self {
+        self.show_opened(path, pages);
         self
     }
 
-    /// Puts `opened`, the project read from `path`, in place of this one.
-    fn show_opened(&mut self, path: &Path, opened: Opened) {
+    /// Puts `pages`, the project read from `path`, in place of this one. Says which photos are
+    /// missing; their pages never load.
+    fn show_opened(&mut self, path: &Path, pages: Pages) {
         self.new_project();
-        self.pages = opened.pages;
-        self.errors = opened
-            .missing
+        self.pages = pages;
+        let missing: Vec<&str> = self
+            .pages
             .iter()
-            .map(crate::i18n::missing_photo)
+            .filter(|p| p.missing_photo().is_some())
+            .map(|p| p.name.as_str())
             .collect();
-        self.project.missing = opened.missing;
+        if !missing.is_empty() {
+            let error = t!(
+                "photos-missing",
+                count = missing.len(),
+                names = missing.join(", ")
+            );
+            self.errors.push(error);
+        }
         self.project.path = Some(path.to_path_buf());
         let names: Vec<String> = self.pages.iter().map(|p| p.name.clone()).collect();
         for name in &names {
             let Some(page) = self.pages.find(name) else {
                 continue;
             };
-            let (bytes, corners) = (page.bytes.clone(), page.corners);
-            if page.transcript.is_none() {
-                self.transcriptions.look_up(name, bytes.clone());
+            if let Some(bytes) = page.bytes().cloned() {
+                let corners = page.corners;
+                if page.transcript.is_none() {
+                    self.transcriptions.look_up(name, bytes.clone());
+                }
+                self.ingest
+                    .load(name, bytes, self.clean_params.clone(), corners);
             }
-            self.ingest
-                .load(name, bytes, self.clean_params.clone(), corners);
             // In the settings' style, which isn't a change to the project.
             self.restyle_if_stale(name);
         }

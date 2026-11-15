@@ -12,7 +12,8 @@ use i18n_embed::fluent::{FluentLanguageLoader, fluent_language_loader};
 use notebook_core::claude_transcribe::OcrError;
 use notebook_core::decode::DecodeError;
 use notebook_core::export::PdfError;
-use notebook_core::project::{Missing, OpenError, SaveError, Why};
+use notebook_core::page::Why;
+use notebook_core::project::{OpenError, SaveError};
 use rust_embed::RustEmbed;
 
 #[doc(hidden)]
@@ -125,21 +126,13 @@ pub fn save_project_error(path: &Path, err: &SaveError) -> String {
     }
 }
 
-/// Why a page's photo wasn't found when its project opened.
-pub fn missing_photo(missing: &Missing) -> String {
-    let name = missing.page.name.as_str();
-    let path = missing.page.photo.path.display().to_string();
-    match &missing.why {
-        Why::NotFound => t!("photo-not-found", name = name, path = path),
-        Why::Changed => t!("photo-changed", name = name, path = path),
-        Why::Unreadable(error) => {
-            t!(
-                "photo-unreadable",
-                name = name,
-                path = path,
-                error = error.as_str()
-            )
-        }
+/// Why a page's photo, the file at `path`, wasn't found when its project opened.
+pub fn missing_photo(why: &Why, path: &Path) -> String {
+    let path = path.display().to_string();
+    match why {
+        Why::NotFound => t!("photo-not-found", path = path),
+        Why::Changed => t!("photo-changed", path = path),
+        Why::Unreadable(error) => t!("photo-unreadable", path = path, error = error.as_str()),
     }
 }
 

@@ -11,7 +11,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use notebook_core::cache::Cache;
-use notebook_core::project::{self, Opened};
+use notebook_core::page::Pages;
+use notebook_core::project;
 
 use crate::ingest::is_project;
 use crate::t;
@@ -32,7 +33,7 @@ pub enum Launch {
     /// Start the app, with `project` open, if any; without credentials if `offline`, and without
     /// the keychain if `no_keychain`.
     Open {
-        project: Option<(PathBuf, Opened)>,
+        project: Option<(PathBuf, Pages)>,
         offline: bool,
         no_keychain: bool,
     },
@@ -81,12 +82,12 @@ fn take_flag(args: &mut Vec<OsString>, flag: &str) -> Result<bool, String> {
 }
 
 /// The project at `path`, opened; or why it can't be.
-fn open(path: PathBuf) -> Result<(PathBuf, Opened), String> {
+fn open(path: PathBuf) -> Result<(PathBuf, Pages), String> {
     if !is_project(&path) {
         return Err(t!("cli-not-a-project", path = path.display().to_string()));
     }
     match project::open(&path) {
-        Ok(opened) => Ok((path, opened)),
+        Ok(pages) => Ok((path, pages)),
         Err(err) => Err(crate::i18n::open_project_error(&path, &err)),
     }
 }

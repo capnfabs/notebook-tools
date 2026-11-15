@@ -300,7 +300,8 @@ fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<E
     }
 }
 
-/// The pages `scope` covers, or why they can't be exported: which aren't transcribed or loaded.
+/// The pages `scope` covers, or why they can't be exported: which aren't transcribed or loaded, or
+/// are missing their photos.
 fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot>, String> {
     let covered: Vec<&Page> = match scope {
         Scope::Current => pages.get(selected).into_iter().collect(),
@@ -311,8 +312,13 @@ fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot
         names.map(|p| p.name.as_str()).collect()
     };
     let untranscribed = names(|p| p.transcript.is_none());
-    let loading = names(|p| p.loaded.is_none());
+    // Until `tasks/missing-page-export.md`, every format needs the photo.
+    let missing = names(|p| p.missing_photo().is_some());
+    let loading = names(|p| p.loaded.is_none() && p.missing_photo().is_none());
     let mut blocked = Vec::new();
+    if !missing.is_empty() {
+        blocked.push(t!("export-photo-missing", names = missing.join(", ")));
+    }
     if !untranscribed.is_empty() {
         blocked.push(t!(
             "export-not-transcribed",

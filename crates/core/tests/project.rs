@@ -11,8 +11,8 @@ use notebook_core::clean::Crop;
 use notebook_core::geom::Quad;
 use notebook_core::llm_model::Usage;
 use notebook_core::markdown_style::MarkdownStyle;
-use notebook_core::page::{Page, Pages};
-use notebook_core::project::{self, Missing, OpenError, PROJECT_VERSION, SaveError, Why};
+use notebook_core::page::{Page, Pages, Why};
+use notebook_core::project::{self, OpenError, PROJECT_VERSION, SaveError};
 use notebook_core::transcript::{Deleted, Line, Side, Transcript, Uncertain};
 use serde_json::Value;
 use tempfile::TempDir;
@@ -86,17 +86,17 @@ fn pages_corners_and_transcripts_come_back() {
     // Rearranged: b first.
     let pages = Pages::in_order(vec![b, a]);
     let path = dir.path().join("notes/hike.notebook");
-    project::save(&path, &pages, &[]).unwrap();
+    project::save(&path, &pages).unwrap();
 
     let opened = project::open(&path).unwrap();
-    assert!(opened.missing.is_empty());
-    assert_eq!(summary(&opened.pages), summary(&pages));
-    for (opened, saved) in opened.pages.iter().zip(pages.iter()) {
+    assert_eq!(summary(&opened), summary(&pages));
+    for (opened, saved) in opened.iter().zip(pages.iter()) {
         assert_eq!(opened.transcript, saved.transcript, "{}", saved.name);
-        assert_eq!(&*opened.bytes, &*saved.bytes);
+        assert_eq!(opened.bytes, saved.bytes, "found");
         assert_eq!(opened.sha256, saved.sha256);
+        assert_eq!(opened.len, saved.len);
     }
-    let b = opened.pages.get(0).unwrap().transcript.as_ref().unwrap();
+    let b = opened.get(0).unwrap().transcript.as_ref().unwrap();
     assert!(b.corrected() && b.uncertain[0].resolved);
     assert!(b.source.is_some(), "Claude's answer is kept for restyling");
 
@@ -115,57 +115,63 @@ fn saving_elsewhere_keeps_photos_found() {
     let dir = dir("save_as");
     let pages = Pages::in_order(vec![photo(dir.path(), "a.jpg", "photo a")]);
     let first = dir.path().join("first.notebook");
-    project::save(&first, &pages, &[]).unwrap();
+    project::save(&first, &pages).unwrap();
     assert_eq!(file(&first)["pages"][0]["photo"]["path"], "a.jpg");
 
     let opened = project::open(&first).unwrap();
     let second = dir.path().join("deep/er/second.notebook");
-    project::save(&second, &opened.pages, &opened.missing).unwrap();
+    project::save(&second, &opened).unwrap();
     assert_eq!(file(&second)["pages"][0]["photo"]["path"], "../../a.jpg");
     let opened = project::open(&second).unwrap();
-    assert_eq!(summary(&opened.pages), summary(&pages));
+    assert_eq!(summary(&opened), summary(&pages));
 }
 
 #[test]
-fn missing_photos_are_kept_in_place() {
+fn missing_photos_leave_their_pages_in_place() {
     let dir = dir("missing");
+    let corners = [[1.0, 2.0], [30.0, 2.0], [30.0, 40.0], [1.0, 40.0]];
     let pages = Pages::in_order(vec![
         photo(dir.path(), "a.jpg", "photo a"),
         Page {
             transcript: Some(corrected()),
+            corners: Some(corners),
             ..photo(dir.path(), "b.jpg", "photo b")
         },
         photo(dir.path(), "c.jpg", "photo c"),
         photo(dir.path(), "d.jpg", "photo d"),
     ]);
     let path = dir.path().join("p.notebook");
-    project::save(&path, &pages, &[]).unwrap();
+    project::save(&path, &pages).unwrap();
     let before = file(&path);
 
     std::fs::remove_file(dir.path().join("b.jpg")).unwrap();
     std::fs::write(dir.path().join("c.jpg"), "another photo").unwrap();
     let opened = project::open(&path).unwrap();
-    let names: Vec<&str> = opened.pages.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["a.jpg", "d.jpg"]);
-    let missing: Vec<(&str, Option<&str>, &Why)> = opened
-        .missing
+    let whys: Vec<(&str, Option<&Why>)> = opened
         .iter()
-        .map(|m| (m.page.name.as_str(), m.after.as_deref(), &m.why))
+        .map(|p| (p.name.as_str(), p.missing_photo()))
         .collect();
     assert_eq!(
-        missing,
+        whys,
         [
-            ("b.jpg", Some("a.jpg"), &Why::NotFound),
-            ("c.jpg", Some("b.jpg"), &Why::Changed)
+            ("a.jpg", None),
+            ("b.jpg", Some(&Why::NotFound)),
+            ("c.jpg", Some(&Why::Changed)),
+            ("d.jpg", None),
         ]
     );
     assert_eq!(
-        opened.missing[0].page.photo.path,
-        dir.path().join("b.jpg"),
-        "absolute in memory"
+        summary(&opened),
+        summary(&pages),
+        "absolute paths in memory"
     );
+    let (b, saved_b) = (opened.get(1).unwrap(), pages.get(1).unwrap());
+    assert_eq!(b.transcript, saved_b.transcript);
+    assert_eq!((&b.sha256, b.len), (&saved_b.sha256, saved_b.len));
+    let c = opened.get(2).unwrap();
+    assert_eq!(c.sha256, pages.get(2).unwrap().sha256, "the hash saved");
 
-    project::save(&path, &opened.pages, &opened.missing).unwrap();
+    project::save(&path, &opened).unwrap();
     assert_eq!(file(&path), before, "saved again unchanged");
 }
 
@@ -177,28 +183,18 @@ fn a_missing_first_page_stays_first() {
         photo(dir.path(), "a.jpg", "photo a"),
     ]);
     let path = dir.path().join("p.notebook");
-    project::save(&path, &pages, &[]).unwrap();
+    project::save(&path, &pages).unwrap();
     std::fs::remove_file(dir.path().join("b.jpg")).unwrap();
     let opened = project::open(&path).unwrap();
-    assert_eq!(opened.missing[0].after, None);
-    // The page it followed has gone too: it goes at the end.
-    let gone = Missing {
-        after: Some("gone.jpg".to_owned()),
-        ..opened.missing[0].clone()
-    };
-    let other = dir.path().join("q.notebook");
-    project::save(&other, &opened.pages, &[gone]).unwrap();
-    project::save(&path, &opened.pages, &opened.missing).unwrap();
-    let names = |path: &Path| -> Vec<String> {
-        file(path)["pages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|p| p["name"].as_str().unwrap().to_owned())
-            .collect()
-    };
-    assert_eq!(names(&path), ["b.jpg", "a.jpg"]);
-    assert_eq!(names(&other), ["a.jpg", "b.jpg"]);
+    assert!(opened.get(0).unwrap().missing_photo().is_some());
+    project::save(&path, &opened).unwrap();
+    let names: Vec<String> = file(&path)["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["b.jpg", "a.jpg"]);
 }
 
 #[test]
@@ -207,7 +203,7 @@ fn pages_without_a_file_cant_be_saved() {
     let dropped = Page::new("dropped.jpg".to_owned(), Arc::from(&b"bytes"[..]));
     let pages = Pages::in_order(vec![photo(dir.path(), "a.jpg", "photo a"), dropped]);
     let path = dir.path().join("p.notebook");
-    let Err(SaveError::NoPath(names)) = project::save(&path, &pages, &[]) else {
+    let Err(SaveError::NoPath(names)) = project::save(&path, &pages) else {
         panic!("saved");
     };
     assert_eq!(names, ["dropped.jpg"]);
@@ -280,7 +276,7 @@ fn project_file_format() {
         ..photo(dir.path(), "IMG_0001.jpg", "photo")
     };
     let path = dir.path().join("p.notebook");
-    project::save(&path, &Pages::in_order(vec![page]), &[]).unwrap();
+    project::save(&path, &Pages::in_order(vec![page])).unwrap();
     insta::assert_snapshot!(String::from_utf8(project::json(&path).unwrap()).unwrap());
 }
 

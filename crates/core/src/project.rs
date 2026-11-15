@@ -2,10 +2,11 @@
 //! `.notebook` file, gzipped JSON. Photos aren't copied in: each page names its file by a path relative to the
 //! project, and its hash, so a moved or changed photo is noticed. Transcripts are saved whole,
 //! corrections and Claude's answer included, so a project doesn't need the cache. A photo that
-//! can't be found when the project opens leaves its page [`Missing`], kept so that saving again
-//! loses nothing.
+//! can't be found when the project opens leaves its page [missing](Page::missing) its photo, still
+//! in its place, so that saving again loses nothing.
 //!
-//! See `decisions/2026-10-31-projects.md` and `decisions/2026-10-31-gzip-projects.md`.
+//! See `decisions/2026-10-31-projects.md`, `decisions/2026-10-31-gzip-projects.md` and
+//! `decisions/2026-11-15-missing-pages-shown.md`.
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::sha256_hex;
 use crate::geom::Quad;
 use crate::json_file;
-use crate::page::{Page, Pages};
+use crate::page::{Page, Pages, Why};
 use crate::transcript::Transcript;
 
 /// Version of the project file. Bump it when the format changes in a way an older build would
@@ -47,33 +48,6 @@ pub struct Photo {
     pub sha256: String,
     /// The file's size in bytes.
     pub len: u64,
-}
-
-/// A page whose photo wasn't found when the project opened, kept to be saved again.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Missing {
-    pub page: SavedPage,
-    /// The page it followed, missing or not; `None` if it was first.
-    pub after: Option<String>,
-    pub why: Why,
-}
-
-/// Why a page's photo wasn't found.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Why {
-    /// There's no file at its path.
-    NotFound,
-    /// The file at its path isn't the photo the project was saved with.
-    Changed,
-    /// The file couldn't be read.
-    Unreadable(String),
-}
-
-/// A project as it opened.
-pub struct Opened {
-    /// The pages whose photos were found, in order.
-    pub pages: Pages,
-    pub missing: Vec<Missing>,
 }
 
 #[derive(Debug)]
@@ -107,7 +81,7 @@ impl SavedPage {
             photo: Photo {
                 path: page.path.clone()?,
                 sha256: page.sha256.clone(),
-                len: page.bytes.len() as u64,
+                len: page.len,
             },
             corners: page.corners,
             transcript: page.transcript.clone(),
@@ -124,9 +98,9 @@ impl SavedPage {
     }
 }
 
-/// Saves `pages`, with `missing` back where they were, to the project file at `path`. Photo paths
-/// are written relative to the project's directory.
-pub fn save(path: &Path, pages: &Pages, missing: &[Missing]) -> Result<(), SaveError> {
+/// Saves `pages` to the project file at `path`. Photo paths are written relative to the project's
+/// directory.
+pub fn save(path: &Path, pages: &Pages) -> Result<(), SaveError> {
     let no_path: Vec<String> = pages
         .iter()
         .filter(|p| p.path.is_none())
@@ -136,16 +110,6 @@ pub fn save(path: &Path, pages: &Pages, missing: &[Missing]) -> Result<(), SaveE
         return Err(SaveError::NoPath(no_path));
     }
     let mut saved: Vec<SavedPage> = pages.iter().filter_map(SavedPage::of).collect();
-    for m in missing {
-        let at = match &m.after {
-            None => 0,
-            Some(after) => saved
-                .iter()
-                .position(|p| &p.name == after)
-                .map_or(saved.len(), |i| i + 1),
-        };
-        saved.insert(at, m.page.clone());
-    }
     let dir = project_dir(path);
     for page in &mut saved {
         page.photo.path = relative(&page.photo.path, &dir);
@@ -158,8 +122,8 @@ pub fn save(path: &Path, pages: &Pages, missing: &[Missing]) -> Result<(), SaveE
 }
 
 /// Opens the project file at `path`, reading each page's photo. Photos that aren't there, or
-/// aren't the same file, leave their pages [`Missing`].
-pub fn open(path: &Path) -> Result<Opened, OpenError> {
+/// aren't the same file, leave their pages [missing](Page::missing) them, in their place.
+pub fn open(path: &Path) -> Result<Pages, OpenError> {
     let bytes = json(path)?;
     let version = serde_json::from_slice::<serde_json::Value>(&bytes)
         .map_err(|e| OpenError::Format(e.to_string()))?
@@ -174,33 +138,22 @@ pub fn open(path: &Path) -> Result<Opened, OpenError> {
     let file: File =
         serde_json::from_slice(&bytes).map_err(|e| OpenError::Format(e.to_string()))?;
     let dir = project_dir(path);
-    let mut pages = Vec::new();
-    let mut missing = Vec::new();
-    let mut after = None;
-    for mut saved in file.pages {
-        saved.photo.path = joined(&dir, &saved.photo.path);
-        let name = saved.name.clone();
-        match read_photo(&saved.photo) {
-            Ok(bytes) => {
-                let page = Page {
-                    corners: saved.corners,
-                    transcript: saved.transcript,
-                    ..Page::new(saved.name, bytes).at(saved.photo.path)
-                };
-                pages.push(page);
-            }
-            Err(why) => missing.push(Missing {
-                page: saved,
-                after: after.clone(),
-                why,
-            }),
+    let pages = file.pages.into_iter().map(|saved| {
+        let photo = Photo {
+            path: joined(&dir, &saved.photo.path),
+            ..saved.photo
+        };
+        let page = match read_photo(&photo) {
+            Ok(bytes) => Page::new(saved.name, bytes).at(photo.path),
+            Err(why) => Page::missing(saved.name, photo.path, photo.sha256, photo.len, why),
+        };
+        Page {
+            corners: saved.corners,
+            transcript: saved.transcript,
+            ..page
         }
-        after = Some(name);
-    }
-    Ok(Opened {
-        pages: Pages::in_order(pages),
-        missing,
-    })
+    });
+    Ok(Pages::in_order(pages.collect()))
 }
 
 /// The JSON in the project file at `path`, ungzipped.

@@ -10,6 +10,7 @@ mod corrections;
 mod export;
 mod focus;
 mod keys;
+mod missing;
 mod pages;
 mod project;
 mod settings;

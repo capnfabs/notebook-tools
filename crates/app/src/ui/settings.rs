@@ -9,15 +9,15 @@
 
 use crate::auth::Active;
 use eframe::egui;
-use egui::{RichText, Sense, Stroke, TextStyle, Ui, Vec2};
+use egui::{RichText, Sense, TextStyle, Ui, Vec2};
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
 
 use crate::t;
-use crate::ui::api_key;
 use crate::ui::dialog::{self, Choice, Stakes};
+use crate::ui::{api_key, icons};
 
 /// Marks that can wrap underlined text.
 const UNDERLINES: [&str; 2] = ["_", "*"];
@@ -383,19 +383,10 @@ fn heading(level: usize) -> String {
     t!("settings-heading", marks = "#".repeat(level))
 }
 
-/// A circled "i", drawn because egui's bundled fonts have no glyph for one.
+/// A circled "i".
 fn info_icon(ui: &mut Ui) -> egui::Response {
     let size = ui.text_style_height(&TextStyle::Small);
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let color = ui.visuals().weak_text_color();
-    let painter = ui.painter();
-    painter.circle_stroke(rect.center(), size / 2.0 - 0.5, Stroke::new(1.0, color));
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "i",
-        egui::FontId::proportional(size * 0.75),
-        color,
-    );
+    icons::paint_info(ui.painter(), rect, ui.visuals().weak_text_color());
     response
 }
