@@ -2,7 +2,7 @@
 
 Notebook-tools is a tool for OCR-ing a handwritten notebook for desktop computers. It transforms / cleans photos locally, sends them to Claude for transcription, and offers a correction / proofreading interface and export to Markdown and PDF.
 
-Note that this tool _costs money_ to use; you need a Claude developer account and to be logged in on the machine. When I was testing in Oct 2026 using Opus 5.5, it was about $0.07 per two-page spread. For an 80-page A5 notebook (like the Moleskine Cahier journals that I take hiking) you're looking at $2.80 in transcription fees.
+Note that this tool _costs money_ to use; you need a Claude developer account and to be logged in on the machine (either using the `ant` command line app, which we detect automatically, or by pasting a key into the app settings). When I was testing in Oct 2026 using Opus 5.5, it was about $0.07 per two-page spread. For an 80-page A5 notebook (like the Moleskine Cahier journals that I take hiking) you're looking at $2.80 in transcription fees.
 
 ## Basic flow:
 - Drop a bunch of photos of your notebook onto the UI (either single page photos or spreads, both are ok)

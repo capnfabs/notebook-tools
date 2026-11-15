@@ -275,11 +275,12 @@ impl NotebookApp {
         self.mark_saved();
     }
 
-    /// Starts an untitled project with no pages, keeping the app's settings, transcriber, cache
-    /// and dialogs. Pages still loading or being transcribed finish, unseen.
+    /// Starts an untitled project with no pages, keeping the app's settings, credentials,
+    /// transcriber, cache and dialogs. Pages still loading or being transcribed finish, unseen.
     pub(super) fn new_project(&mut self) {
         let fresh = NotebookApp {
             transcriptions: self.transcriptions.emptied(),
+            auth: self.auth.take(),
             ingest: self.ingest.emptied(),
             export: Export::new(self.save_path.clone()),
             clean_params: self.clean_params.clone(),

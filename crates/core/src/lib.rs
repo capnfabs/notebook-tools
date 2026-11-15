@@ -7,6 +7,7 @@
 pub mod cache;
 pub mod claude_transcribe;
 pub mod clean;
+pub mod credentials;
 pub mod decode;
 pub mod export;
 pub mod geom;

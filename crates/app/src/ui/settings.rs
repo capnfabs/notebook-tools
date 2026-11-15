@@ -1,18 +1,22 @@
-//! The Settings dialog: which model transcribes, with what each is good for, how Claude's markup
-//! is written, and whether transcripts are cached. It edits a copy of the settings, which Save
-//! hands back. Clearing the cache isn't a setting: it happens once the user confirms it.
+//! The Settings dialog: the Claude API key, which model transcribes, with what each is good for,
+//! how Claude's markup is written, and whether transcripts are cached. It edits a copy of the
+//! settings, which Save hands back. Clearing the cache and changing the key aren't settings: they
+//! happen straight away, the cache once the user confirms it.
 //!
-//! See `decisions/2026-10-30-settings-dialog.md` and
-//! `decisions/2026-11-01-manual-cache-clearing.md`.
+//! See `decisions/2026-10-30-settings-dialog.md`,
+//! `decisions/2026-11-01-manual-cache-clearing.md` and
+//! `decisions/2026-11-15-api-key-in-keychain.md`.
 
 use eframe::egui;
 use egui::{RichText, Sense, Stroke, TextStyle, Ui, Vec2};
 use notebook_core::cache::Cache;
+use notebook_core::credentials::Source;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
 
 use crate::t;
+use crate::ui::api_key;
 use crate::ui::dialog::{self, Choice, Stakes};
 
 /// Marks that can wrap underlined text.
@@ -51,6 +55,18 @@ pub enum Outcome {
     Saved(Settings),
     /// The cache couldn't be cleared, for this reason.
     ClearFailed(String),
+    /// The user wants to enter an API key.
+    EnterKey,
+    /// The user confirmed removing the saved API key.
+    RemoveKey,
+}
+
+/// The credentials pages are sent with, for the dialog to show.
+pub struct KeySummary {
+    /// Where they came from, and the key or token [`notebook_core::credentials::mask`]ed.
+    pub active: Option<(Source, String)>,
+    /// Whether the keychain is known to hold a key.
+    pub saved: bool,
 }
 
 /// Which question about clearing the cache is being asked.
@@ -60,6 +76,8 @@ enum Confirm {
     Clear,
     /// After saving with caching switched off, while the cache still has entries.
     SwitchedOff,
+    /// Over the dialog, after Remove under the API key.
+    RemoveKey,
 }
 
 #[derive(Default)]
@@ -90,24 +108,41 @@ impl SettingsDialog {
         self.draft.is_some() || self.confirm.is_some()
     }
 
-    /// The dialog and the question it's asking, if any. Returns what the user did that the app
-    /// must act on.
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<Outcome> {
-        let saved = self.show_settings(ctx).map(Outcome::Saved);
-        let cleared = self.show_confirm(ctx);
-        saved.or(cleared)
+    /// The dialog and the question it's asking, if any, with the API key section if there's a
+    /// `key` to show. While another dialog is `covered` it, Enter is that one's. Returns what the
+    /// user did that the app must act on.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        key: Option<&KeySummary>,
+        covered: bool,
+    ) -> Option<Outcome> {
+        let edited = self.show_settings(ctx, key, covered);
+        let confirmed = self.show_confirm(ctx);
+        edited.or(confirmed)
     }
 
-    /// The settings, if they're being edited. Returns them when the user saves them.
-    fn show_settings(&mut self, ctx: &egui::Context) -> Option<Settings> {
+    /// The settings, if they're being edited. Returns them when the user saves them, or what they
+    /// asked of the API key.
+    fn show_settings(
+        &mut self,
+        ctx: &egui::Context,
+        key: Option<&KeySummary>,
+        covered: bool,
+    ) -> Option<Outcome> {
         let draft = self.draft.as_mut()?;
         // A question over the dialog has Enter, and the dialog's buttons wait for it.
-        let asking = self.confirm.is_some();
+        let asking = self.confirm.is_some() || covered;
         let (cache, cached) = (self.cache.as_ref(), self.cached);
         let mut clear = false;
+        let mut key_action = None;
         let choice = dialog::show(ctx, "settings", 420.0, |ui| {
             ui.heading(t!("settings-title"));
             ui.add_space(8.0);
+            if let Some(key) = key {
+                key_action = api_key_section(ui, key);
+                ui.add_space(12.0);
+            }
             model(ui, &mut draft.model);
             ui.add_space(12.0);
             markdown(ui, &mut draft.markdown);
@@ -118,6 +153,11 @@ impl SettingsDialog {
         if clear {
             self.confirm = Some(Confirm::Clear);
         }
+        match key_action {
+            Some(KeyAction::Enter) => return Some(Outcome::EnterKey),
+            Some(KeyAction::Remove) => self.confirm = Some(Confirm::RemoveKey),
+            None => {}
+        }
         match choice? {
             Choice::Affirmative => {
                 let saved = self.draft.take()?;
@@ -127,7 +167,7 @@ impl SettingsDialog {
                         self.confirm = Some(Confirm::SwitchedOff);
                     }
                 }
-                Some(saved)
+                Some(Outcome::Saved(saved))
             }
             Choice::Cancel | Choice::Discard => {
                 self.draft = None;
@@ -153,6 +193,11 @@ impl SettingsDialog {
                 t!("confirm-cache-off-button"),
                 t!("confirm-cache-off-keep"),
             ),
+            Confirm::RemoveKey => (
+                t!("confirm-remove-key"),
+                t!("confirm-remove-key-button"),
+                t!("dialog-cancel"),
+            ),
         };
         let choice = dialog::show(ctx, "clear cache", 360.0, |ui| {
             ui.label(question);
@@ -161,6 +206,9 @@ impl SettingsDialog {
         self.confirm = None;
         if choice != Choice::Affirmative {
             return None;
+        }
+        if let Confirm::RemoveKey = confirm {
+            return Some(Outcome::RemoveKey);
         }
         let cleared = self.cache.as_ref()?.clear();
         self.cached = self.count();
@@ -187,6 +235,53 @@ impl SettingsDialog {
             0
         })
     }
+}
+
+/// What the user asked of the API key.
+enum KeyAction {
+    Enter,
+    Remove,
+}
+
+/// Which credentials pages are sent with, and buttons to enter a key or remove the saved one.
+fn api_key_section(ui: &mut Ui, key: &KeySummary) -> Option<KeyAction> {
+    ui.label(RichText::new(t!("settings-api-key")).strong());
+    let env = match &key.active {
+        None => {
+            ui.label(t!("settings-api-key-none"));
+            false
+        }
+        Some((source, masked)) => {
+            let text = match api_key::variable(*source) {
+                Some(variable) => t!("settings-api-key-env", key = masked, variable = variable),
+                None => t!("settings-api-key-keychain", key = masked),
+            };
+            ui.label(text);
+            *source != Source::Keychain
+        }
+    };
+    if env {
+        ui.label(
+            RichText::new(t!("settings-api-key-env-note"))
+                .small()
+                .weak(),
+        );
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let enter = ui.button(t!("settings-api-key-enter")).clicked();
+        // Red, as the key can't be got back; it asks first.
+        let remove = dialog::button(ui, &t!("settings-api-key-remove"), Stakes::Dangerous);
+        let remove = ui.add_enabled(key.saved, remove).clicked();
+        if enter {
+            Some(KeyAction::Enter)
+        } else if remove {
+            Some(KeyAction::Remove)
+        } else {
+            None
+        }
+    })
+    .inner
 }
 
 /// Where the cache is, whether to use it, and a button to clear its `cached` entries, which

@@ -197,6 +197,12 @@ impl Transcriptions {
         self.settings = settings;
     }
 
+    /// Sends pages with `transcriber` from now on, or stops sending them. Pages already being sent
+    /// carry on with the one they started with.
+    pub fn set_transcriber(&mut self, transcriber: Option<Transcriber>) {
+        self.transcriber = transcriber;
+    }
+
     /// Whether pages can be sent to Claude.
     pub fn can_send(&self) -> bool {
         self.transcriber.is_some()

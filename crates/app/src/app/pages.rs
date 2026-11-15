@@ -23,6 +23,14 @@ use crate::ui::transcript_view::TranscriptView;
 /// `decisions/2026-10-24-confirm-before-transcribing.md`.
 pub(super) const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 
+/// What the user tried to do when they were asked for an API key, to carry on with once they've
+/// entered one.
+pub(super) enum AfterKey {
+    Transcribe(String),
+    TranscribeAll,
+    Retranscribe(String),
+}
+
 impl NotebookApp {
     pub(super) fn select(&mut self, index: usize) {
         if let Some(page) = self.pages.get(index) {
@@ -215,8 +223,43 @@ impl NotebookApp {
         }
     }
 
+    /// Whether pages can be sent to Claude now. If not, asks for an API key, if the app can keep
+    /// one, to do `then` with once the user enters it.
+    fn ready_to_send(&mut self, then: AfterKey) -> bool {
+        if self.transcriptions.can_send() {
+            return true;
+        }
+        if self.auth.is_some() {
+            self.after_key = Some(then);
+            self.key_dialog.open();
+        }
+        false
+    }
+
+    /// Does what the user was doing when they were asked for an API key.
+    pub(super) fn carry_on(&mut self, ctx: &egui::Context, after: AfterKey) {
+        let index_of = |name: &str| self.pages.iter().position(|p| p.name == name);
+        match after {
+            AfterKey::Transcribe(name) => {
+                if let Some(index) = index_of(&name) {
+                    self.start_transcribing(index);
+                }
+            }
+            AfterKey::TranscribeAll => self.request_transcribe_all(),
+            AfterKey::Retranscribe(name) => {
+                if let Some(index) = index_of(&name) {
+                    self.request_retranscribe(index);
+                }
+            }
+        }
+        ctx.request_repaint();
+    }
+
     /// Transcribes every untranscribed page, asking first if there are many.
     pub(super) fn request_transcribe_all(&mut self) {
+        if !self.ready_to_send(AfterKey::TranscribeAll) {
+            return;
+        }
         if self.untranscribed().len() > TRANSCRIBE_ALL_CONFIRM_ABOVE {
             self.confirm_transcribe_all = true;
         } else {
@@ -258,6 +301,9 @@ impl NotebookApp {
         };
         let corrected = page.transcript.as_ref().is_some_and(Transcript::corrected);
         let name = page.name.clone();
+        if !self.ready_to_send(AfterKey::Retranscribe(name.clone())) {
+            return;
+        }
         if corrected {
             self.confirm_retranscribe = Some(name);
         } else {
@@ -320,7 +366,11 @@ impl NotebookApp {
         let Some(page) = self.pages.get(index) else {
             return;
         };
-        if page.transcript.is_none() && self.transcriptions.error(&page.name).is_none() {
+        // Without credentials, it waits for the user to ask, rather than asking for a key.
+        if page.transcript.is_none()
+            && self.transcriptions.error(&page.name).is_none()
+            && self.transcriptions.can_send()
+        {
             self.start_transcribing(index);
         }
     }
@@ -349,8 +399,15 @@ impl NotebookApp {
         }
     }
 
-    /// Sends page `index` to be transcribed, unless it's in the cache.
+    /// Sends page `index` to be transcribed, unless it's in the cache. Without credentials, asks
+    /// for an API key first.
     pub(super) fn start_transcribing(&mut self, index: usize) {
+        let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
+            return;
+        };
+        if !self.ready_to_send(AfterKey::Transcribe(name)) {
+            return;
+        }
         if let Some(page) = self.pages.get(index) {
             self.transcriptions.start(page, self.clean_params.clone());
         }

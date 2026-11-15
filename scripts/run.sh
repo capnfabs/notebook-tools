@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs the desktop app with debug logs, including timing info and eval loglines, and transcription
-# on (a fresh token from `ant`). With --offline, runs without Claude credentials instead, so only
-# cached transcripts load and nothing is sent. Override the logging with RUST_LOG; other arguments
-# go to `cargo run`.
+# on (a fresh token from `ant`). With --offline, runs without Claude credentials in the
+# environment instead, so only cached transcripts load and nothing is sent, unless an API key is
+# saved in the keychain. Override the logging with RUST_LOG; other arguments go to `cargo run`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -30,6 +30,7 @@ use notebook_core::page::Pages;
 use notebook_core::settings::Settings;
 use textures::Textures;
 
+use crate::auth::Auth;
 use crate::command::{EguiKeys, Frontend};
 use crate::eval_log::{EvalLog, Event};
 use crate::export::{Export, SavePath};
@@ -37,8 +38,9 @@ use crate::ingest::{Ingest, Load, PickFiles};
 use crate::jobs::Waker;
 use crate::t;
 use crate::transcriptions::{Transcriber, Transcriptions};
+use crate::ui::api_key::{self, KeyDialog};
 use crate::ui::corners::Corners;
-use crate::ui::settings::{self, SettingsDialog};
+use crate::ui::settings::{self, KeySummary, SettingsDialog};
 use crate::ui::split::Split;
 use crate::ui::thumbnails::Thumbnails;
 use crate::ui::transcript_view::TranscriptView;
@@ -102,6 +104,11 @@ pub struct NotebookApp {
     /// The page whose corrections the user asked to drop, until they confirm.
     confirm_reset: Option<String>,
     settings_dialog: SettingsDialog,
+    /// Where pages' credentials come from. Without it, the transcriber given is all there is.
+    auth: Option<Auth>,
+    key_dialog: KeyDialog,
+    /// What to do once the user enters a key, if they were asked for one by trying to transcribe.
+    after_key: Option<pages::AfterKey>,
     /// Where settings are saved. Without one, they last until the app quits.
     settings_path: Option<PathBuf>,
     eval_log: EvalLog,
@@ -129,6 +136,13 @@ impl NotebookApp {
             transcriptions: Transcriptions::new(transcriber, cache),
             ..Self::default()
         }
+    }
+
+    /// Sends pages with `auth`'s credentials, asking for a key when there are none.
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.transcriptions.set_transcriber(auth.transcriber());
+        self.auth = Some(auth);
+        self
     }
 
     /// Asks where to save exports and projects with `save_path`. Without one, exporting to a file
@@ -220,6 +234,7 @@ impl NotebookApp {
             self.show_viewer(ui);
         }
         self.show_settings_dialog(&ctx);
+        self.show_key_dialog(&ctx);
         self.unsaved_dialog(&ctx);
         self.update_title(&ctx);
         let states = self.command_states(&ctx);
@@ -234,6 +249,7 @@ impl NotebookApp {
             return;
         };
         self.transcriptions.set_waker(waker.clone());
+        self.key_dialog.set_waker(waker.clone());
         self.ingest.set_waker(waker.clone());
         self.textures.set_waker(waker);
     }
@@ -266,10 +282,21 @@ impl NotebookApp {
     /// The Settings dialog, if it's open. Saved settings apply from now on, and restyle the
     /// transcripts the user hasn't corrected.
     fn show_settings_dialog(&mut self, ctx: &egui::Context) {
-        let settings = match self.settings_dialog.show(ctx) {
+        let key = self.key_summary();
+        let covered = self.key_dialog.is_open();
+        let settings = match self.settings_dialog.show(ctx, key.as_ref(), covered) {
             Some(settings::Outcome::Saved(settings)) => settings,
             Some(settings::Outcome::ClearFailed(error)) => {
                 self.errors.push(error);
+                return;
+            }
+            Some(settings::Outcome::EnterKey) => {
+                self.after_key = None;
+                self.key_dialog.open();
+                return;
+            }
+            Some(settings::Outcome::RemoveKey) => {
+                self.remove_key();
                 return;
             }
             None => return,
@@ -286,6 +313,54 @@ impl NotebookApp {
         for name in names {
             self.restyle_if_stale(&name);
         }
+    }
+
+    /// The credentials pages are sent with, for Settings, if the app has an [`Auth`].
+    fn key_summary(&self) -> Option<KeySummary> {
+        let auth = self.auth.as_ref()?;
+        let active = auth.current().map(|(credentials, source)| {
+            let masked = notebook_core::credentials::mask(credentials.secret());
+            (source, masked)
+        });
+        Some(KeySummary {
+            active,
+            saved: auth.has_saved_key(),
+        })
+    }
+
+    /// The dialog asking for an API key, if it's open. Once a key's saved, pages are sent with it,
+    /// and what the user was doing when they were asked for it carries on.
+    fn show_key_dialog(&mut self, ctx: &egui::Context) {
+        let Some(auth) = &mut self.auth else {
+            return;
+        };
+        match self.key_dialog.show(ctx, auth) {
+            Some(api_key::Outcome::Saved { warning }) => {
+                self.transcriptions.set_transcriber(auth.transcriber());
+                if let Some(warning) = warning {
+                    self.show_hint(ctx, warning);
+                }
+                if let Some(after) = self.after_key.take() {
+                    self.carry_on(ctx, after);
+                }
+            }
+            Some(api_key::Outcome::Closed) => self.after_key = None,
+            None => {}
+        }
+    }
+
+    /// Forgets the key saved in the keychain, so pages are sent with the environment's
+    /// credentials, if any.
+    fn remove_key(&mut self) {
+        let Some(auth) = &mut self.auth else {
+            return;
+        };
+        if let Err(err) = auth.remove() {
+            log::warn!("couldn't remove the API key: {err}");
+            let error = t!("settings-api-key-remove-failed", error = err);
+            self.errors.push(error);
+        }
+        self.transcriptions.set_transcriber(auth.transcriber());
     }
 
     /// Reads the page named `name`'s transcript again from Claude's answer if it's in another

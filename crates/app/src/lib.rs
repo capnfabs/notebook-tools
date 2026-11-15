@@ -5,6 +5,7 @@
 //! `notebook_core`. See `decisions/2026-10-31-code-layout.md`.
 
 pub mod app;
+pub mod auth;
 pub mod cli;
 pub mod command;
 pub mod eval_log;
@@ -21,6 +22,7 @@ mod transcriptions;
 mod ui;
 
 pub use app::NotebookApp;
+pub use auth::{Auth, CheckKey, MakeTranscriber};
 pub use command::Command;
 pub use eval_log::{EvalLog, Event, Via};
 pub use export::SavePath;

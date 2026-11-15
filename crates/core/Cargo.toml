@@ -13,6 +13,8 @@ epaint_default_fonts.workspace = true
 flate2 = "1"
 image.workspace = true
 imageproc = { workspace = true, features = ["rayon"] }
+# Keeps the API key in the OS keychain: see `decisions/2026-11-15-api-key-in-keychain.md`.
+keyring = "4"
 krilla = "0.8"
 log.workspace = true
 # Markdown as plain text, for the PDF's text layer.

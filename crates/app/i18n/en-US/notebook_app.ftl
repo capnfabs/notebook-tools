@@ -74,7 +74,7 @@ drop-others-left-out = { $count ->
    *[other] The { $count } other files dropped weren't added.
 }
 # Why transcribing is unavailable (and, without a cache, the Transcribed view and exporting).
-no-transcriber-hint = Transcription requires an ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN.
+no-transcriber-hint = Transcription needs a Claude API key: add one in Settings.
 all-transcribed-hint = Every page is transcribed
 # The selected page, in the toolbar.
 page-position = { $name } · { $number } of { $count }
@@ -282,6 +282,34 @@ confirm-cache-off = { $count ->
 confirm-cache-off-button = Delete
 confirm-cache-off-keep = Don't delete
 settings-save = Save
+settings-api-key = Claude API key
+settings-api-key-none = Add one to enable transcription.
+# $key is masked, as "sk-ant-…a1B2".
+settings-api-key-keychain = { $key }, saved in the keychain
+settings-api-key-env = { $key }, from { $variable }
+settings-api-key-env-note = The environment's credentials are used over a saved key while they're set, but you can still enter a key for future use.
+settings-api-key-enter = Enter Key…
+settings-api-key-remove = Remove
+settings-api-key-remove-failed = Couldn't remove the API key from the keychain: { $error }
+confirm-remove-key = Remove the saved API key? The Claude Console won't show it again, so you'd need to create a new one.
+confirm-remove-key-button = Remove key
+
+## Asking for a Claude API key. See `decisions/2026-11-15-api-key-in-keychain.md`.
+
+api-key-title = Claude API key
+api-key-explanation = Transcribing sends pages to Claude, billed to your Claude Console account. Create an API key there and paste it here; it's kept in your system's keychain.
+api-key-console-link = Create a key in the Claude Console
+api-key-field = API key
+api-key-checking = Checking the key…
+api-key-save = Save Key
+api-key-rejected = Claude didn't accept that key. Check that it's copied whole and hasn't been deleted.
+api-key-save-failed = Couldn't save the key in the keychain: { $error }
+# Saved anyway: the key may be fine, and the next transcription says if it isn't.
+api-key-unverified = Saved the API key, but couldn't check it: { $error }
+api-key-env-note = { $variable } is set, so it's used instead of a saved key until it's unset.
+api-key-no-keychain = This system has no keychain to keep an API key in. Set ANTHROPIC_API_KEY in the environment instead.
+api-key-no-keychain-why = The keychain said: { $error }
+api-key-close = OK
 
 ## Transcription errors
 

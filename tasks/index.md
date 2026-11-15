@@ -6,7 +6,7 @@ See [done/index.md](done/index.md).
 ## M0
 - [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
-- [ ] [Claude auth approach](claude-auth.md)
+- [ ] [Claude auth: `ant` login as a fallback](claude-auth-ant.md)
 
 
 ## future milestones

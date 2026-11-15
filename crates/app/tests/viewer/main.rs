@@ -4,6 +4,7 @@
 
 mod common;
 
+mod api_key;
 mod corners;
 mod corrections;
 mod export;

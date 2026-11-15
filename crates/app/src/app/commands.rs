@@ -16,9 +16,11 @@ impl NotebookApp {
     pub(super) fn can(&self, command: Command) -> bool {
         let index = self.selected_index();
         let page = self.pages.get(index);
-        let can_transcribe = self.transcriptions.can_send();
-        let can_view = self.transcriptions.can_show();
-        let can_export = can_view && self.export.running().is_none();
+        // Without credentials, transcribing asks for a key, if the app can keep one.
+        let can_ask_for_key = self.auth.is_some();
+        let can_transcribe = self.transcriptions.can_send() || can_ask_for_key;
+        let can_view = self.transcriptions.can_show() || can_ask_for_key;
+        let can_export = self.transcriptions.can_show() && self.export.running().is_none();
         match command {
             Command::Settings | Command::Quit | Command::NewProject => true,
             Command::OpenProject | Command::AddPages => self.pick_files.is_some(),
@@ -85,6 +87,7 @@ impl NotebookApp {
             || self.confirm_transcribe_all
             || self.export.dialog_open()
             || self.settings_dialog.is_open()
+            || self.key_dialog.is_open()
             || self.confirming_unsaved()
     }
 

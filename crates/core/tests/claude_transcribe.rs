@@ -14,9 +14,10 @@ use std::path::Path;
 use common::{RECORDED_CROP, photo, response};
 use image::{Rgba, RgbaImage};
 use notebook_core::claude_transcribe::{
-    Credentials, EFFORT, OcrError, encode_jpeg, image_to_send, parse_response, request_body, send,
+    EFFORT, OcrError, check_key, encode_jpeg, image_to_send, parse_response, request_body, send,
 };
 use notebook_core::clean::{CleanParams, Crop};
+use notebook_core::credentials::{self, Credentials};
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::transcript::{Span, Transcript};
@@ -194,11 +195,28 @@ fn non_json_answer_is_a_parse_error() {
     ));
 }
 
+/// Checks the environment's credentials, and a made-up key, with the API. Free, but needs the
+/// network and credentials, so it's opt-in too.
+#[test]
+#[ignore]
+fn live_checks_keys() {
+    let Some((credentials, _)) = credentials::from_env() else {
+        eprintln!("skipped: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
+        return;
+    };
+    assert_eq!(check_key(&credentials), Ok(()));
+    let made_up = Credentials::ApiKey("sk-ant-api03-not-a-real-key".into());
+    assert!(matches!(
+        check_key(&made_up),
+        Err(OcrError::Api { status: 401, .. })
+    ));
+}
+
 /// Sends a real photo to Claude. Costs money, so it's opt-in.
 #[test]
 #[ignore]
 fn live_transcribes_fixture_photo() {
-    let Some(credentials) = Credentials::from_env() else {
+    let Some((credentials, _)) = credentials::from_env() else {
         eprintln!("skipped: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
         return;
     };

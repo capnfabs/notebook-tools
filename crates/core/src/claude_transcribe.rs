@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::clean::{CleanParams, Crop, crop_to_page};
+use crate::credentials::Credentials;
 use crate::decode::decode;
 use crate::geom::{Quad, rect_corners};
 use crate::imaging::{jpeg, max_side_within, shrink_to_fit};
@@ -28,6 +29,8 @@ use crate::transcript::{Line, Source, Transcript, Uncertain};
 /// How hard Claude thinks: `low`, `medium`, `high`, `xhigh` or `max`.
 pub const EFFORT: &str = "high";
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
+/// One model is all [`check_key`] needs to see the key works.
+const MODELS_URL: &str = "https://api.anthropic.com/v1/models?limit=1";
 const API_VERSION: &str = "2026-10-21";
 /// Lets `fallbacks: "default"` re-run a refused request on another model.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
@@ -109,42 +112,6 @@ impl fmt::Display for OcrError {
 }
 
 impl std::error::Error for OcrError {}
-
-/// How to authenticate with the API.
-#[derive(Clone, PartialEq)]
-pub enum Credentials {
-    ApiKey(String),
-    /// An OAuth access token, e.g. from `ant auth print-credentials --access-token`.
-    OAuth(String),
-}
-
-impl fmt::Debug for Credentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ApiKey(_) => f.write_str("ApiKey(..)"),
-            Self::OAuth(_) => f.write_str("OAuth(..)"),
-        }
-    }
-}
-
-impl Credentials {
-    /// `ANTHROPIC_API_KEY`, else `ANTHROPIC_AUTH_TOKEN`.
-    pub fn from_env() -> Option<Self> {
-        Self::from_vars(|name| std::env::var(name).ok())
-    }
-
-    /// [`Self::from_env`] with the variables looked up by `get`. Blank values count as unset.
-    fn from_vars(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        let get = |name| {
-            get(name)
-                .map(|v| v.trim().to_owned())
-                .filter(|v| !v.is_empty())
-        };
-        get("ANTHROPIC_API_KEY")
-            .map(Self::ApiKey)
-            .or_else(|| get("ANTHROPIC_AUTH_TOKEN").map(Self::OAuth))
-    }
-}
 
 /// Request headers besides `content-type`.
 fn headers(credentials: &Credentials) -> Vec<(&'static str, String)> {
@@ -298,9 +265,7 @@ pub fn parse_response(
     crop: Crop,
     style: &MarkdownStyle,
 ) -> Result<Transcript, OcrError> {
-    if !(200..300).contains(&status) {
-        return Err(api_error(status, body));
-    }
+    check_status(status, body)?;
     let response: Value =
         serde_json::from_slice(body).map_err(|e| OcrError::Parse(e.to_string()))?;
     let source = Source {
@@ -396,6 +361,33 @@ pub fn send(credentials: &Credentials, body: &Value) -> Result<(u16, Vec<u8>), O
     Ok((status, response.bytes().map_err(network)?.to_vec()))
 }
 
+/// Whether the API accepts `credentials`, by listing models, which costs nothing. A rejected key
+/// is an [`OcrError::Api`] with status 401 or 403.
+pub fn check_key(credentials: &Credentials) -> Result<(), OcrError> {
+    let network = |e: reqwest::Error| OcrError::Network(e.to_string());
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(network)?;
+    let mut request = client.get(MODELS_URL);
+    for (name, value) in headers(credentials) {
+        request = request.header(name, value);
+    }
+    let response = request.send().map_err(network)?;
+    let status = response.status().as_u16();
+    let body = response.bytes().map_err(network)?;
+    check_status(status, &body)
+}
+
+/// The error a response with `status` and `body` describes, if it's an error.
+fn check_status(status: u16, body: &[u8]) -> Result<(), OcrError> {
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(api_error(status, body))
+    }
+}
+
 /// What's sent for `photo`: straightened and cropped to the page (to `corners`, if given), with no
 /// lighting fix, and no more than [`MAX_IMAGE_PIXELS`], so the API doesn't resize it and Claude's
 /// boxes are in its pixels. See <https://platform.claude.com/docs/en/build-with-claude/vision-coordinates#how-claude-resizes-and-pads-images>.
@@ -453,40 +445,17 @@ mod tests {
     use super::*;
     use image::Rgba;
 
-    fn vars<'a>(set: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<String> + 'a {
-        |name| {
-            set.iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| (*v).to_owned())
-        }
-    }
-
     #[test]
-    fn api_key_wins_over_auth_token() {
-        let both = [
-            ("ANTHROPIC_API_KEY", "key"),
-            ("ANTHROPIC_AUTH_TOKEN", "tok"),
-        ];
+    fn check_status_reads_api_errors() {
+        assert_eq!(check_status(200, b"{}"), Ok(()));
+        let body = br#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
         assert_eq!(
-            Credentials::from_vars(vars(&both)),
-            Some(Credentials::ApiKey("key".into()))
-        );
-        let token = [
-            ("ANTHROPIC_API_KEY", "  "),
-            ("ANTHROPIC_AUTH_TOKEN", "tok\n"),
-        ];
-        assert_eq!(
-            Credentials::from_vars(vars(&token)),
-            Some(Credentials::OAuth("tok".into()))
-        );
-        assert_eq!(Credentials::from_vars(vars(&[])), None);
-    }
-
-    #[test]
-    fn credentials_debug_hides_secret() {
-        assert_eq!(
-            format!("{:?}", Credentials::ApiKey("sk-secret".into())),
-            "ApiKey(..)"
+            check_status(401, body),
+            Err(OcrError::Api {
+                status: 401,
+                kind: "authentication_error".into(),
+                message: "invalid x-api-key".into(),
+            })
         );
     }
 

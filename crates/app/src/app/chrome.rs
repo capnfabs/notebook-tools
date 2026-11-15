@@ -120,7 +120,7 @@ impl NotebookApp {
         ui.horizontal(|ui| {
             self.show_status(ui);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let can_transcribe = self.transcriptions.can_send();
+                let can_transcribe = self.can(Command::Transcribe);
                 let can_show = self.transcriptions.can_show();
                 let mut export = self.command_button(ui, Command::ExportAs);
                 if !can_show {

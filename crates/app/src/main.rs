@@ -32,8 +32,9 @@ fn main() -> eframe::Result {
         &t!("app-name"),
         eframe::NativeOptions::default(),
         Box::new(|cc| {
-            let (transcriber, cache) = transcription();
-            let app = NotebookApp::with_transcription(transcriber, cache)
+            let (auth, cache) = transcription();
+            let app = NotebookApp::with_transcription(None, cache)
+                .with_auth(auth)
                 .with_save_path(save_dialog())
                 .with_file_picker(file_picker());
             let app = match Settings::default_path() {
@@ -95,32 +96,45 @@ fn file_picker() -> notebook_app::PickFiles {
     })
 }
 
-/// Transcribes with Claude when credentials are in the environment, caching what comes back.
-/// Without credentials, cached transcripts still load: see
-/// `decisions/2026-10-31-transcription-cache.md`.
-fn transcription() -> (Option<notebook_app::Transcriber>, Option<Cache>) {
+/// Transcribes with Claude, with credentials from the environment or the keychain, caching what
+/// comes back. Without credentials, cached transcripts still load, and transcribing asks for a
+/// key: see `decisions/2026-10-31-transcription-cache.md` and
+/// `decisions/2026-11-15-api-key-in-keychain.md`.
+fn transcription() -> (notebook_app::Auth, Option<Cache>) {
     use notebook_app::eval_log;
-    use notebook_core::claude_transcribe::{Credentials, fetch_page};
+    use notebook_core::claude_transcribe::{check_key, fetch_page};
+    use notebook_core::credentials::{self, Keychain};
+    use std::sync::Arc;
 
     let cache = Cache::default_dir().map(Cache::new);
     match &cache {
         Some(cache) => log::info!("Caching transcriptions in {}", cache.dir().display()),
         None => log::warn!("No cache directory: transcriptions won't be cached"),
     }
-    let Some(credentials) = Credentials::from_env() else {
-        log::info!("Transcription off: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN");
-        return (None, cache);
-    };
-    let fetch = move |bytes: &[u8], params: &_, corners, model| {
-        fetch_page(&credentials, bytes, params, corners, model)
-    };
-    let transcriber = notebook_app::Transcriber::new(std::sync::Arc::new(fetch));
-    // Comparing reads other models' cache entries: only worth it if someone's reading the log.
-    let transcriber = match &cache {
-        Some(cache) if eval_log::enabled() => {
-            transcriber.on_transcribe_completed(eval_log::log_comparisons(cache.clone()))
+    let logged_cache = cache.clone();
+    let make_transcriber = move |credentials| {
+        let fetch = move |bytes: &[u8], params: &_, corners, model| {
+            fetch_page(&credentials, bytes, params, corners, model)
+        };
+        let transcriber = notebook_app::Transcriber::new(Arc::new(fetch));
+        // Comparing reads other models' cache entries: only worth it if someone's reading the log.
+        match &logged_cache {
+            Some(cache) if eval_log::enabled() => {
+                transcriber.on_transcribe_completed(eval_log::log_comparisons(cache.clone()))
+            }
+            _ => transcriber,
         }
-        _ => transcriber,
     };
-    (Some(transcriber), cache)
+    let env = credentials::from_env();
+    match &env {
+        Some((_, source)) => log::info!("Transcribing with credentials from {source:?}"),
+        None => log::info!("No credentials in the environment: using the keychain's API key"),
+    }
+    let auth = notebook_app::Auth::new(
+        env,
+        Arc::new(Keychain),
+        Arc::new(check_key),
+        Arc::new(make_transcriber),
+    );
+    (auth, cache)
 }

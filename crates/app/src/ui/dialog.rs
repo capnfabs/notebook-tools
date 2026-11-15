@@ -81,6 +81,19 @@ pub fn buttons_saying(
     right_buttons(ui, affirmative, cancel, stakes, enabled)
 }
 
+/// One button, bottom right, for a dialog that only informs. Enter clicks it, unless something
+/// has the keyboard focus.
+pub fn only_button(ui: &mut egui::Ui, text: &str) -> Option<Choice> {
+    ui.add_space(PADDING / 2.0);
+    let unfocused = ui.memory(|m| m.focused().is_none());
+    let entered = unfocused && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let clicked = ui.add(button(ui, text, Stakes::Safe)).clicked();
+        (clicked || entered).then_some(Choice::Affirmative)
+    })
+    .inner
+}
+
 /// A button saying `text` that looks as `stakes` say: emphasised if safe, red if it destroys
 /// something.
 pub fn button(ui: &egui::Ui, text: &str, stakes: Stakes) -> egui::Button<'static> {

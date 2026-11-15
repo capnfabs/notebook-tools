@@ -42,3 +42,4 @@ In the order they were finished.
 - [x] [Audit repo and strip anything PII-ish](audit-and-strip.md)
 - [x] [HEIC through ImageIO on macOS](heic-distribution.md)
 - [x] [CI](ci.md)
+- [x] [Claude auth approach](claude-auth.md)

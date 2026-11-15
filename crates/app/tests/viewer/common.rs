@@ -6,17 +6,18 @@ use eframe::egui;
 use eframe::egui::{accesskit::Role, accesskit::Toggled};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Command, Event, Fetch, Load, NotebookApp, Transcriber, t};
+use notebook_app::{Auth, CheckKey, Command, Event, Fetch, Load, NotebookApp, Transcriber, t};
 use notebook_core::cache::Cache;
 use notebook_core::claude_transcribe::{Fetched, OcrError, image_to_send};
 use notebook_core::clean::{CleanParams, Crop};
+use notebook_core::credentials::{Credentials, MemoryStore, Source, Stored};
 use notebook_core::decode::decode;
 use notebook_core::geom::Quad;
 use notebook_core::loaded::Loaded;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -84,6 +85,40 @@ pub fn harness_with_cache(
 
 pub fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
     Harness::new_ui_state(|ui, app: &mut NotebookApp| app.ui(ui), app)
+}
+
+/// A harness whose credentials come from `env`, else a keychain holding `stored`, with keys
+/// checked by `check`. Pages transcribe to the recorded response, without a cache.
+pub struct Keyed {
+    pub harness: Harness<'static, NotebookApp>,
+    pub store: Arc<MemoryStore>,
+    /// The credentials each page was sent with.
+    pub sent_with: Arc<Mutex<Vec<Credentials>>>,
+}
+
+pub fn keyed(env: Option<(Credentials, Source)>, stored: Stored, check: CheckKey) -> Keyed {
+    let store = Arc::new(MemoryStore::new(stored));
+    let sent_with = Arc::new(Mutex::new(Vec::new()));
+    let sent = sent_with.clone();
+    let make = Arc::new(move |credentials: Credentials| {
+        let sent = sent.clone();
+        Transcriber::new(Arc::new(move |_, _, _, _| {
+            sent.lock().unwrap().push(credentials.clone());
+            Ok(recorded())
+        }))
+    });
+    let auth = Auth::new(env, store.clone(), check, make);
+    let harness = harness_for(NotebookApp::with_transcription(None, None).with_auth(auth));
+    Keyed {
+        harness,
+        store,
+        sent_with,
+    }
+}
+
+/// Accepts every key.
+pub fn any_key() -> CheckKey {
+    Arc::new(|_| Ok(()))
 }
 
 /// Every page transcribes to the recorded response, without a cache.

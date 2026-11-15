@@ -126,7 +126,7 @@ impl NotebookApp {
         } else if self.transcriptions.checking(name) {
             spinner(ui, &t!("checking-cache", name = name.as_str()));
             false
-        } else if !self.transcriptions.can_send() {
+        } else if !self.can(Command::Transcribe) {
             ui.label(t!("not-cached", name = name.as_str()));
             ui.label(t!("no-transcriber-hint"));
             false
