@@ -4,6 +4,7 @@
 See [done/index.md](done/index.md).
 
 ## M0
+- [ ] [CI](ci.md)
 - [ ] [macOS app bundle and signing](macos-app-bundle.md)
 - [ ] [Relink moved photos](relink-photos.md)
 - [ ] [Claude auth approach](claude-auth.md)
