@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs a command with a fresh Claude access token from `ant` in ANTHROPIC_AUTH_TOKEN, and no
+# For the live core tests, which only read the environment (the app finds `ant` itself): runs a
+# command with a fresh Claude access token from `ant` in ANTHROPIC_AUTH_TOKEN, and no
 # ANTHROPIC_API_KEY (which would win), so requests bill your `ant auth login` account.
 set -euo pipefail
 

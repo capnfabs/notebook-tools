@@ -10,7 +10,7 @@ The app is the `notebook_app` package; its binary is called `notebook-tools`.
 ## Run
 
 ```sh
-# run w/ logs (debug + eval) and a fresh anthropic token from `ant`
+# run w/ logs (debug + eval).
 scripts/run.sh
 
 # the same without llm transcription (and therefore without spending money).

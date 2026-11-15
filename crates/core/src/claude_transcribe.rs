@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::clean::{CleanParams, Crop, crop_to_page};
-use crate::credentials::Credentials;
+use crate::credentials::{Credentials, Login};
 use crate::decode::decode;
 use crate::geom::{Quad, rect_corners};
 use crate::imaging::{jpeg, max_side_within, shrink_to_fit};
@@ -65,6 +65,8 @@ pub enum OcrError {
     Decode(String),
     /// The API couldn't be reached.
     Network(String),
+    /// No credentials to send the page with, as when `ant` is logged out: why.
+    Credentials(String),
     /// The API answered with an error status.
     Api {
         status: u16,
@@ -87,6 +89,7 @@ impl fmt::Display for OcrError {
         match self {
             Self::Decode(err) => write!(f, "couldn't decode the page: {err}"),
             Self::Network(err) => write!(f, "couldn't reach Claude: {err}"),
+            Self::Credentials(err) => write!(f, "no Claude credentials: {err}"),
             Self::Api {
                 status,
                 kind,
@@ -425,9 +428,9 @@ impl Fetched {
 }
 
 /// Sends a page to `model` from its file's bytes, cropped to `corners` if given (see
-/// [`image_to_send`]).
+/// [`image_to_send`]), with `login`'s credentials, telling it if they're rejected.
 pub fn fetch_page(
-    credentials: &Credentials,
+    login: &Login,
     page_bytes: &[u8],
     params: &CleanParams,
     corners: Option<Quad>,
@@ -436,7 +439,11 @@ pub fn fetch_page(
     let img = decode(page_bytes).map_err(|e| OcrError::Decode(e.to_string()))?;
     let (page, crop) = image_to_send(&img, params, corners);
     let body = request_body(&encode_jpeg(&page), model, EFFORT);
-    let (status, body) = send(credentials, &body)?;
+    let credentials = login.credentials().map_err(OcrError::Credentials)?;
+    let (status, body) = send(&credentials, &body)?;
+    if status == 401 {
+        login.rejected();
+    }
     Ok(Fetched { status, body, crop })
 }
 

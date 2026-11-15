@@ -1,13 +1,14 @@
-//! The command line: `notebook-tools [project.notebook | --clear-caches-only]`. See
-//! `decisions/2026-10-31-open-by-drop-and-argument.md` and
-//! `decisions/2026-11-01-manual-cache-clearing.md`. The project opening is tested in
+//! The command line: `notebook-tools [--offline] [project.notebook] | --clear-caches-only`. See
+//! `decisions/2026-10-31-open-by-drop-and-argument.md`,
+//! `decisions/2026-11-01-manual-cache-clearing.md` and
+//! `decisions/2026-11-15-ant-login-fallback.md`. The project opening is tested in
 //! `viewer/project.rs`.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use notebook_app::cli::{CLEAR_CACHES, Launch, clear_caches, launch};
+use notebook_app::cli::{CLEAR_CACHES, Launch, NO_KEYCHAIN, OFFLINE, clear_caches, launch};
 use notebook_app::t;
 use notebook_core::page::{Page, Pages};
 use notebook_core::project;
@@ -24,19 +25,32 @@ fn test_dir(test: &str) -> TempDir {
 fn error(args: &[&Path]) -> String {
     let args: Vec<OsString> = args.iter().map(|a| a.as_os_str().to_owned()).collect();
     match launch(args) {
-        Ok(Launch::Open(opened)) => panic!("opened {:?}", opened.map(|(path, _)| path)),
+        Ok(Launch::Open { project, .. }) => {
+            panic!("opened {:?}", project.map(|(path, _)| path))
+        }
         Ok(Launch::ClearCaches) => panic!("cleared the caches"),
         Err(err) => err,
     }
 }
 
-/// The project the command line `args` open, if any.
-fn opened(args: impl IntoIterator<Item = OsString>) -> Option<(PathBuf, project::Opened)> {
+/// The project the command line `args` open, if any, and whether it's offline.
+fn launched(
+    args: impl IntoIterator<Item = OsString>,
+) -> (Option<(PathBuf, project::Opened)>, bool) {
     match launch(args) {
-        Ok(Launch::Open(opened)) => opened,
+        Ok(Launch::Open {
+            project, offline, ..
+        }) => (project, offline),
         Ok(Launch::ClearCaches) => panic!("cleared the caches"),
         Err(err) => panic!("{err}"),
     }
+}
+
+/// The project the command line `args` open, if any, online.
+fn opened(args: impl IntoIterator<Item = OsString>) -> Option<(PathBuf, project::Opened)> {
+    let (project, offline) = launched(args);
+    assert!(!offline);
+    project
 }
 
 /// A project at `dir/notes.notebook` with one page.
@@ -119,6 +133,56 @@ fn clear_caches_only_must_be_alone() {
     let dir = test_dir("clear_alone");
     let project = saved_project(dir.path());
     assert_eq!(error(&[Path::new(CLEAR_CACHES), &project]), t!("cli-usage"));
+}
+
+#[test]
+fn offline_goes_alone_or_with_a_project() {
+    let (project, offline) = launched([OsString::from(OFFLINE)]);
+    assert!(project.is_none() && offline);
+
+    let dir = test_dir("offline");
+    let path = saved_project(dir.path());
+    for args in [
+        [OFFLINE.into(), path.clone().into_os_string()],
+        [path.clone().into_os_string(), OFFLINE.into()],
+    ] {
+        let (project, offline) = launched(args);
+        assert_eq!(project.unwrap().0, path);
+        assert!(offline);
+    }
+
+    let offline = Path::new(OFFLINE);
+    assert_eq!(error(&[offline, offline]), t!("cli-usage"));
+    assert_eq!(error(&[offline, Path::new(CLEAR_CACHES)]), t!("cli-usage"));
+}
+
+/// Development builds, as tests are, take `--no-keychain`, with the other flags or a project.
+#[test]
+fn no_keychain_goes_with_anything_but_clearing_the_caches() {
+    let no_keychain = |args: Vec<OsString>| match launch(args) {
+        Ok(Launch::Open {
+            no_keychain,
+            offline,
+            ..
+        }) => (no_keychain, offline),
+        _ => panic!("didn't start"),
+    };
+    assert_eq!(no_keychain(vec![]), (false, false));
+    assert_eq!(no_keychain(vec![NO_KEYCHAIN.into()]), (true, false));
+    assert_eq!(
+        no_keychain(vec![OFFLINE.into(), NO_KEYCHAIN.into()]),
+        (true, true)
+    );
+    let dir = test_dir("no_keychain");
+    let path = saved_project(dir.path());
+    assert_eq!(
+        no_keychain(vec![path.into_os_string(), NO_KEYCHAIN.into()]),
+        (true, false)
+    );
+
+    let flag = Path::new(NO_KEYCHAIN);
+    assert_eq!(error(&[flag, flag]), t!("cli-usage"));
+    assert_eq!(error(&[flag, Path::new(CLEAR_CACHES)]), t!("cli-usage"));
 }
 
 #[test]

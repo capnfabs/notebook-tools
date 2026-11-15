@@ -1,12 +1,18 @@
 //! Who pays for transcribing: an API key or OAuth token from the environment, else an API key the
-//! user saved in the OS keychain. The environment wins, and the keychain isn't read while it's
-//! set, so development builds (which change with every build, and so ask again for the keychain)
-//! don't ask. Signing in with a Claude.ai subscription isn't allowed for apps like this one.
+//! user saved in the OS keychain, else the [`ant`] command line's login. Only the first of these
+//! found is used: if it fails, the next isn't tried. The keychain isn't read while the environment
+//! has credentials: development builds are signed anew with every build, so macOS asks for access
+//! again each time. Signing in with a Claude.ai subscription isn't allowed for apps like this one.
 //!
-//! See `decisions/2026-11-15-api-key-in-keychain.md`.
+//! See `decisions/2026-11-15-api-key-in-keychain.md` and
+//! `decisions/2026-11-15-ant-login-fallback.md`.
+
+pub mod ant;
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use ant::Ant;
 
 /// The keychain entry's service: the app's bundle identifier.
 pub const SERVICE: &str = "net.ftamp.notebook-tools";
@@ -45,6 +51,44 @@ pub enum Source {
     EnvApiKey,
     EnvAuthToken,
     Keychain,
+    Ant,
+}
+
+/// Where each request's credentials come from: the same every time, or `ant`'s login, whose
+/// token is asked for again when it's near expiry or rejected.
+#[derive(Clone)]
+pub enum Login {
+    Fixed(Credentials),
+    Ant(Arc<Ant>),
+}
+
+impl fmt::Debug for Login {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed(credentials) => f.debug_tuple("Fixed").field(credentials).finish(),
+            Self::Ant(_) => f.write_str("Ant"),
+        }
+    }
+}
+
+impl Login {
+    /// The credentials to send the next request with, or why there are none.
+    pub fn credentials(&self) -> Result<Credentials, String> {
+        match self {
+            Self::Fixed(credentials) => Ok(credentials.clone()),
+            Self::Ant(ant) => ant
+                .login()
+                .map(|login| Credentials::OAuth(login.access_token)),
+        }
+    }
+
+    /// The API rejected [`Self::credentials`]: `ant`'s token is asked for again next time. Nothing
+    /// else is tried instead.
+    pub fn rejected(&self) {
+        if let Self::Ant(ant) = self {
+            ant.forget();
+        }
+    }
 }
 
 /// `ANTHROPIC_API_KEY`, else `ANTHROPIC_AUTH_TOKEN`.
@@ -135,7 +179,8 @@ impl KeyStore for Keychain {
     }
 }
 
-/// A key store in memory, for tests: it starts holding what it's given, and can be made to fail.
+/// A key store in memory, for tests, and as no keychain at all for the app's `--no-keychain`: it
+/// starts holding what it's given, and can be made to fail.
 pub struct MemoryStore {
     stored: Mutex<Stored>,
     /// Why saving or removing fails, if it does.
@@ -224,6 +269,26 @@ mod tests {
             Some((Credentials::OAuth("tok".into()), Source::EnvAuthToken))
         );
         assert_eq!(from_vars(vars(&[])), None);
+    }
+
+    #[test]
+    fn ant_login_is_asked_again_once_rejected() {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = runs.clone();
+        let ant = Ant::new(Box::new(move || {
+            let n = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(format!(r#"{{"access_token":"tok-{n}"}}"#).into_bytes())
+        }));
+        let login = Login::Ant(Arc::new(ant));
+        assert_eq!(login.credentials(), Ok(Credentials::OAuth("tok-0".into())));
+        assert_eq!(login.credentials(), Ok(Credentials::OAuth("tok-0".into())));
+        login.rejected();
+        assert_eq!(login.credentials(), Ok(Credentials::OAuth("tok-1".into())));
+
+        let fixed = Login::Fixed(Credentials::ApiKey("key".into()));
+        fixed.rejected();
+        assert_eq!(fixed.credentials(), Ok(Credentials::ApiKey("key".into())));
+        assert_eq!(format!("{fixed:?}"), "Fixed(ApiKey(..))");
     }
 
     #[test]

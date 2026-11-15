@@ -10,7 +10,8 @@ use notebook_app::{Auth, CheckKey, Command, Event, Fetch, Load, NotebookApp, Tra
 use notebook_core::cache::Cache;
 use notebook_core::claude_transcribe::{Fetched, OcrError, image_to_send};
 use notebook_core::clean::{CleanParams, Crop};
-use notebook_core::credentials::{Credentials, MemoryStore, Source, Stored};
+use notebook_core::credentials::ant::{Ant, LoggedIn};
+use notebook_core::credentials::{Credentials, Login, MemoryStore, Source, Stored};
 use notebook_core::decode::decode;
 use notebook_core::geom::Quad;
 use notebook_core::loaded::Loaded;
@@ -88,7 +89,7 @@ pub fn harness_for(app: NotebookApp) -> Harness<'static, NotebookApp> {
 }
 
 /// A harness whose credentials come from `env`, else a keychain holding `stored`, with keys
-/// checked by `check`. Pages transcribe to the recorded response, without a cache.
+/// checked by `check`, and no `ant`. Pages transcribe to the recorded response, without a cache.
 pub struct Keyed {
     pub harness: Harness<'static, NotebookApp>,
     pub store: Arc<MemoryStore>,
@@ -97,23 +98,43 @@ pub struct Keyed {
 }
 
 pub fn keyed(env: Option<(Credentials, Source)>, stored: Stored, check: CheckKey) -> Keyed {
+    keyed_with_ant(env, stored, None, check)
+}
+
+/// [`keyed`], with `ant`'s login last.
+pub fn keyed_with_ant(
+    env: Option<(Credentials, Source)>,
+    stored: Stored,
+    ant: Option<LoggedIn>,
+    check: CheckKey,
+) -> Keyed {
     let store = Arc::new(MemoryStore::new(stored));
     let sent_with = Arc::new(Mutex::new(Vec::new()));
     let sent = sent_with.clone();
-    let make = Arc::new(move |credentials: Credentials| {
+    let make = Arc::new(move |login: Login| {
         let sent = sent.clone();
         Transcriber::new(Arc::new(move |_, _, _, _| {
-            sent.lock().unwrap().push(credentials.clone());
+            sent.lock().unwrap().push(login.credentials().unwrap());
             Ok(recorded())
         }))
     });
-    let auth = Auth::new(env, store.clone(), check, make);
+    let auth = Auth::new(env, store.clone(), ant, check, make);
     let harness = harness_for(NotebookApp::with_transcription(None, None).with_auth(auth));
     Keyed {
         harness,
         store,
         sent_with,
     }
+}
+
+/// An `ant` logged in as someone@example.com in Example Org, whose token is `token`.
+pub fn logged_in_ant(token: &str) -> Option<LoggedIn> {
+    let json = format!(
+        r#"{{"access_token":"{token}","organization_name":"Example Org","account_email":"someone@example.com"}}"#
+    );
+    let ant = Ant::new(Box::new(move || Ok(json.clone().into_bytes())));
+    let login = ant.login().unwrap();
+    Some((Arc::new(ant), login))
 }
 
 /// Accepts every key.

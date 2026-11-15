@@ -228,7 +228,8 @@ photo-unreadable = Couldn't read { $path }: { $error }. { $name }'s page is kept
 ## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`
 ## and `decisions/2026-11-01-manual-cache-clearing.md`.
 
-cli-usage = Usage: { app-name } [PROJECT.notebook | --clear-caches-only]
+cli-usage = Usage: { app-name } [--offline] [PROJECT.notebook] | { app-name } --clear-caches-only
+cli-no-keychain-release = --no-keychain is only for development builds.
 cli-not-a-project = { $path } isn't a .notebook project. { cli-usage }
 cli-no-cache-dir = No cache directory on this system
 cli-no-cache = No cache at { $dir }
@@ -288,6 +289,9 @@ settings-api-key-none = Add one to enable transcription.
 settings-api-key-keychain = { $key }, saved in the keychain
 settings-api-key-env = { $key }, from { $variable }
 settings-api-key-env-note = The environment's credentials are used over a saved key while they're set, but you can still enter a key for future use.
+# The login of the `ant` command line, found at launch.
+settings-api-key-ant = Logged in with `ant` as { $email } ({ $org })
+settings-api-key-ant-note = You can enter an API key to use that instead.
 settings-api-key-enter = Enter Key…
 settings-api-key-remove = Remove
 settings-api-key-remove-failed = Couldn't remove the API key from the keychain: { $error }
@@ -315,6 +319,8 @@ api-key-close = OK
 
 ocr-decode = couldn't decode the page: { $error }
 ocr-network = couldn't reach Claude: { $error }
+# Getting a token from the `ant` command line failed; $error is what it said.
+ocr-credentials = couldn't get a token from ant: { $error }. Try `ant auth login`, or enter an API key in Settings.
 ocr-api = Claude API error { $status } ({ $kind }): { $message }
 ocr-refused = Claude declined to transcribe this page
 ocr-refused-category = Claude declined to transcribe this page ({ $category })

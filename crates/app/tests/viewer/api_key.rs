@@ -1,5 +1,6 @@
-//! Asking for a Claude API key, keeping it in the keychain, and Settings' API key section. See
-//! `decisions/2026-11-15-api-key-in-keychain.md`.
+//! Asking for a Claude API key, keeping it in the keychain, using `ant`'s login without one, and
+//! Settings' API key section. See `decisions/2026-11-15-api-key-in-keychain.md` and
+//! `decisions/2026-11-15-ant-login-fallback.md`.
 
 use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
@@ -298,6 +299,81 @@ fn settings_show_the_environments_key_and_read_the_keychain_only_when_asked() {
     press_command(harness, Key::T);
     step_until(harness, "# Thurs 23 Oct");
     assert_eq!(*app.sent_with.lock().unwrap(), [env.0]);
+}
+
+/// Without the environment's credentials or a saved key, pages go with `ant`'s login, without
+/// asking for a key; Settings says whose it is.
+#[test]
+fn a_logged_in_ant_transcribes_without_asking() {
+    let ant = logged_in_ant("ant-token");
+    let mut app = keyed_with_ant(None, Stored::Empty, ant, any_key());
+    let harness = &mut app.harness;
+    drop_files(harness, &[("a.png", page_photo())]);
+    press_command(harness, Key::T);
+    assert!(!asking(harness));
+    step_until(harness, "# Thurs 23 Oct");
+    assert_eq!(
+        *app.sent_with.lock().unwrap(),
+        [Credentials::OAuth("ant-token".into())]
+    );
+
+    open_settings(harness);
+    let account = t!(
+        "settings-api-key-ant",
+        email = "someone@example.com",
+        org = "Example Org"
+    );
+    assert!(harness.query_by_label(&account).is_some());
+    assert!(
+        harness
+            .query_by_label(&t!("settings-api-key-ant-note"))
+            .is_some()
+    );
+    assert!(disabled(harness, &t!("settings-api-key-remove")));
+}
+
+/// A saved key takes over from `ant`, and removing it goes back to `ant`: whichever comes first
+/// is used, and nothing else is tried.
+#[test]
+fn a_saved_key_takes_over_from_ant_until_removed() {
+    let ant = logged_in_ant("ant-token");
+    let mut app = keyed_with_ant(None, Stored::Empty, ant, any_key());
+    let harness = &mut app.harness;
+    drop_files(harness, &[("a.png", page_photo()), ("b.png", page_photo())]);
+    open_settings(harness);
+    harness.get_by_label(&t!("settings-api-key-enter")).click();
+    settle(harness);
+    enter_key(harness, KEY);
+    save_key(harness);
+    let saved = t!("settings-api-key-keychain", key = "sk-ant-…a1B2");
+    assert!(harness.query_by_label(&saved).is_some());
+    press(harness, Modifiers::NONE, Key::Escape);
+    press_command(harness, Key::T);
+    step_until(harness, "# Thurs 23 Oct");
+
+    open_settings(harness);
+    harness.get_by_label(&t!("settings-api-key-remove")).click();
+    settle(harness);
+    harness
+        .get_by_label(&t!("confirm-remove-key-button"))
+        .click();
+    settle(harness);
+    let account = t!(
+        "settings-api-key-ant",
+        email = "someone@example.com",
+        org = "Example Org"
+    );
+    assert!(harness.query_by_label(&account).is_some());
+    press(harness, Modifiers::NONE, Key::Escape);
+    click_command(harness, Command::TranscribeAll);
+    step_until_transcribed(harness);
+    assert_eq!(
+        *app.sent_with.lock().unwrap(),
+        [
+            Credentials::ApiKey(KEY.into()),
+            Credentials::OAuth("ant-token".into())
+        ]
+    );
 }
 
 /// A new or opened project starts the app afresh, but keeps where its credentials come from.

@@ -198,7 +198,7 @@ pub fn variable(source: Source) -> Option<&'static str> {
     match source {
         Source::EnvApiKey => Some("ANTHROPIC_API_KEY"),
         Source::EnvAuthToken => Some("ANTHROPIC_AUTH_TOKEN"),
-        Source::Keychain => None,
+        Source::Keychain | Source::Ant => None,
     }
 }
 

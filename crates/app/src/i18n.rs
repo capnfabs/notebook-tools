@@ -48,6 +48,7 @@ pub fn ocr_error(err: &OcrError) -> String {
     match err {
         OcrError::Decode(error) => t!("ocr-decode", error = error.as_str()),
         OcrError::Network(error) => t!("ocr-network", error = error.as_str()),
+        OcrError::Credentials(error) => t!("ocr-credentials", error = error.as_str()),
         OcrError::Api {
             status,
             kind,

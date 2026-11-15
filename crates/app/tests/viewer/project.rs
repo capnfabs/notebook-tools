@@ -478,8 +478,11 @@ fn a_project_named_on_the_command_line_starts_open() {
     save_project(dir.path(), &dialogs, &["a.png", "b.png"]);
     std::fs::remove_file(dir.path().join("a.png")).unwrap();
 
-    let notebook_app::cli::Launch::Open(Some((opened_path, opened))) =
-        notebook_app::cli::launch([path.clone().into()]).unwrap()
+    let notebook_app::cli::Launch::Open {
+        project: Some((opened_path, opened)),
+        offline: false,
+        ..
+    } = notebook_app::cli::launch([path.clone().into()]).unwrap()
     else {
         panic!("didn't open {}", path.display());
     };

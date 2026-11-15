@@ -43,3 +43,4 @@ In the order they were finished.
 - [x] [HEIC through ImageIO on macOS](heic-distribution.md)
 - [x] [CI](ci.md)
 - [x] [Claude auth approach](claude-auth.md)
+- [x] [Claude auth: `ant` login as a fallback](claude-auth-ant.md)

@@ -318,12 +318,8 @@ impl NotebookApp {
     /// The credentials pages are sent with, for Settings, if the app has an [`Auth`].
     fn key_summary(&self) -> Option<KeySummary> {
         let auth = self.auth.as_ref()?;
-        let active = auth.current().map(|(credentials, source)| {
-            let masked = notebook_core::credentials::mask(credentials.secret());
-            (source, masked)
-        });
         Some(KeySummary {
-            active,
+            active: auth.active(),
             saved: auth.has_saved_key(),
         })
     }

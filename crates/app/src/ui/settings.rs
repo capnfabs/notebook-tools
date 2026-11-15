@@ -7,10 +7,10 @@
 //! `decisions/2026-11-01-manual-cache-clearing.md` and
 //! `decisions/2026-11-15-api-key-in-keychain.md`.
 
+use crate::auth::Active;
 use eframe::egui;
 use egui::{RichText, Sense, Stroke, TextStyle, Ui, Vec2};
 use notebook_core::cache::Cache;
-use notebook_core::credentials::Source;
 use notebook_core::llm_model::Model;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::settings::Settings;
@@ -63,8 +63,8 @@ pub enum Outcome {
 
 /// The credentials pages are sent with, for the dialog to show.
 pub struct KeySummary {
-    /// Where they came from, and the key or token [`notebook_core::credentials::mask`]ed.
-    pub active: Option<(Source, String)>,
+    /// Where they come from, if anywhere.
+    pub active: Option<Active>,
     /// Whether the keychain is known to hold a key.
     pub saved: bool,
 }
@@ -246,26 +246,32 @@ enum KeyAction {
 /// Which credentials pages are sent with, and buttons to enter a key or remove the saved one.
 fn api_key_section(ui: &mut Ui, key: &KeySummary) -> Option<KeyAction> {
     ui.label(RichText::new(t!("settings-api-key")).strong());
-    let env = match &key.active {
+    let note = match &key.active {
         None => {
             ui.label(t!("settings-api-key-none"));
-            false
+            None
         }
-        Some((source, masked)) => {
-            let text = match api_key::variable(*source) {
-                Some(variable) => t!("settings-api-key-env", key = masked, variable = variable),
-                None => t!("settings-api-key-keychain", key = masked),
-            };
-            ui.label(text);
-            *source != Source::Keychain
+        Some(Active::Key { source, masked }) => match api_key::variable(*source) {
+            Some(variable) => {
+                ui.label(t!(
+                    "settings-api-key-env",
+                    key = masked,
+                    variable = variable
+                ));
+                Some(t!("settings-api-key-env-note"))
+            }
+            None => {
+                ui.label(t!("settings-api-key-keychain", key = masked));
+                None
+            }
+        },
+        Some(Active::Ant { email, org }) => {
+            ui.label(t!("settings-api-key-ant", email = email, org = org));
+            Some(t!("settings-api-key-ant-note"))
         }
     };
-    if env {
-        ui.label(
-            RichText::new(t!("settings-api-key-env-note"))
-                .small()
-                .weak(),
-        );
+    if let Some(note) = note {
+        ui.label(RichText::new(note).small().weak());
     }
     ui.add_space(4.0);
     ui.horizontal(|ui| {

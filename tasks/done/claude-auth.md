@@ -6,4 +6,4 @@ What I _really_ want is something as _close_ to zero-configuration for an end-us
 
 Open: an API key in the OS keychain (`keyring`), and whether "log in with Claude.ai" in the app is possible at all (likely not for third-party apps without Anthropic approval — verify).
 
-Done: `decisions/2026-11-15-api-key-in-keychain.md`; `ant` fallback split into `tasks/claude-auth-ant.md`.
+Done: `decisions/2026-11-15-api-key-in-keychain.md`; `ant` fallback split into `tasks/done/claude-auth-ant.md`.
