@@ -12,7 +12,7 @@ Fields, chosen from the user's library (17.6k photos, 2026-11-15):
 
 Save them in `Photo` as optional fields, so older projects still open (no `PROJECT_VERSION` bump if older builds ignore unknown fields; check). Read them when a page is added; fill them in for found photos when a project opens (that alone isn't an unsaved change). Read metadata only; don't decode the image.
 
-PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO gives it in `kCGImagePropertyMakerAppleDictionary`, keyed by tag number: PhotoIdentifier is `0x002b` (43), a UUID string (`exiftool -a -G1 -H -Apple:PhotoIdentifier FILE` on an iPhone HEIC); elsewhere it needs a small MakerNote parser. Mac-only is fine here: off mac the fields stay empty and relink falls back to the hash, with the EXIF tests mac-only; `non-mac-heic.md` fills it in.
+PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO gives it in `kCGImagePropertyMakerAppleDictionary`, keyed by tag number: PhotoIdentifier is `0x002b` (43), a UUID string (`exiftool -a -G1 -H -Apple:PhotoIdentifier FILE` on an iPhone HEIC); elsewhere it needs a small MakerNote parser. Let's try to do it on Mac _and_ non-mac platforms but if it's too hard `non-mac-heic.md` can pick up the slack.
 
 ## 2. Relink one page
 - The placeholder gets **Relink…**: a file chooser that opens in the photo's old folder, or its nearest parent that still exists. No automatic search when a project opens.
