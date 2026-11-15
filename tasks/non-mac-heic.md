@@ -1,3 +1,5 @@
 # HEIC on non-mac builds
 
 For the first non-mac build (`decisions/2026-11-01-heic-through-imageio.md`): ship libheif + libde265 as separate shared libraries, built without x265, with LGPL notices and source offer. Fedora strips libde265 from its libheif for patent reasons; Windows could use WIC + HEVC extension instead. `scripts/check-linux.sh` builds and tests the libheif decoder on Linux (`decisions/2026-11-15-local-linux-ci.md`).
+
+EXIF too: `relink-photos.md` remembers each photo's PhotoIdentifier (Apple MakerNote tag `0x002b`), DateTimeOriginal + SubSecTimeOriginal + OffsetTimeOriginal and ImageUniqueID, read through ImageIO on mac. Off mac, read them from libheif's `Exif` metadata block (`heif_image_handle_get_metadata`; the block starts with a 4-byte offset to the TIFF header) and from a JPEG's APP1, through one EXIF parser for both (e.g. `kamadak-exif`'s raw reader). Most EXIF readers don't parse Apple's MakerNote, so PhotoIdentifier needs a small parser of our own: a `Apple iOS\0` header, then an IFD. If relink shipped with EXIF mac-only, fill it in here; the same tests as relink's EXIF ones should then pass in `scripts/check-linux.sh`.
