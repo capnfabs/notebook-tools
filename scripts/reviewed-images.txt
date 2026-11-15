@@ -1,8 +1,14 @@
 # Images a human has checked show nothing personal, as `<git blob id> <path>`.
 # Only the user adds to this, with `scripts/check-images.sh --approve PATH`.
+02c94aa86e34b3b69bae5238d128f481f3aabe10 crates/core/tests/fixtures/page-grey-table.heic
+ca85011702be5f84ea875b67928668f57b866252 crates/core/tests/fixtures/page-grey-table.jpg
 5f902b37e7048ad109225e5b05fa151e5d45053c crates/core/tests/fixtures/page-rotated.heic
 3f3fac06abfef8bee055b8994817203eeafc2fb1 crates/core/tests/fixtures/page-rotated.jpg
 39777615d624feae4d3bf2c58303e120fdf5ac2f crates/core/tests/fixtures/spread-wood-1.jpg
 a68bed642d5217ba436c252e182004924757a7c8 crates/core/tests/fixtures/spread-wood-2.jpg
+d1e523e401e9d1d4d378575bc3263ef5a07febb2 crates/core/tests/golden/page-grey-table.png
 3bf367158db22cb32c9a8360ce47252323f97c4a crates/core/tests/golden/spread-wood-1.png
 f4cc631f95e97bfc15e401bfca7b146d06ce83a3 crates/core/tests/golden/spread-wood-2.png
+14bec1f0b17f0b6c42e3d728af5a1ec2b11adf89 tasks/done/status-ui/goal.png
+70282b75c5c9850bfc88e5ef5f242aebdc2f303a tasks/done/status-ui/lines-cut-off.png
+8304c13f2f41e12823c16c70361183efa53b29fb tasks/done/status-ui/missed-page.png

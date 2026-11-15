@@ -86,6 +86,24 @@ check && fail "GPS accepted"
 expect_error GPSLatitude
 expect_error "exiftool -all="; ok
 
+# A HEIC gets its own strip hint (`-all=` breaks it for ImageIO), which clears its metadata.
+# Making one needs macOS's sips.
+if command -v sips >/dev/null; then
+    fresh_repo heic
+    image "$RED_PNG" a.png
+    sips -s format heic a.png --out a.heic >/dev/null && rm a.png
+    exiftool -q -overwrite_original -GPSLatitude=51.75 -GPSLatitudeRef=N a.heic
+    git add a.heic
+    scripts/check-images.sh --approve a.heic >/dev/null 2>"$root/err" && fail "approved a HEIC with GPS"
+    expect_error GPSLatitude
+    expect_error "exiftool -gps:all= -xmp:all= -exif:all= -makernotes:all="
+    grep -qF -- "exiftool -all=" "$root/err" && fail "HEIC told to use -all="
+    ok
+    exiftool -q -overwrite_original -gps:all= -xmp:all= -exif:all= -makernotes:all= a.heic
+    git add a.heic
+    scripts/check-images.sh --approve a.heic >/dev/null 2>"$root/err" || fail "stripped HEIC refused"; ok
+fi
+
 # Rotation and colour space are allowed; the rest of EXIF isn't.
 fresh_repo rotation
 image "$RED_PNG" a.png

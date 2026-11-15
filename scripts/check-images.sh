@@ -72,7 +72,13 @@ images() {
 
 strip_hint() {
     echo "  strip it (keeps rotation and colour profile):" >&2
-    echo "  exiftool -all= --icc_profile:all -tagsfromfile @ -Orientation -ColorSpace -overwrite_original '$1'" >&2
+    if echo "$1" | grep -qiE '\.hei[cf]$'; then
+        # A HEIC's rotation is its irot box, not EXIF, so EXIF can all go. `-all=` would leave
+        # a file ImageIO can't decode.
+        echo "  exiftool -gps:all= -xmp:all= -exif:all= -makernotes:all= -overwrite_original '$1'" >&2
+    else
+        echo "  exiftool -all= --icc_profile:all -tagsfromfile @ -Orientation -ColorSpace -overwrite_original '$1'" >&2
+    fi
 }
 
 if [ "${1-}" = --approve ]; then

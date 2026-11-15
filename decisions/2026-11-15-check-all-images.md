@@ -1,0 +1,3 @@
+# check.sh checks every committed image
+
+`scripts/check.sh` runs `scripts/check-images.sh --all`, so every image in the index must be approved and free of metadata, not only the ones being committed. This replaced `fixtures_have_no_metadata` in `crates/core/tests/golden.rs`, a byte search for EXIF that disagreed with the hook's rules: it rejected the rotation EXIF the hook allows, its advice (`exiftool -all=`) dropped a JPEG's rotation and colour profile and breaks a HEIC, and it misread a stripped HEIC's empty Exif item as EXIF. Now one script, using exiftool, decides. It also caught images committed before the hook. Reason: unquestioned agent recommendation.

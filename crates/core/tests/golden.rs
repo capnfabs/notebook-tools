@@ -8,7 +8,7 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use common::{fixtures_dir, photo};
+use common::photo;
 use image::{Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use notebook_core::clean::{CleanParams, clean, detect_corners};
@@ -77,30 +77,6 @@ fn draw_corners(img: &RgbaImage, detected: Option<&Quad>, labelled: &Quad) -> Rg
         draw(quad, Rgba([255, 0, 0, 255]));
     }
     out
-}
-
-#[test]
-fn fixtures_have_no_metadata() {
-    for entry in std::fs::read_dir(fixtures_dir()).unwrap() {
-        let path = entry.unwrap().path();
-        // Photos live at the top level; subdirectories hold other fixtures, like API responses.
-        if path.is_dir() {
-            continue;
-        }
-        let bytes = std::fs::read(&path).unwrap();
-        // EXIF (which holds GPS location) is "Exif\0\0" then a TIFF header, in a JPEG's APP1
-        // segment or a HEIC's Exif item. A stripped HEIC keeps an empty Exif item, whose entry in
-        // the item list also reads "Exif\0\0", but no TIFF header follows it.
-        let exif =
-            |w: &[u8]| w.starts_with(b"Exif\0\0") && (&w[6..] == b"II*\0" || &w[6..] == b"MM\0*");
-        assert!(
-            !bytes.windows(10).any(exif),
-            "{} has EXIF metadata; strip it with `exiftool -all= -overwrite_original` (for a \
-             HEIC, `-gps:all= -xmp:all= -exif:all= -makernotes:all=`: `-all=` breaks it for \
-             ImageIO)",
-            path.display()
-        );
-    }
 }
 
 #[test]
