@@ -11,6 +11,7 @@ use notebook_core::clean::CleanParams;
 use notebook_core::decode::DecodeError;
 use notebook_core::geom::Quad;
 use notebook_core::loaded::Loaded;
+use notebook_core::page::PageId;
 use notebook_core::project;
 
 use crate::jobs::Jobs;
@@ -84,15 +85,12 @@ pub fn is_project(path: &Path) -> bool {
 pub type Load =
     Arc<dyn Fn(&[u8], &CleanParams, Option<Quad>) -> Result<Loaded, DecodeError> + Send + Sync>;
 
-/// A page's name and bytes, and what loading them made.
-pub(crate) type LoadOutcome = (String, Arc<[u8]>, Result<Loaded, String>);
-
-/// A page's name and bytes, which tell it from a later page of the same name.
-type LoadKey = (String, Arc<[u8]>);
+/// A page, and what loading it made.
+pub(crate) type LoadOutcome = (PageId, Result<Loaded, String>);
 
 pub struct Ingest {
     load: Load,
-    jobs: Jobs<LoadKey, Result<Loaded, String>>,
+    jobs: Jobs<PageId, Result<Loaded, String>>,
 }
 
 impl Default for Ingest {
@@ -160,25 +158,24 @@ impl Ingest {
         by_name(received.collect())
     }
 
-    /// Starts loading the page named `name`, or cleaning it again with the user's `corners`.
+    /// Starts loading page `id` from its photo's `bytes`, or cleaning it again with the user's
+    /// `corners`.
     pub fn load(
         &mut self,
-        name: &str,
+        id: PageId,
         bytes: Arc<[u8]>,
         params: CleanParams,
         corners: Option<Quad>,
     ) {
         let load = self.load.clone();
-        let key = (name.to_owned(), bytes.clone());
-        self.jobs.spawn(key, move || {
+        self.jobs.spawn(id, move || {
             load(&bytes, &params, corners).map_err(|e| crate::i18n::decode_error(&e))
         });
     }
 
     /// The next page that finished loading, or failed to, if any.
     pub fn next(&mut self) -> Option<LoadOutcome> {
-        let ((name, bytes), loaded) = self.jobs.next()?;
-        Some((name, bytes, loaded))
+        self.jobs.next()
     }
 
     /// How many pages are loading.

@@ -59,7 +59,7 @@ fn corrections_are_logged() {
         panic!("not a correction");
     };
     assert_eq!(
-        (page.as_str(), model.as_str()),
+        (page.name.as_str(), model.as_str()),
         ("a.png", "claude-opus-5-5")
     );
 }

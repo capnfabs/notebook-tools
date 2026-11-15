@@ -127,6 +127,23 @@ fn saving_elsewhere_keeps_photos_found() {
 }
 
 #[test]
+fn pages_can_share_a_name() {
+    let dir = dir("same_name");
+    let pages = Pages::in_order(vec![
+        photo(&dir.path().join("hike"), "IMG_0001.jpg", "photo a"),
+        photo(&dir.path().join("trip"), "IMG_0001.jpg", "photo b"),
+    ]);
+    let path = dir.path().join("p.notebook");
+    project::save(&path, &pages).unwrap();
+
+    let opened = project::open(&path).unwrap();
+    assert_eq!(summary(&opened), summary(&pages));
+    let found: Vec<_> = opened.iter().map(|p| p.bytes().cloned()).collect();
+    let saved: Vec<_> = pages.iter().map(|p| p.bytes().cloned()).collect();
+    assert_eq!(found, saved);
+}
+
+#[test]
 fn missing_photos_leave_their_pages_in_place() {
     let dir = dir("missing");
     let corners = [[1.0, 2.0], [30.0, 2.0], [30.0, 40.0], [1.0, 40.0]];

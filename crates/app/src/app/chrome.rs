@@ -111,9 +111,9 @@ impl NotebookApp {
     fn show_bottom_bar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         let selected = self.selected_index();
-        let thumbs = |name: &str| self.textures.thumbnail(name);
+        let thumbs = |id| self.textures.thumbnail(id);
         match self.thumbnails.show(ui, &self.pages, thumbs, selected) {
-            Some(thumbnails::Action::Select(name)) => self.selected = Some(name),
+            Some(thumbnails::Action::Select(id)) => self.selected = Some(id),
             Some(thumbnails::Action::Move { from, to }) => self.move_page(from, to),
             None => {}
         }

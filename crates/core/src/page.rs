@@ -1,8 +1,12 @@
 //! The pages the user opened, in order. A page whose photo wasn't found when its project opened
-//! is still a page, without its photo: see `decisions/2026-11-15-missing-pages-shown.md`.
+//! is still a page, without its photo: see `decisions/2026-11-15-missing-pages-shown.md`. Pages
+//! are told apart by their [`PageId`], not their names, which can repeat: see
+//! `decisions/2026-11-15-page-ids.md`.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cache::sha256_hex;
 use crate::geom::Quad;
@@ -16,6 +20,9 @@ use crate::transcript::Transcript;
 /// bytes are shared, so handing them to a transcription thread doesn't copy them. See
 /// `decisions/2026-10-28-pages-cleaned-on-load.md`.
 pub struct Page {
+    /// Tells the page from every other while the app runs. Not saved.
+    pub id: PageId,
+    /// The photo's file name. Pages' names can repeat.
     pub name: String,
     /// Where the file is, if known: a project saves it. Pages dropped as bytes alone have none.
     pub path: Option<PathBuf>,
@@ -38,6 +45,7 @@ impl Page {
     /// A page that isn't [`Loaded`] yet.
     pub fn new(name: String, bytes: Arc<[u8]>) -> Self {
         Self {
+            id: PageId::next(),
             name,
             path: None,
             sha256: sha256_hex(&bytes),
@@ -53,6 +61,7 @@ impl Page {
     /// `why`. It never loads, and can't be transcribed.
     pub fn missing(name: String, path: PathBuf, sha256: String, len: u64, why: Why) -> Self {
         Self {
+            id: PageId::next(),
             name,
             path: Some(path),
             bytes: Err(why),
@@ -81,6 +90,34 @@ impl Page {
             ..self
         }
     }
+
+    /// Gives a page missing its photo the photo, found as the file `name` at `path` (if known)
+    /// with the same hash. The page takes the file's name; its corners and transcript stay.
+    pub fn found(&mut self, name: String, path: Option<PathBuf>, bytes: Arc<[u8]>) {
+        self.name = name;
+        if path.is_some() {
+            self.path = path;
+        }
+        self.bytes = Ok(bytes);
+    }
+}
+
+/// Tells pages apart while the app runs, whatever their names. Never reused, even by another
+/// project, so work still running for a page that's gone can't land on another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PageId(u64);
+
+impl PageId {
+    fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+impl fmt::Display for PageId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 /// Why a page's photo wasn't found when its project opened.
@@ -94,38 +131,27 @@ pub enum Why {
     Unreadable(String),
 }
 
-/// Pages with no duplicate names, in filename order until the user rearranges them.
-/// See `decisions/2026-10-24-page-order.md`.
+/// Pages in filename order until the user rearranges them. Pages with the same name keep their
+/// order among themselves. See `decisions/2026-10-24-page-order.md`.
 #[derive(Default)]
 pub struct Pages(Vec<Page>);
 
 impl Pages {
-    /// `pages` in the order given, as a project saved them. Later pages with a name already used
-    /// are dropped.
+    /// `pages` in the order given, as a project saved them.
     pub fn in_order(pages: Vec<Page>) -> Self {
-        let mut kept: Vec<Page> = Vec::with_capacity(pages.len());
-        for page in pages {
-            if !kept.iter().any(|p| p.name == page.name) {
-                kept.push(page);
-            }
-        }
-        Self(kept)
+        Self(pages)
     }
 
-    /// Inserts `page` in filename order, or at the end once the pages have been rearranged, and
-    /// returns its index. Returns `None` if a page with that name is already present.
-    pub fn add(&mut self, page: Page) -> Option<usize> {
+    /// Inserts `page` in filename order, after any with the same name, or at the end once the
+    /// pages have been rearranged, and returns its index.
+    pub fn add(&mut self, page: Page) -> usize {
         let index = if self.is_sorted() {
-            self.0
-                .binary_search_by(|p| p.name.as_str().cmp(&page.name))
-                .err()?
-        } else if self.0.iter().any(|p| p.name == page.name) {
-            return None;
+            self.0.partition_point(|p| p.name <= page.name)
         } else {
             self.0.len()
         };
         self.0.insert(index, page);
-        Some(index)
+        index
     }
 
     /// Whether the pages are in filename order.
@@ -143,20 +169,26 @@ impl Pages {
         true
     }
 
-    /// Where the page named `name` is.
-    pub fn position(&self, name: &str) -> Option<usize> {
-        self.0.iter().position(|p| p.name == name)
+    /// Where page `id` is.
+    pub fn position(&self, id: PageId) -> Option<usize> {
+        self.0.iter().position(|p| p.id == id)
     }
 
-    /// The page named `name`.
-    pub fn find(&self, name: &str) -> Option<&Page> {
-        self.0.iter().find(|p| p.name == name)
+    /// Page `id`.
+    pub fn find(&self, id: PageId) -> Option<&Page> {
+        self.0.iter().find(|p| p.id == id)
     }
 
-    pub fn find_mut(&mut self, name: &str) -> Option<&mut Page> {
-        self.0.iter_mut().find(|p| p.name == name)
+    pub fn find_mut(&mut self, id: PageId) -> Option<&mut Page> {
+        self.0.iter_mut().find(|p| p.id == id)
     }
 
+    /// The pages whose photo is the file with this [`sha256_hex`], found or missing.
+    pub fn with_photo<'a>(&'a self, sha256: &'a str) -> impl Iterator<Item = &'a Page> {
+        self.0.iter().filter(move |p| p.sha256 == sha256)
+    }
+
+    /// Keeps the order of pages with the same name.
     pub fn sort_by_name(&mut self) {
         self.0.sort_by(|a, b| a.name.cmp(&b.name));
     }
@@ -199,17 +231,43 @@ mod tests {
         pages.iter().map(|p| p.name.as_str()).collect()
     }
 
+    fn ids(pages: &Pages) -> Vec<PageId> {
+        pages.iter().map(|p| p.id).collect()
+    }
+
     #[test]
-    fn pages_stay_sorted_and_unique() {
+    fn pages_stay_sorted() {
         let mut pages = Pages::default();
-        assert_eq!(pages.add(page("IMG_0002.png")), Some(0));
-        assert_eq!(pages.add(page("IMG_0001.png")), Some(0));
-        assert_eq!(pages.add(page("IMG_0003.png")), Some(2));
-        assert_eq!(pages.add(page("IMG_0002.png")), None);
+        assert_eq!(pages.add(page("IMG_0002.png")), 0);
+        assert_eq!(pages.add(page("IMG_0001.png")), 0);
+        assert_eq!(pages.add(page("IMG_0003.png")), 2);
         assert_eq!(
             names(&pages),
             ["IMG_0001.png", "IMG_0002.png", "IMG_0003.png"]
         );
+    }
+
+    #[test]
+    fn names_can_repeat() {
+        let mut pages = pages(&["a.png", "b.png", "c.png"]);
+        let first_b = pages.get(1).unwrap().id;
+        let second_b = page("b.png");
+        let second_b_id = second_b.id;
+        assert_ne!(first_b, second_b_id);
+        // After the page already called that.
+        assert_eq!(pages.add(second_b), 2);
+        assert_eq!(names(&pages), ["a.png", "b.png", "b.png", "c.png"]);
+        assert_eq!(pages.position(first_b), Some(1));
+        assert_eq!(pages.position(second_b_id), Some(2));
+        assert!(pages.is_sorted());
+    }
+
+    #[test]
+    fn every_page_has_its_own_id() {
+        let pages = pages(&["a.png", "a.png", "b.png"]);
+        let mut ids = ids(&pages);
+        ids.dedup();
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]
@@ -220,8 +278,7 @@ mod tests {
         assert_eq!(pages.remove(2).map(|p| p.name), None);
         assert_eq!(pages.remove(0).map(|p| p.name).as_deref(), Some("a.png"));
         assert_eq!(names(&pages), ["b.png"]);
-        // The name can be added again.
-        assert_eq!(pages.add(page("a.png")), Some(0));
+        assert_eq!(pages.add(page("a.png")), 0);
     }
 
     fn pages(names: &[&str]) -> Pages {
@@ -251,29 +308,42 @@ mod tests {
         pages.move_page(1, 0);
         assert!(!pages.is_sorted());
 
-        assert_eq!(pages.add(page("a.png")), Some(2));
-        assert_eq!(pages.add(page("b.png")), None);
-        assert_eq!(names(&pages), ["d.png", "b.png", "a.png"]);
+        assert_eq!(pages.add(page("a.png")), 2);
+        assert_eq!(pages.add(page("b.png")), 3);
+        assert_eq!(names(&pages), ["d.png", "b.png", "a.png", "b.png"]);
     }
 
     #[test]
-    fn finds_pages_by_name() {
+    fn finds_pages_by_id() {
         let mut pages = pages(&["a.png", "b.png"]);
+        let (a, b) = (pages.get(0).unwrap().id, pages.get(1).unwrap().id);
         pages.move_page(1, 0);
-        assert_eq!(pages.position("a.png"), Some(1));
-        assert_eq!(pages.find("b.png").map(|p| p.name.as_str()), Some("b.png"));
-        assert_eq!(pages.position("c.png"), None);
-        assert!(pages.find("c.png").is_none());
+        assert_eq!(pages.position(a), Some(1));
+        assert_eq!(pages.find(b).map(|p| p.name.as_str()), Some("b.png"));
 
-        pages.find_mut("a.png").unwrap().corners = Some([[1.0; 2]; 4]);
+        pages.find_mut(a).unwrap().corners = Some([[1.0; 2]; 4]);
         assert_eq!(pages.get(1).unwrap().corners, Some([[1.0; 2]; 4]));
-        assert!(pages.find_mut("c.png").is_none());
+
+        let gone = pages.remove(0).unwrap().id;
+        assert_eq!(pages.position(gone), None);
+        assert!(pages.find(gone).is_none());
+        assert!(pages.find_mut(gone).is_none());
+    }
+
+    #[test]
+    fn finds_pages_by_photo() {
+        let mut pages = pages(&["a.png"]);
+        pages.add(Page::new("b.png".into(), png(3, 3).into()));
+        let sha256 = sha256_hex(&png(2, 2));
+        let found: Vec<_> = pages.with_photo(&sha256).map(|p| p.name.as_str()).collect();
+        assert_eq!(found, ["a.png"]);
+        assert_eq!(pages.with_photo("nope").count(), 0);
     }
 
     #[test]
     fn keeps_the_order_given() {
         let pages = Pages::in_order(vec![page("b.png"), page("a.png"), page("b.png")]);
-        assert_eq!(names(&pages), ["b.png", "a.png"]);
+        assert_eq!(names(&pages), ["b.png", "a.png", "b.png"]);
         assert!(!pages.is_sorted());
     }
 
@@ -298,11 +368,36 @@ mod tests {
     }
 
     #[test]
-    fn sorts_by_name() {
-        let mut pages = pages(&["a.png", "b.png", "c.png"]);
-        pages.move_page(0, 2);
+    fn found_photos_fill_in_missing_pages() {
+        let photo: Arc<[u8]> = png(2, 2).into();
+        let (old, new) = (PathBuf::from("/a/b.png"), PathBuf::from("/c/d.png"));
+        let mut page = Page::missing(
+            "b.png".into(),
+            old,
+            sha256_hex(&photo),
+            photo.len() as u64,
+            Why::NotFound,
+        );
+        page.corners = Some([[1.0; 2]; 4]);
+        let id = page.id;
+
+        page.found("d.png".into(), Some(new.clone()), photo.clone());
+        assert_eq!(page.id, id);
+        assert_eq!(page.name, "d.png");
+        assert_eq!(page.path, Some(new));
+        assert_eq!(page.bytes(), Some(&photo));
+        assert_eq!(page.corners, Some([[1.0; 2]; 4]));
+    }
+
+    #[test]
+    fn sorts_by_name_keeping_ties_in_order() {
+        let mut pages = pages(&["a.png", "b.png", "b.png", "c.png"]);
+        let (first_b, second_b) = (pages.get(1).unwrap().id, pages.get(2).unwrap().id);
+        pages.move_page(2, 1);
+        pages.move_page(0, 3);
+        assert_eq!(names(&pages), ["b.png", "b.png", "c.png", "a.png"]);
         pages.sort_by_name();
-        assert!(pages.is_sorted());
-        assert_eq!(names(&pages), ["a.png", "b.png", "c.png"]);
+        assert_eq!(names(&pages), ["a.png", "b.png", "b.png", "c.png"]);
+        assert_eq!(&ids(&pages)[1..3], &[second_b, first_b]);
     }
 }

@@ -5,12 +5,14 @@
 pub mod compare;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use notebook_core::cache::Cache;
 use notebook_core::llm_model::{Model, Usage};
+use notebook_core::page::{Page, PageId};
 use notebook_core::transcript::Transcript;
 
 use crate::transcriptions::OnTranscribeCompleted;
@@ -24,17 +26,21 @@ pub fn enabled() -> bool {
 /// Logs how each page sent to Claude differs from other models' transcripts of it in `cache`, if
 /// there are any. Reads and compares on the transcription threads, off the UI's.
 pub fn log_comparisons(cache: Cache) -> OnTranscribeCompleted {
-    Arc::new(move |page, page_bytes, transcript| {
+    Arc::new(move |id, name, page_bytes, transcript| {
+        let page = PageRef {
+            id,
+            name: name.to_owned(),
+        };
         for (old, comparison) in compare::with_cached(&cache, page_bytes, transcript) {
-            let line = comparison_line(page, &transcript.model, old, &comparison);
+            let line = comparison_line(&page, &transcript.model, old, &comparison);
             log::info!(target: "eval", "{line}");
         }
     })
 }
 
-fn comparison_line(page: &str, model: &str, old: Model, c: &Comparison) -> String {
+fn comparison_line(page: &PageRef, model: &str, old: Model, c: &Comparison) -> String {
     format!(
-        "compare page={page:?} new={model} old={} lines={}/{} uncertain={}/{} similarity={:.3} \
+        "compare {page} new={model} old={} lines={}/{} uncertain={}/{} similarity={:.3} \
          changed_chars={}",
         old.name(),
         c.lines.0,
@@ -46,13 +52,37 @@ fn comparison_line(page: &str, model: &str, old: Model, c: &Comparison) -> Strin
     )
 }
 
+/// Which page an event is about: its ID, which tells apart pages with the same name, and its name.
+/// The ID only means something for a session. See `decisions/2026-11-15-page-ids.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageRef {
+    pub id: PageId,
+    pub name: String,
+}
+
+impl PageRef {
+    pub fn of(page: &Page) -> Self {
+        Self {
+            id: page.id,
+            name: page.name.clone(),
+        }
+    }
+}
+
+/// As it's logged: `page="IMG_0001.jpg" id=3`.
+impl fmt::Display for PageRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "page={:?} id={}", self.name, self.id)
+    }
+}
+
 /// Something worth knowing about a transcript. `model` is the API's name for the model that made
 /// it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// A page got a transcript, from Claude or the cache.
     Transcribed {
-        page: String,
+        page: PageRef,
         model: String,
         from_cache: bool,
         usage: Usage,
@@ -63,7 +93,7 @@ pub enum Event {
     },
     /// The user picked a reading for uncertain word `word`.
     Corrected {
-        page: String,
+        page: PageRef,
         model: String,
         word: usize,
         from: String,
@@ -72,7 +102,7 @@ pub enum Event {
     },
     /// The last uncertain word that could be corrected was.
     AllResolved {
-        page: String,
+        page: PageRef,
         model: String,
         uncertain: usize,
         /// Not found in the text, so never correctable.
@@ -80,14 +110,14 @@ pub enum Event {
     },
     /// The user edited a line by hand.
     LineEdited {
-        page: String,
+        page: PageRef,
         model: String,
         line: usize,
         from: String,
         to: String,
     },
     /// The user dropped their corrections to a page, back to Claude's transcription.
-    Reset { page: String, model: String },
+    Reset { page: PageRef, model: String },
 }
 
 /// How the user picked a reading for an uncertain word.
@@ -105,9 +135,9 @@ pub enum Via {
 
 impl Event {
     /// The page's new `transcript`, which took `elapsed` if it was sent.
-    pub fn transcribed(page: &str, transcript: &Transcript, elapsed: Option<Duration>) -> Self {
+    pub fn transcribed(page: &Page, transcript: &Transcript, elapsed: Option<Duration>) -> Self {
         Self::Transcribed {
-            page: page.to_owned(),
+            page: PageRef::of(page),
             model: transcript.model.clone(),
             from_cache: transcript.from_cache,
             usage: transcript.usage,
@@ -117,7 +147,7 @@ impl Event {
         }
     }
 
-    fn page(&self) -> &str {
+    fn page(&self) -> &PageRef {
         match self {
             Self::Transcribed { page, .. }
             | Self::Corrected { page, .. }
@@ -190,7 +220,7 @@ impl EvalLog {
                     .map_or("unknown".to_owned(), |m| format!("${:.4}", usage.cost(m)));
                 let secs = elapsed.map_or("-".to_owned(), |e| format!("{:.1}", e.as_secs_f64()));
                 format!(
-                    "transcribed page={page:?} model={model} from_cache={from_cache} \
+                    "transcribed {page} model={model} from_cache={from_cache} \
                      input={} output={} thinking={} cost={cost} secs={secs} lines={lines} \
                      uncertain={uncertain}",
                     usage.input_tokens, usage.output_tokens, usage.thinking_tokens
@@ -204,7 +234,7 @@ impl EvalLog {
                 to,
                 via,
             } => format!(
-                "correction page={page:?} model={model} word={word} from={from:?} to={to:?} \
+                "correction {page} model={model} word={word} from={from:?} to={to:?} \
                  via={}",
                 match via {
                     Via::Alternative(i) => format!("alternative#{i}"),
@@ -221,7 +251,7 @@ impl EvalLog {
             } => {
                 let t = self.tally(page);
                 format!(
-                    "corrections done page={page:?} model={model} uncertain={uncertain} \
+                    "corrections done {page} model={model} uncertain={uncertain} \
                      kept={} alternative={} custom={} struck_deleted={} unfound={unfound} \
                      line_edits={}",
                     t.kept, t.alternative, t.custom, t.struck_deleted, t.line_edits
@@ -234,25 +264,29 @@ impl EvalLog {
                 from,
                 to,
             } => {
-                format!("line edit page={page:?} model={model} line={line} from={from:?} to={to:?}")
+                format!("line edit {page} model={model} line={line} from={from:?} to={to:?}")
             }
-            Event::Reset { page, model } => format!("reset page={page:?} model={model}"),
+            Event::Reset { page, model } => format!("reset {page} model={model}"),
         }
     }
 
     /// How `page`'s current transcript was corrected: each word's last reading, and line edits,
     /// since it was transcribed or reset.
-    fn tally(&self, page: &str) -> Tally {
+    fn tally(&self, page: &PageRef) -> Tally {
         let since = self
             .events
             .iter()
             .rposition(|e| {
-                matches!(e, Event::Transcribed { page: p, .. } | Event::Reset { page: p, .. } if p == page)
+                matches!(e, Event::Transcribed { .. } | Event::Reset { .. })
+                    && e.page().id == page.id
             })
             .map_or(0, |i| i + 1);
         let mut words = HashMap::new();
         let mut tally = Tally::default();
-        for event in self.events[since..].iter().filter(|e| e.page() == page) {
+        for event in self.events[since..]
+            .iter()
+            .filter(|e| e.page().id == page.id)
+        {
             match event {
                 Event::Corrected { word, via, .. } => {
                     words.insert(*word, *via);
@@ -288,9 +322,22 @@ mod tests {
 
     const OPUS: &str = "claude-opus-5-5";
 
-    fn transcribed(page: &str, model: &str, from_cache: bool) -> Event {
+    /// A page called `name`, with an ID of its own.
+    fn page(name: &str) -> PageRef {
+        PageRef::of(&Page::new(name.to_owned(), Arc::from(&[][..])))
+    }
+
+    thread_local! {
+        static P1: PageRef = page("p1");
+    }
+
+    fn p1() -> PageRef {
+        P1.with(Clone::clone)
+    }
+
+    fn transcribed(page: &PageRef, model: &str, from_cache: bool) -> Event {
         Event::Transcribed {
-            page: page.to_owned(),
+            page: page.clone(),
             model: model.to_owned(),
             from_cache,
             usage: Usage {
@@ -306,7 +353,7 @@ mod tests {
 
     fn corrected(word: usize, via: Via) -> Event {
         Event::Corrected {
-            page: "p1".to_owned(),
+            page: p1(),
             model: OPUS.to_owned(),
             word,
             from: "plumber".to_owned(),
@@ -315,9 +362,9 @@ mod tests {
         }
     }
 
-    fn line_edited(page: &str) -> Event {
+    fn line_edited(page: &PageRef) -> Event {
         Event::LineEdited {
-            page: page.to_owned(),
+            page: page.clone(),
             model: OPUS.to_owned(),
             line: 5,
             from: "call Sam".to_owned(),
@@ -327,7 +374,7 @@ mod tests {
 
     fn all_resolved() -> Event {
         Event::AllResolved {
-            page: "p1".to_owned(),
+            page: p1(),
             model: OPUS.to_owned(),
             uncertain: 4,
             unfound: 1,
@@ -336,16 +383,21 @@ mod tests {
 
     #[test]
     fn loglines() {
+        let id = p1().id;
         let log = EvalLog::default();
         assert_eq!(
-            log.line(&transcribed("p1", "claude-sonnet-5-5", false)),
-            "transcribed page=\"p1\" model=claude-sonnet-5-5 from_cache=false input=5000 \
+            log.line(&transcribed(&p1(), "claude-sonnet-5-5", false)),
+            format!(
+                "transcribed page=\"p1\" id={id} model=claude-sonnet-5-5 from_cache=false input=5000 \
              output=2000 thinking=800 cost=$0.0300 secs=31.2 lines=24 uncertain=7"
+            )
         );
         assert_eq!(
-            log.line(&transcribed("p1", "claude-haiku-5-5", true)),
-            "transcribed page=\"p1\" model=claude-haiku-5-5 from_cache=true input=5000 \
+            log.line(&transcribed(&p1(), "claude-haiku-5-5", true)),
+            format!(
+                "transcribed page=\"p1\" id={id} model=claude-haiku-5-5 from_cache=true input=5000 \
              output=2000 thinking=800 cost=unknown secs=- lines=24 uncertain=7"
+            )
         );
         let comparison = Comparison {
             lines: (24, 25),
@@ -354,29 +406,35 @@ mod tests {
             changed_chars: 37,
         };
         assert_eq!(
-            comparison_line("p1", "claude-sonnet-5-5", Model::Opus, &comparison),
-            "compare page=\"p1\" new=claude-sonnet-5-5 old=opus lines=24/25 uncertain=7/9 \
+            comparison_line(&p1(), "claude-sonnet-5-5", Model::Opus, &comparison),
+            format!(
+                "compare page=\"p1\" id={id} new=claude-sonnet-5-5 old=opus lines=24/25 uncertain=7/9 \
              similarity=0.962 changed_chars=37"
+            )
         );
         assert_eq!(
             log.line(&corrected(3, Via::Alternative(1))),
-            "correction page=\"p1\" model=claude-opus-5-5 word=3 from=\"plumber\" \
+            format!(
+                "correction page=\"p1\" id={id} model=claude-opus-5-5 word=3 from=\"plumber\" \
              to=\"plumbers\" via=alternative#1"
+            )
         );
         assert_eq!(
-            log.line(&line_edited("p1")),
-            "line edit page=\"p1\" model=claude-opus-5-5 line=5 from=\"call Sam\" \
+            log.line(&line_edited(&p1())),
+            format!(
+                "line edit page=\"p1\" id={id} model=claude-opus-5-5 line=5 from=\"call Sam\" \
              to=\"call Sal\""
+            )
         );
     }
 
     #[test]
     fn session_cost_is_split_by_model_and_skips_the_cache() {
         let mut log = EvalLog::default();
-        log.record(transcribed("p1", OPUS, true));
-        log.record(transcribed("p1", OPUS, false));
-        log.record(transcribed("p2", "claude-sonnet-5-5", false));
-        log.record(transcribed("p3", "claude-sonnet-5", false));
+        log.record(transcribed(&p1(), OPUS, true));
+        log.record(transcribed(&p1(), OPUS, false));
+        log.record(transcribed(&page("p2"), "claude-sonnet-5-5", false));
+        log.record(transcribed(&page("p3"), "claude-sonnet-5", false));
         let (opus, opus_pages) = log.spent(Model::Opus);
         assert!((opus - 0.06).abs() < 1e-9 && opus_pages == 1);
         let (sonnet, sonnet_pages) = log.spent(Model::Sonnet);
@@ -393,42 +451,53 @@ mod tests {
 
     #[test]
     fn done_tallies_each_words_last_reading_since_transcribed() {
+        let id = p1().id;
         let mut log = EvalLog::default();
-        log.record(transcribed("p1", OPUS, true));
+        log.record(transcribed(&p1(), OPUS, true));
         // Lost to the forced retranscription below.
         log.record(corrected(0, Via::Custom));
-        log.record(line_edited("p1"));
-        log.record(transcribed("p1", OPUS, false));
+        log.record(line_edited(&p1()));
+        log.record(transcribed(&p1(), OPUS, false));
         log.record(corrected(0, Via::Custom));
         log.record(corrected(0, Via::Alternative(0)));
         log.record(corrected(1, Via::Keep));
         log.record(corrected(2, Via::Custom));
-        log.record(line_edited("p1"));
-        log.record(line_edited("another page"));
+        log.record(line_edited(&p1()));
+        log.record(line_edited(&page("another page")));
+        // Another page with the same name.
+        log.record(line_edited(&page("p1")));
         assert_eq!(
             log.line(&all_resolved()),
-            "corrections done page=\"p1\" model=claude-opus-5-5 uncertain=4 kept=1 \
+            format!(
+                "corrections done page=\"p1\" id={id} model=claude-opus-5-5 uncertain=4 kept=1 \
              alternative=1 custom=1 struck_deleted=0 unfound=1 line_edits=1"
+            )
         );
     }
 
     #[test]
     fn done_tallies_since_the_last_reset() {
+        let id = p1().id;
         let mut log = EvalLog::default();
-        log.record(transcribed("p1", OPUS, false));
+        log.record(transcribed(&p1(), OPUS, false));
         log.record(corrected(0, Via::Custom));
-        log.record(line_edited("p1"));
+        log.record(line_edited(&p1()));
         let reset = Event::Reset {
-            page: "p1".to_owned(),
+            page: p1(),
             model: OPUS.to_owned(),
         };
-        assert_eq!(log.line(&reset), "reset page=\"p1\" model=claude-opus-5-5");
+        assert_eq!(
+            log.line(&reset),
+            format!("reset page=\"p1\" id={id} model=claude-opus-5-5")
+        );
         log.record(reset);
         log.record(corrected(0, Via::DeleteStruck));
         assert_eq!(
             log.line(&all_resolved()),
-            "corrections done page=\"p1\" model=claude-opus-5-5 uncertain=4 kept=0 \
+            format!(
+                "corrections done page=\"p1\" id={id} model=claude-opus-5-5 uncertain=4 kept=0 \
              alternative=0 custom=0 struck_deleted=1 unfound=1 line_edits=0"
+            )
         );
     }
 }

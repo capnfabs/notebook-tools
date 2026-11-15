@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use notebook_core::page::Pages;
+use notebook_core::page::{PageId, Pages};
 use notebook_core::project::{self, EXTENSION, SavedPage};
 
 use super::NotebookApp;
@@ -267,21 +267,11 @@ impl NotebookApp {
             self.errors.push(error);
         }
         self.project.path = Some(path.to_path_buf());
-        let names: Vec<String> = self.pages.iter().map(|p| p.name.clone()).collect();
-        for name in &names {
-            let Some(page) = self.pages.find(name) else {
-                continue;
-            };
-            if let Some(bytes) = page.bytes().cloned() {
-                let corners = page.corners;
-                if page.transcript.is_none() {
-                    self.transcriptions.look_up(name, bytes.clone());
-                }
-                self.ingest
-                    .load(name, bytes, self.clean_params.clone(), corners);
-            }
+        let ids: Vec<PageId> = self.pages.iter().map(|p| p.id).collect();
+        for id in ids {
+            self.start_loading(id);
             // In the settings' style, which isn't a change to the project.
-            self.restyle_if_stale(name);
+            self.restyle_if_stale(id);
         }
         self.mark_saved();
     }

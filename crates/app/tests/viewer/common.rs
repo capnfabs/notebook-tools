@@ -6,7 +6,9 @@ use eframe::egui;
 use eframe::egui::{accesskit::Role, accesskit::Toggled};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
-use notebook_app::{Auth, CheckKey, Command, Event, Fetch, Load, NotebookApp, Transcriber, t};
+use notebook_app::{
+    Auth, CheckKey, Command, Event, Fetch, Load, NotebookApp, SavePath, Transcriber, t,
+};
 use notebook_core::cache::Cache;
 use notebook_core::claude_transcribe::{Fetched, OcrError, image_to_send};
 use notebook_core::clean::{CleanParams, Crop};
@@ -17,7 +19,7 @@ use notebook_core::geom::Quad;
 use notebook_core::loaded::Loaded;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -39,27 +41,45 @@ impl egui::DroppedFile for TestFile {
     }
 }
 
+/// A small, nearly blank photo.
+///
+/// Each call gives another photo, all the same size: pages with the same photo are one page (see
+/// `decisions/2026-11-15-page-ids.md`), so dropping `png()` twice adds two pages. Keep one to drop
+/// the same photo again.
 pub fn png() -> Vec<u8> {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let mut img = image::RgbaImage::new(40, 30);
+    img.put_pixel(0, 0, image::Rgba(n.to_le_bytes()));
+    encode_png(&img)
+}
+
+fn encode_png(img: &image::RgbaImage) -> Vec<u8> {
     let mut bytes = Vec::new();
-    image::RgbaImage::new(40, 30)
-        .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+    img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
         .unwrap();
     bytes
 }
 
 /// A cream page on a brown table, which cleanup finds an outline for.
 pub fn page_photo() -> Vec<u8> {
+    page_photo_on([120, 80, 50, 255])
+}
+
+/// [`page_photo`] on a slightly different table: another photo, for a second page.
+pub fn another_page_photo() -> Vec<u8> {
+    page_photo_on([121, 80, 50, 255])
+}
+
+fn page_photo_on(table: [u8; 4]) -> Vec<u8> {
     let img = image::RgbaImage::from_fn(200, 150, |x, y| {
         if (40..160).contains(&x) && (20..130).contains(&y) {
             image::Rgba([235, 225, 200, 255])
         } else {
-            image::Rgba([120, 80, 50, 255])
+            image::Rgba(table)
         }
     });
-    let mut bytes = Vec::new();
-    img.write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
-        .unwrap();
-    bytes
+    encode_png(&img)
 }
 
 pub fn harness() -> Harness<'static, NotebookApp> {
@@ -328,6 +348,12 @@ fn start_dropping_from(
         }));
     }
     harness.step();
+}
+
+/// Saves projects and exports to `path`, whatever it's asked.
+pub fn save_to(path: &Path) -> SavePath {
+    let path = path.to_path_buf();
+    Arc::new(move |_| Some(path.clone()))
 }
 
 /// Writes `files` to `dir` and drops them from there, so a project can find them again.

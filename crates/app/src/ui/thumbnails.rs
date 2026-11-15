@@ -7,7 +7,7 @@ use std::path::Path;
 use eframe::egui;
 use egui::accesskit::Role;
 use egui::{Color32, Margin, Rect, Sense, Stroke, StrokeKind, TextureHandle, Vec2, WidgetInfo};
-use notebook_core::page::Pages;
+use notebook_core::page::{PageId, Pages};
 
 use crate::t;
 use crate::ui::icons;
@@ -43,8 +43,8 @@ const THUMB_SENSE: Sense = Sense::CLICK.union(Sense::DRAG);
 /// What the user did in the strip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Clicked the thumbnail of the page with this name.
-    Select(String),
+    /// Clicked the thumbnail of this page.
+    Select(PageId),
     /// Dropped page `from`'s thumbnail so the page should end up at index `to`.
     Move { from: usize, to: usize },
 }
@@ -57,21 +57,21 @@ struct DraggedPage(usize);
 pub struct Thumbnails {
     /// The page whose thumbnail the strip last scrolled into view, and where it was. Scrolls
     /// again only when either changes, so it doesn't fight the user scrolling the strip.
-    scrolled_to: Option<(String, usize)>,
+    scrolled_to: Option<(PageId, usize)>,
     /// Where a dragged thumbnail would go if dropped now: the index of the gap before it, with
     /// `pages.len()` meaning the end.
     drop_slot: Option<usize>,
 }
 
 impl Thumbnails {
-    /// The strip, scrolling sideways, of `pages` with their `textures` by name, page `selected`
+    /// The strip, scrolling sideways, of `pages` with their `textures` by page, page `selected`
     /// framed. A page without a texture is still loading, and gets a spinner, unless its photo is
     /// missing. Returns what the user did, if anything.
     pub fn show<'a>(
         &mut self,
         ui: &mut egui::Ui,
         pages: &Pages,
-        textures: impl Fn(&str) -> Option<&'a TextureHandle>,
+        textures: impl Fn(PageId) -> Option<&'a TextureHandle>,
         selected: usize,
     ) -> Option<Action> {
         egui::ScrollArea::horizontal()
@@ -93,7 +93,7 @@ impl Thumbnails {
         &mut self,
         ui: &mut egui::Ui,
         pages: &Pages,
-        textures: impl Fn(&str) -> Option<&'a TextureHandle>,
+        textures: impl Fn(PageId) -> Option<&'a TextureHandle>,
         selected: usize,
     ) -> Option<Action> {
         let mut action = None;
@@ -106,7 +106,7 @@ impl Thumbnails {
             } else {
                 Color32::WHITE
             };
-            let response = match (page.missing_photo(), textures(&page.name)) {
+            let response = match (page.missing_photo(), textures(page.id)) {
                 (Some(why), _) => {
                     let path = page.path.as_deref().unwrap_or(Path::new(""));
                     let why = crate::i18n::missing_photo(why, path);
@@ -142,14 +142,14 @@ impl Thumbnails {
                 if self
                     .scrolled_to
                     .as_ref()
-                    .is_none_or(|(name, at)| *name != page.name || *at != i)
+                    .is_none_or(|&(id, at)| id != page.id || at != i)
                 {
                     response.scroll_to_me(None);
-                    self.scrolled_to = Some((page.name.clone(), i));
+                    self.scrolled_to = Some((page.id, i));
                 }
             }
             if response.clicked() {
-                action = Some(Action::Select(page.name.clone()));
+                action = Some(Action::Select(page.id));
             }
             rects.push(response.rect);
         }

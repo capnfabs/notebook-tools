@@ -19,7 +19,7 @@ use notebook_core::claude_transcribe::{Fetched, OcrError};
 use notebook_core::clean::CleanParams;
 use notebook_core::geom::Quad;
 use notebook_core::llm_model::Model;
-use notebook_core::page::Page;
+use notebook_core::page::{Page, PageId};
 use notebook_core::settings::Settings;
 use notebook_core::transcript::Transcript;
 
@@ -33,9 +33,9 @@ pub type Fetch = Arc<
     dyn Fn(&[u8], &CleanParams, Option<Quad>, Model) -> Result<Fetched, OcrError> + Send + Sync,
 >;
 
-/// Told a page's name, its file's bytes and its transcript whenever a page is sent to Claude and
-/// comes back transcribed, but not for cached transcripts. Runs on the thread that sent it.
-pub type OnTranscribeCompleted = Arc<dyn Fn(&str, &[u8], &Transcript) + Send + Sync>;
+/// Told a page's ID and name, its file's bytes and its transcript whenever a page is sent to Claude
+/// and comes back transcribed, but not for cached transcripts. Runs on the thread that sent it.
+pub type OnTranscribeCompleted = Arc<dyn Fn(PageId, &str, &[u8], &Transcript) + Send + Sync>;
 
 /// Transcribes pages with Claude.
 #[derive(Clone)]
@@ -79,7 +79,7 @@ impl Transcriber {
         if let Some(on_transcribe_completed) = &self.on_transcribe_completed
             && !transcript.from_cache
         {
-            on_transcribe_completed(&job.name, bytes, &transcript);
+            on_transcribe_completed(job.id, &job.name, bytes, &transcript);
         }
         Ok(Ran {
             transcript,
@@ -107,6 +107,8 @@ enum Kind {
 
 /// A page waiting to be, or being, sent to Claude.
 struct Job {
+    id: PageId,
+    /// For the logs.
     name: String,
     bytes: Arc<[u8]>,
     params: CleanParams,
@@ -118,7 +120,7 @@ struct Job {
 
 /// A page that finished transcribing.
 pub struct TranscriptReady {
-    pub name: String,
+    pub id: PageId,
     pub transcript: Transcript,
     /// Retranscribed on request, so it replaces the page's transcript, corrections and all.
     pub forced: bool,
@@ -129,24 +131,24 @@ pub struct TranscriptReady {
 /// A job's transcript: `None` for a [`Kind::Lookup`] that missed.
 type Outcome = Result<Option<Ran>, String>;
 
-/// A job's page name and what it does.
-type JobKey = (String, Kind);
+/// A job's page and what it does.
+type JobKey = (PageId, Kind);
 
 pub struct Transcriptions {
     /// Sends pages to Claude. Without one, nothing is sent.
     transcriber: Option<Transcriber>,
     /// Without one, or while the settings switch caching off, nothing is looked up or stored.
     cache: Option<Cache>,
-    /// By page name and what they do.
+    /// By page and what they do.
     jobs: Jobs<JobKey, Outcome>,
     /// Pages waiting to be sent, next first.
     queue: VecDeque<Job>,
-    /// Pages being sent, by name.
-    running: HashSet<String>,
-    /// Pages being looked up in the cache, by name.
-    checking: HashSet<String>,
-    /// Why the last attempt failed, by page name.
-    errors: HashMap<String, String>,
+    /// Pages being sent.
+    running: HashSet<PageId>,
+    /// Pages being looked up in the cache.
+    checking: HashSet<PageId>,
+    /// Why the last attempt failed, by page.
+    errors: HashMap<PageId, String>,
     /// Pages are sent to its model, and parsed in its style, from now on.
     settings: Settings,
 }
@@ -226,15 +228,15 @@ impl Transcriptions {
             .filter(|_| self.settings.cache_transcripts)
     }
 
-    /// Looks the page named `name` up in the cache, which can be done straight away: nothing is
-    /// sent. A hit comes out of [`Self::next`].
-    pub fn look_up(&mut self, name: &str, bytes: Arc<[u8]>) {
+    /// Looks page `id`, whose photo is `bytes`, up in the cache, which can be done straight away:
+    /// nothing is sent. A hit comes out of [`Self::next`].
+    pub fn look_up(&mut self, id: PageId, bytes: Arc<[u8]>) {
         let Some(cache) = self.active_cache().cloned() else {
             return;
         };
-        self.checking.insert(name.to_owned());
+        self.checking.insert(id);
         let (model, style) = (self.settings.model, self.settings.markdown.clone());
-        let key = (name.to_owned(), Kind::Lookup);
+        let key = (id, Kind::Lookup);
         self.spawn(key, move || {
             Ok(cache.find(&bytes, model, &style).map(|transcript| Ran {
                 transcript,
@@ -261,16 +263,16 @@ impl Transcriptions {
 
     /// Queues `page`, cropped to its corners as they are now, unless its photo is missing.
     fn enqueue(&mut self, page: &Page, params: CleanParams, kind: Kind, first: bool) {
-        let name = &page.name;
         let Some(bytes) = page.bytes() else {
             return;
         };
-        if self.transcriber.is_none() || self.queued_or_running(name) {
+        if self.transcriber.is_none() || self.queued_or_running(page.id) {
             return;
         }
-        self.errors.remove(name);
+        self.errors.remove(&page.id);
         let job = Job {
-            name: name.clone(),
+            id: page.id,
+            name: page.name.clone(),
             bytes: bytes.clone(),
             params,
             corners: page.corners,
@@ -298,10 +300,10 @@ impl Transcriptions {
                 job.name,
                 job.settings.model.id()
             );
-            self.running.insert(job.name.clone());
+            self.running.insert(job.id);
             // The cache as the settings are now, not as they were when the page was queued.
             let (transcriber, cache) = (transcriber.clone(), self.active_cache().cloned());
-            let key = (job.name.clone(), job.kind);
+            let key = (job.id, job.kind);
             self.spawn(key, move || transcriber.run(&job, cache.as_ref()).map(Some));
         }
     }
@@ -319,13 +321,13 @@ impl Transcriptions {
     /// The next page that finished transcribing, if any, sending the next queued page in its
     /// place. Failures are kept for [`Self::error`]; cache misses are dropped.
     pub fn next(&mut self) -> Option<TranscriptReady> {
-        while let Some(((name, kind), result)) = self.jobs.next() {
+        while let Some(((id, kind), result)) = self.jobs.next() {
             match kind {
                 Kind::Lookup => {
-                    self.checking.remove(&name);
+                    self.checking.remove(&id);
                 }
                 Kind::Transcribe | Kind::Force => {
-                    self.running.remove(&name);
+                    self.running.remove(&id);
                     self.send_queued();
                 }
             }
@@ -333,29 +335,29 @@ impl Transcriptions {
                 Ok(None) => {}
                 Ok(Some(ran)) => {
                     return Some(TranscriptReady {
-                        name,
+                        id,
                         transcript: ran.transcript,
                         forced: kind == Kind::Force,
                         elapsed: ran.elapsed,
                     });
                 }
                 Err(err) => {
-                    log::warn!("{name}: transcription failed: {err}");
-                    self.errors.insert(name, err);
+                    log::warn!("page {id}: transcription failed: {err}");
+                    self.errors.insert(id, err);
                 }
             }
         }
         None
     }
 
-    /// Whether the page named `name` is waiting to be sent, or being sent.
-    pub fn queued_or_running(&self, name: &str) -> bool {
-        self.running.contains(name) || self.queue.iter().any(|j| j.name == name)
+    /// Whether page `id` is waiting to be sent, or being sent.
+    pub fn queued_or_running(&self, id: PageId) -> bool {
+        self.running.contains(&id) || self.queue.iter().any(|j| j.id == id)
     }
 
-    /// Whether the page named `name` is being looked up in the cache.
-    pub fn checking(&self, name: &str) -> bool {
-        self.checking.contains(name)
+    /// Whether page `id` is being looked up in the cache.
+    pub fn checking(&self, id: PageId) -> bool {
+        self.checking.contains(&id)
     }
 
     /// How many pages are waiting to be sent or being sent.
@@ -363,14 +365,14 @@ impl Transcriptions {
         self.queue.len() + self.running.len()
     }
 
-    /// Forgets the page named `name`, as when it's deleted: why it failed, and its place in the
-    /// queue. One already being sent finishes, and is ignored.
-    pub fn forget(&mut self, name: &str) {
-        self.errors.remove(name);
-        self.queue.retain(|j| j.name != name);
+    /// Forgets page `id`, as when it's deleted: why it failed, and its place in the queue. One
+    /// already being sent finishes, and is ignored.
+    pub fn forget(&mut self, id: PageId) {
+        self.errors.remove(&id);
+        self.queue.retain(|j| j.id != id);
     }
 
-    pub fn error(&self, name: &str) -> Option<&str> {
-        self.errors.get(name).map(String::as_str)
+    pub fn error(&self, id: PageId) -> Option<&str> {
+        self.errors.get(&id).map(String::as_str)
     }
 }

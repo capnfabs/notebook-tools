@@ -5,14 +5,14 @@ use std::sync::Arc;
 
 use eframe::egui;
 use notebook_core::geom::Quad;
-use notebook_core::page::Page;
+use notebook_core::page::{Page, PageId};
 use notebook_core::transcript::Transcript;
 
 use super::commands::shortcut_text;
 use super::project::After;
 use super::{NotebookApp, View};
 use crate::command::Command;
-use crate::eval_log::Event;
+use crate::eval_log::{Event, PageRef};
 use crate::ingest::{Dropping, Ingest, Pick, Received};
 use crate::t;
 use crate::ui::dialog;
@@ -26,15 +26,15 @@ pub(super) const TRANSCRIBE_ALL_CONFIRM_ABOVE: usize = 4;
 /// What the user tried to do when they were asked for an API key, to carry on with once they've
 /// entered one.
 pub(super) enum AfterKey {
-    Transcribe(String),
+    Transcribe(PageId),
     TranscribeAll,
-    Retranscribe(String),
+    Retranscribe(PageId),
 }
 
 impl NotebookApp {
     pub(super) fn select(&mut self, index: usize) {
         if let Some(page) = self.pages.get(index) {
-            self.selected = Some(page.name.clone());
+            self.selected = Some(page.id);
         }
     }
 
@@ -48,13 +48,13 @@ impl NotebookApp {
     }
 
     /// Asks which files to add, and adds them as pages.
-    pub(super) fn add_picked(&mut self) {
+    pub(super) fn add_picked(&mut self, ctx: &egui::Context) {
         let Some(pick_files) = self.pick_files.clone() else {
             return;
         };
         self.asked_which_files = true;
         let received = Ingest::read_paths(&pick_files(Pick::Photos));
-        self.add_received(received);
+        self.add_received(ctx, received);
     }
 
     /// Adds the files dropped this frame as pages, or opens the project dropped among them,
@@ -87,7 +87,7 @@ impl NotebookApp {
         match dropping {
             Dropping::AddPages => {
                 let received = read(&self.ingest);
-                self.add_received(received);
+                self.add_received(ctx, received);
             }
             // The question already asked is answered first.
             Dropping::OpenProject { .. } if self.dialog_open() => {}
@@ -102,8 +102,10 @@ impl NotebookApp {
     }
 
     /// Adds `received` as pages, and starts loading them. Pages are usable before they've
-    /// loaded: they can be moved, deleted and transcribed.
-    pub(super) fn add_received(&mut self, received: Vec<Received>) {
+    /// loaded: they can be moved, deleted and transcribed. A photo that's already a page is
+    /// skipped, and one that a page is missing is given to it. See
+    /// `decisions/2026-11-15-page-ids.md`.
+    pub(super) fn add_received(&mut self, ctx: &egui::Context, received: Vec<Received>) {
         if !received.is_empty() {
             self.errors.clear();
         }
@@ -115,37 +117,62 @@ impl NotebookApp {
                     continue;
                 }
             };
-            let page = Page::new(name.clone(), bytes.clone());
+            let page = Page::new(name, bytes.clone());
             let page = match path {
                 Some(path) => page.at(path),
                 None => page,
             };
-            // Duplicate names are skipped, saying so if the page they'd be is missing its photo.
-            if self.pages.add(page).is_some() {
-                self.ingest
-                    .load(&name, bytes.clone(), self.clean_params.clone(), None);
-                self.transcriptions.look_up(&name, bytes);
-            } else if self
+            let missing_it: Vec<PageId> = self
                 .pages
-                .find(&name)
-                .is_some_and(|p| p.missing_photo().is_some())
-            {
-                self.errors
-                    .push(t!("already-missing", name = name.as_str()));
+                .with_photo(&page.sha256)
+                .filter(|p| p.missing_photo().is_some())
+                .map(|p| p.id)
+                .collect();
+            for &id in &missing_it {
+                let Some(found) = self.pages.find_mut(id) else {
+                    continue;
+                };
+                let hint = t!("photo-found", name = found.name.as_str());
+                found.found(page.name.clone(), page.path.clone(), bytes.clone());
+                self.start_loading(id);
+                self.selected = Some(id);
+                self.show_hint(ctx, hint);
+            }
+            // Otherwise a photo that's already a page is left out.
+            if missing_it.is_empty() && self.pages.with_photo(&page.sha256).next().is_none() {
+                let id = page.id;
+                self.pages.add(page);
+                self.start_loading(id);
             }
         }
+    }
+
+    /// Starts loading page `id`, if it has its photo, and looking it up in the cache if it
+    /// isn't transcribed.
+    pub(super) fn start_loading(&mut self, id: PageId) {
+        let Some(page) = self.pages.find(id) else {
+            return;
+        };
+        let Some(bytes) = page.bytes().cloned() else {
+            return;
+        };
+        if page.transcript.is_none() {
+            self.transcriptions.look_up(id, bytes.clone());
+        }
+        let corners = page.corners;
+        self.ingest
+            .load(id, bytes, self.clean_params.clone(), corners);
     }
 
     /// Fills in pages that finished loading or cleaning again, and removes those that couldn't be
     /// loaded.
     pub(super) fn add_loaded(&mut self, ctx: &egui::Context) {
-        while let Some((name, bytes, loaded)) = self.ingest.next() {
-            // The page may have been deleted meanwhile, or replaced by another of the same name, or
-            // given other corners.
-            let Some(index) = self.pages.position(&name).filter(|&i| {
+        while let Some((id, loaded)) = self.ingest.next() {
+            // The page may have been deleted meanwhile, or given other corners.
+            let Some(index) = self.pages.position(id).filter(|&i| {
                 self.pages.get(i).is_some_and(|p| {
                     let corners = loaded.as_ref().map_or(p.corners, |l| l.corners);
-                    p.bytes().is_some_and(|b| Arc::ptr_eq(b, &bytes)) && corners == p.corners
+                    corners == p.corners
                 })
             }) else {
                 continue;
@@ -159,11 +186,12 @@ impl NotebookApp {
                     if let Some(old) = page.loaded.take() {
                         loaded.photo_jpeg = old.photo_jpeg;
                     }
-                    self.textures.add_thumbnails(ctx, &name, &loaded);
+                    self.textures.add_thumbnails(ctx, page, &loaded);
                     page.loaded = Some(loaded);
                 }
                 Err(err) => {
-                    self.open_failed(&name, err);
+                    let name = self.pages.get(index).map(|p| p.name.clone());
+                    self.open_failed(&name.unwrap_or_default(), err);
                     self.delete_page(index);
                 }
             }
@@ -186,8 +214,8 @@ impl NotebookApp {
         let Some(page) = self.pages.remove(index) else {
             return;
         };
-        self.textures.forget(&page.name);
-        self.transcriptions.forget(&page.name);
+        self.textures.forget(page.id);
+        self.transcriptions.forget(page.id);
         if !shown {
             return;
         }
@@ -196,7 +224,7 @@ impl NotebookApp {
             .pages
             .get(index)
             .or_else(|| self.pages.get(index.wrapping_sub(1)));
-        self.selected = next.map(|p| p.name.clone());
+        self.selected = next.map(|p| p.id);
     }
 
     /// Deletes the selected page, asking first if it has a transcript.
@@ -206,29 +234,35 @@ impl NotebookApp {
             return;
         };
         if page.transcript.is_some() {
-            self.confirm_delete = Some(page.name.clone());
+            self.confirm_delete = Some(page.id);
         } else {
             self.delete_page(index);
         }
     }
 
     pub(super) fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(name) = self.confirm_delete.clone() else {
+        let Some((id, name)) = self.asking_about(self.confirm_delete) else {
+            self.confirm_delete = None;
             return;
         };
         let choice = dialog::show(ctx, "confirm delete", 320.0, |ui| {
             ui.label(t!("confirm-delete", name = name.as_str()));
             dialog::buttons(ui, &t!("confirm-delete-button"), Stakes::Dangerous, true)
         });
-        if choice == Some(Choice::Affirmative) {
-            let index = self.pages.position(&name);
-            if let Some(index) = index {
-                self.delete_page(index);
-            }
+        if choice == Some(Choice::Affirmative)
+            && let Some(index) = self.pages.position(id)
+        {
+            self.delete_page(index);
         }
         if choice.is_some() {
             self.confirm_delete = None;
         }
+    }
+
+    /// The page a dialog is asking about, and its name, unless it's gone.
+    fn asking_about(&self, id: Option<PageId>) -> Option<(PageId, String)> {
+        let page = self.pages.find(id?)?;
+        Some((page.id, page.name.clone()))
     }
 
     /// Pages without a transcript that aren't being transcribed, including any that failed, and
@@ -239,20 +273,16 @@ impl NotebookApp {
             .filter(|p| {
                 p.transcript.is_none()
                     && p.bytes().is_some()
-                    && !self.transcriptions.queued_or_running(&p.name)
+                    && !self.transcriptions.queued_or_running(p.id)
             })
             .collect()
     }
 
     /// Queues every page [`Self::untranscribed`]. Cached ones aren't sent.
     pub(super) fn transcribe_all(&mut self) {
-        let names: Vec<String> = self
-            .untranscribed()
-            .into_iter()
-            .map(|p| p.name.clone())
-            .collect();
-        for name in names {
-            if let Some(page) = self.pages.find(&name) {
+        let ids: Vec<PageId> = self.untranscribed().into_iter().map(|p| p.id).collect();
+        for id in ids {
+            if let Some(page) = self.pages.find(id) {
                 self.transcriptions
                     .start_later(page, self.clean_params.clone());
             }
@@ -274,16 +304,15 @@ impl NotebookApp {
 
     /// Does what the user was doing when they were asked for an API key.
     pub(super) fn carry_on(&mut self, ctx: &egui::Context, after: AfterKey) {
-        let index_of = |name: &str| self.pages.iter().position(|p| p.name == name);
         match after {
-            AfterKey::Transcribe(name) => {
-                if let Some(index) = index_of(&name) {
+            AfterKey::Transcribe(id) => {
+                if let Some(index) = self.pages.position(id) {
                     self.start_transcribing(index);
                 }
             }
             AfterKey::TranscribeAll => self.request_transcribe_all(),
-            AfterKey::Retranscribe(name) => {
-                if let Some(index) = index_of(&name) {
+            AfterKey::Retranscribe(id) => {
+                if let Some(index) = self.pages.position(id) {
                     self.request_retranscribe(index);
                 }
             }
@@ -321,9 +350,9 @@ impl NotebookApp {
         }
     }
 
-    /// Retranscribes the page named `name`, skipping the cache.
-    pub(super) fn retranscribe(&mut self, name: &str) {
-        if let Some(page) = self.pages.find(name) {
+    /// Retranscribes page `id`, skipping the cache.
+    pub(super) fn retranscribe(&mut self, id: PageId) {
+        if let Some(page) = self.pages.find(id) {
             self.transcriptions
                 .retranscribe(page, self.clean_params.clone());
         }
@@ -336,19 +365,20 @@ impl NotebookApp {
             return;
         };
         let corrected = page.transcript.as_ref().is_some_and(Transcript::corrected);
-        let name = page.name.clone();
-        if !self.ready_to_send(AfterKey::Retranscribe(name.clone())) {
+        let id = page.id;
+        if !self.ready_to_send(AfterKey::Retranscribe(id)) {
             return;
         }
         if corrected {
-            self.confirm_retranscribe = Some(name);
+            self.confirm_retranscribe = Some(id);
         } else {
-            self.retranscribe(&name);
+            self.retranscribe(id);
         }
     }
 
     pub(super) fn retranscribe_dialog(&mut self, ctx: &egui::Context) {
-        let Some(name) = self.confirm_retranscribe.clone() else {
+        let Some((id, name)) = self.asking_about(self.confirm_retranscribe) else {
+            self.confirm_retranscribe = None;
             return;
         };
         let choice = dialog::show(ctx, "confirm force", 320.0, |ui| {
@@ -356,7 +386,7 @@ impl NotebookApp {
             dialog::buttons(ui, &t!("confirm-force-button"), Stakes::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative) {
-            self.retranscribe(&name);
+            self.retranscribe(id);
         }
         if choice.is_some() {
             self.confirm_retranscribe = None;
@@ -365,11 +395,12 @@ impl NotebookApp {
 
     /// Drops page `index`'s corrections, once the user confirms.
     pub(super) fn request_reset(&mut self, index: usize) {
-        self.confirm_reset = self.pages.get(index).map(|p| p.name.clone());
+        self.confirm_reset = self.pages.get(index).map(|p| p.id);
     }
 
     pub(super) fn reset_dialog(&mut self, ctx: &egui::Context) {
-        let Some(name) = self.confirm_reset.clone() else {
+        let Some((id, name)) = self.asking_about(self.confirm_reset) else {
+            self.confirm_reset = None;
             return;
         };
         let choice = dialog::show(ctx, "confirm reset", 320.0, |ui| {
@@ -377,18 +408,16 @@ impl NotebookApp {
             dialog::buttons(ui, &t!("confirm-reset-button"), Stakes::Dangerous, true)
         });
         if choice == Some(Choice::Affirmative)
-            && let Some(transcript) = self
-                .pages
-                .find_mut(&name)
-                .and_then(|p| p.transcript.as_mut())
+            && let Some(page) = self.pages.find_mut(id)
+            && let Some(transcript) = page.transcript.as_mut()
         {
             transcript.reset();
             self.eval_log.record(Event::Reset {
-                page: name.clone(),
+                page: PageRef { id, name },
                 model: transcript.model.clone(),
             });
             // Claude's transcription may be in an older style.
-            self.restyle_if_stale(&name);
+            self.restyle_if_stale(id);
         }
         if choice.is_some() {
             self.confirm_reset = None;
@@ -405,7 +434,7 @@ impl NotebookApp {
         // Without credentials, it waits for the user to ask, rather than asking for a key.
         if page.transcript.is_none()
             && page.bytes().is_some()
-            && self.transcriptions.error(&page.name).is_none()
+            && self.transcriptions.error(page.id).is_none()
             && self.transcriptions.can_send()
         {
             self.start_transcribing(index);
@@ -420,7 +449,7 @@ impl NotebookApp {
         let Some(page) = self.pages.get(index) else {
             return;
         };
-        if self.transcriptions.queued_or_running(&page.name) {
+        if self.transcriptions.queued_or_running(page.id) {
             return;
         }
         if page.transcript.is_some() {
@@ -439,10 +468,10 @@ impl NotebookApp {
     /// Sends page `index` to be transcribed, unless it's in the cache. Without credentials, asks
     /// for an API key first.
     pub(super) fn start_transcribing(&mut self, index: usize) {
-        let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
+        let Some(id) = self.pages.get(index).map(|p| p.id) else {
             return;
         };
-        if !self.ready_to_send(AfterKey::Transcribe(name)) {
+        if !self.ready_to_send(AfterKey::Transcribe(id)) {
             return;
         }
         if let Some(page) = self.pages.get(index) {
@@ -454,7 +483,7 @@ impl NotebookApp {
     pub(super) fn place_corners(&mut self, index: usize) {
         self.set_view(View::Cleaned);
         if let Some(page) = self.pages.get(index) {
-            self.corners.place(&page.name);
+            self.corners.place(page.id);
         }
     }
 
@@ -472,7 +501,7 @@ impl NotebookApp {
             return;
         }
         let params = self.clean_params.clone();
-        self.ingest.load(&page.name, bytes, params, corners);
+        self.ingest.load(page.id, bytes, params, corners);
     }
 
     /// Moves page `from` to index `to`, keeping the shown page shown. See
@@ -488,17 +517,14 @@ impl NotebookApp {
         self.pages.sort_by_name();
     }
 
-    /// Selects the shown page by name, so it stays shown when the pages move. Until the user picks
-    /// one, the shown page is whichever is first.
+    /// Selects the shown page, so it stays shown when the pages move. Until the user picks one,
+    /// the shown page is whichever is first.
     pub(super) fn pin_selection(&mut self) {
-        self.selected = self
-            .pages
-            .get(self.selected_index())
-            .map(|p| p.name.clone());
+        self.selected = self.pages.get(self.selected_index()).map(|p| p.id);
     }
 
     pub(super) fn selected_index(&self) -> usize {
-        let name = self.selected.as_ref();
-        name.and_then(|name| self.pages.position(name)).unwrap_or(0)
+        let id = self.selected;
+        id.and_then(|id| self.pages.position(id)).unwrap_or(0)
     }
 }

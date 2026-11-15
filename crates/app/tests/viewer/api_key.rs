@@ -92,7 +92,10 @@ fn viewing_transcripts_without_a_key_waits_to_be_asked() {
 fn transcribe_all_asks_for_a_key_then_transcribes() {
     let mut app = keyed(None, Stored::Empty, any_key());
     let harness = &mut app.harness;
-    drop_files(harness, &[("a.png", page_photo()), ("b.png", page_photo())]);
+    drop_files(
+        harness,
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
+    );
     click_command(harness, Command::TranscribeAll);
     settle(harness);
     enter_key(harness, KEY);
@@ -343,7 +346,10 @@ fn a_saved_key_takes_over_from_ant_until_removed() {
     let ant = logged_in_ant("ant-token");
     let mut app = keyed_with_ant(None, Stored::Empty, ant, any_key());
     let harness = &mut app.harness;
-    drop_files(harness, &[("a.png", page_photo()), ("b.png", page_photo())]);
+    drop_files(
+        harness,
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
+    );
     open_settings(harness);
     harness.get_by_label(&t!("settings-api-key-enter")).click();
     settle(harness);

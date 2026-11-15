@@ -235,7 +235,7 @@ fn the_selected_model_transcribes_and_is_compared_with_the_other() {
     let on_transcribe_completed: OnTranscribeCompleted = {
         let (sent, cache) = (sent.clone(), Cache::new(dir.path()));
         Arc::new(
-            move |page: &str, bytes: &[u8], t: &notebook_core::transcript::Transcript| {
+            move |_, page: &str, bytes: &[u8], t: &notebook_core::transcript::Transcript| {
                 let compared = compare::with_cached(&cache, bytes, t);
                 let compared: Vec<_> = compared.iter().map(|(m, c)| (*m, c.similarity)).collect();
                 sent.lock()

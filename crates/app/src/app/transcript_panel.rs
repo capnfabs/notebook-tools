@@ -89,7 +89,7 @@ impl NotebookApp {
         let page = self.pages.get(index)?;
         let transcript = page.transcript.as_ref()?;
         let when = when_and_by(transcript, &TimeZone::system());
-        let error = self.transcriptions.error(&page.name);
+        let error = self.transcriptions.error(page.id);
         let text = match error {
             Some(error) => t!(
                 "transcript-retranscribe-failed",
@@ -124,16 +124,16 @@ impl NotebookApp {
         let start = if page.missing_photo().is_some() {
             ui.label(t!("cant-transcribe-missing", name = name.as_str()));
             false
-        } else if self.transcriptions.queued_or_running(name) {
+        } else if self.transcriptions.queued_or_running(page.id) {
             spinner(ui, &t!("transcribing-page", name = name.as_str()));
             false
-        } else if let Some(err) = self.transcriptions.error(name) {
+        } else if let Some(err) = self.transcriptions.error(page.id) {
             ui.colored_label(
                 ui.visuals().error_fg_color,
                 t!("transcribe-failed", name = name.as_str(), error = err),
             );
             with_shortcut(ui.button(t!("transcribe-retry")), Command::Transcribe).clicked()
-        } else if self.transcriptions.checking(name) {
+        } else if self.transcriptions.checking(page.id) {
             spinner(ui, &t!("checking-cache", name = name.as_str()));
             false
         } else if !self.can(Command::Transcribe) {

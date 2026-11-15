@@ -33,7 +33,7 @@ fn arrows_move_the_focus_and_command_arrows_change_pages() {
     let mut harness = harness_with(transcriber());
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     show_transcript(&mut harness);
     tab_to(&mut harness, "- ring the ");
@@ -150,7 +150,7 @@ fn changing_page_puts_the_focus_at_the_top_of_its_transcript() {
         );
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     show_transcript(&mut harness);
     let heading = harness.get_by_label("# Thurs 23 Oct").rect().top();

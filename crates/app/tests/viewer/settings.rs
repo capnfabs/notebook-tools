@@ -111,12 +111,11 @@ fn a_new_markdown_style_restyles_unedited_transcripts() {
     let mut harness = cached_harness(fetch, dir.path());
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     show_transcript(&mut harness);
     harness.get_by_label("b.png").click();
     settle(&mut harness);
-    // From the cache, which a.png's transcription filled.
     click_command(&harness, Command::Transcribe);
     step_until(&mut harness, "buy _eggs_");
     correct_plumber(&mut harness);
@@ -142,7 +141,7 @@ fn a_new_markdown_style_restyles_unedited_transcripts() {
     step_until(&mut harness, "buy *eggs*");
     harness.get_by_label("plumber");
 
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "each page sent once");
     let transcribed = events(&harness)
         .into_iter()
         .filter(|e| e.starts_with("transcribed"))
@@ -151,7 +150,7 @@ fn a_new_markdown_style_restyles_unedited_transcripts() {
         transcribed,
         [
             "transcribed from_cache=false",
-            "transcribed from_cache=true"
+            "transcribed from_cache=false"
         ]
     );
 }
@@ -346,9 +345,11 @@ fn with_caching_off_pages_are_sent_again_and_not_stored() {
         .path();
     let stored = std::fs::metadata(&entry).unwrap().modified().unwrap();
 
-    drop_files(&mut harness, &[("b.png", page_photo())]);
-    harness.get_by_label("b.png").click();
+    // The same photo again, once it's no longer a page.
+    press_command(&mut harness, egui::Key::Backspace);
+    harness.get_by_label(&t!("confirm-delete-button")).click();
     settle(&mut harness);
+    drop_files(&mut harness, &[("b.png", page_photo())]);
     click_command(&harness, Command::Transcribe);
     step_until(&mut harness, "# Thurs 23 Oct");
     assert_eq!(calls.load(Ordering::SeqCst), 2, "sent again");

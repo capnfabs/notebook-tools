@@ -8,6 +8,7 @@ use notebook_core::geom::rect_corners;
 use super::NotebookApp;
 use super::textures::Showing;
 use crate::command::Command;
+use crate::eval_log::PageRef;
 use crate::t;
 use crate::ui::{icons, split, transcript_view};
 
@@ -75,7 +76,7 @@ impl NotebookApp {
         let Some(page) = self.pages.get(index) else {
             return rect;
         };
-        let prompt = self.corners.prompt(&page.name);
+        let prompt = self.corners.prompt(page.id);
         let row = ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
             ui.horizontal(|ui| {
                 let place = self.command_button(ui, Command::PlaceCorners).clicked();
@@ -112,7 +113,7 @@ impl NotebookApp {
             .unwrap_or_else(|| rect_corners(w, h));
         let changed = self
             .corners
-            .show(ui, &page.name, quad, report.source_size, image_rect);
+            .show(ui, page.id, quad, report.source_size, image_rect);
         if let Some(corners) = changed {
             self.set_corners(index, Some(corners));
         }
@@ -161,11 +162,12 @@ impl NotebookApp {
     /// The cleaned page beside its transcript, for correcting.
     pub(super) fn show_transcribed(&mut self, ui: &mut egui::Ui) {
         let index = self.selected_index();
-        let Some(name) = self.pages.get(index).map(|p| p.name.clone()) else {
+        let Some(page_ref) = self.pages.get(index).map(PageRef::of) else {
             return;
         };
+        let name = page_ref.name.clone();
         // A page being retranscribed shows progress, not the transcript it's replacing.
-        let transcribing = self.transcriptions.queued_or_running(&name);
+        let transcribing = self.transcriptions.queued_or_running(page_ref.id);
         let rect = ui.available_rect_before_wrap();
         let showing = self.showing(ui.ctx(), true);
         let shown = self
@@ -205,7 +207,7 @@ impl NotebookApp {
             let image = image_rect.zip(crop);
             let events = self
                 .transcript_view
-                .show(ui, &name, transcript, image, text_rect);
+                .show(ui, page_ref, transcript, image, text_rect);
             for event in events {
                 self.eval_log.record(event);
             }

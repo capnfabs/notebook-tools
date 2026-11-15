@@ -47,3 +47,4 @@ In the order they were finished.
 - [x] [macOS app bundle and signing](macos-app-bundle.md)
 - [x] [Show pages whose photos are missing](missing-pages.md)
 - [x] [Flaky test: unverified API key warning](flaky-unverified-key-test.md)
+- [x] [Pages keyed by something other than their name](page-ids.md)

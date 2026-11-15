@@ -12,6 +12,7 @@ use egui::{
     Color32, CursorIcon, Id, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, Vec2, WidgetInfo,
 };
 use notebook_core::geom::{Quad, is_page_shaped, order_corners};
+use notebook_core::page::PageId;
 
 use crate::t;
 
@@ -46,9 +47,9 @@ const ARROWS: [Key; 4] = [
 /// furthest it can go without spoiling the outline.
 const CONSTRAIN_STEPS: usize = 12;
 
-/// Corners being clicked in, for the page named `name`.
+/// Corners being clicked in, for page `page`.
 struct Placing {
-    name: String,
+    page: PageId,
     points: Vec<[f32; 2]>,
     /// The last fourth corner clicked was refused.
     refused: bool,
@@ -77,21 +78,21 @@ pub struct Corners {
 }
 
 impl Corners {
-    /// Starts clicking in new corners for the page named `name`, forgetting any clicked so far.
-    pub fn place(&mut self, name: &str) {
+    /// Starts clicking in new corners for page `page`, forgetting any clicked so far.
+    pub fn place(&mut self, page: PageId) {
         self.drag = None;
         self.nudge = None;
         self.placing = Some(Placing {
-            name: name.to_owned(),
+            page,
             points: Vec::new(),
             refused: false,
         });
     }
 
-    /// What to tell the user while new corners are being clicked in for the page named `name`:
-    /// to click them, or why a fourth was refused.
-    pub fn prompt(&self, name: &str) -> Option<String> {
-        let placing = self.placing.as_ref().filter(|p| p.name == name)?;
+    /// What to tell the user while new corners are being clicked in for page `page`: to click
+    /// them, or why a fourth was refused.
+    pub fn prompt(&self, page: PageId) -> Option<String> {
+        let placing = self.placing.as_ref().filter(|p| p.page == page)?;
         Some(if placing.refused {
             t!("corners-refused-prompt")
         } else {
@@ -99,13 +100,13 @@ impl Corners {
         })
     }
 
-    /// `quad`, the corners of the page named `name`, over its photo of `source_size` pixels drawn
+    /// `quad`, the corners of page `page`, over its photo of `source_size` pixels drawn
     /// at `image_rect`. Returns new corners once the user lets go of one, whether dragged or nudged
     /// with the arrow keys, or clicks in the fourth.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        name: &str,
+        page: PageId,
         quad: Quad,
         source_size: (u32, u32),
         image_rect: Rect,
@@ -117,7 +118,7 @@ impl Corners {
             let p = image_rect.clamp(p) - image_rect.min;
             [p.x / scale.x, p.y / scale.y]
         };
-        if self.placing.as_ref().is_some_and(|p| p.name != name) {
+        if self.placing.as_ref().is_some_and(|p| p.page != page) {
             self.placing = None;
         }
         if self.placing.is_some() {

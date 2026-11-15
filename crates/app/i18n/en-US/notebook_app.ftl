@@ -229,8 +229,9 @@ photos-missing = { $count ->
     [one] A photo is missing: { $names }
    *[other] { $count } photos are missing: { $names }
 }
-# Adding a photo with the same name as a page whose photo is missing.
-already-missing = { $name } is already a page, with its photo missing.
+# A photo was added that a page was missing: the page has it now, and takes the photo's file name.
+# $name is the page's name before.
+photo-found = Found the photo for { $name }.
 
 ## A page whose photo is missing, in place of its image
 

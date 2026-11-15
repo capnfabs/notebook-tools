@@ -38,12 +38,12 @@ impl NotebookApp {
                 has_photo
                     && can_transcribe
                     && page.is_some_and(|p| {
-                        p.transcript.is_some() && !self.transcriptions.queued_or_running(&p.name)
+                        p.transcript.is_some() && !self.transcriptions.queued_or_running(p.id)
                     })
             }
             Command::ResetTranscript => page.is_some_and(|p| {
                 p.transcript.as_ref().is_some_and(Transcript::corrected)
-                    && !self.transcriptions.queued_or_running(&p.name)
+                    && !self.transcriptions.queued_or_running(p.id)
             }),
             Command::TranscribeAll => can_transcribe && !self.untranscribed().is_empty(),
             Command::PreviousPage | Command::MoveLeft => page.is_some() && index > 0,
@@ -124,7 +124,7 @@ impl NotebookApp {
             Command::SaveAs => {
                 self.save_as();
             }
-            Command::AddPages => self.add_picked(),
+            Command::AddPages => self.add_picked(ctx),
             Command::Export if self.export.can_reexport() => {
                 self.export.reexport(ctx, &self.pages, index);
             }

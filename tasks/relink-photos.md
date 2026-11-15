@@ -28,7 +28,7 @@ PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO give
   - same pixel size: kept;
   - same aspect, different size: corners and transcript boxes scaled (`reframe` may help);
   - otherwise: corners dropped (re-detected), transcript kept but flagged as made from the old photo.
-- The page keeps its name: it's the page's ID (unique, sort order, job/texture keys, export; until `page-ids.md`). Only path, hash, size and EXIF change. A relink is an unsaved change ("Edited").
+- The page keeps its `PageId`, corners and transcript; its name, path, hash, size and EXIF follow the new file, as when a dropped photo fills in a missing page (`decisions/2026-11-15-page-ids.md`). A relink is an unsaved change ("Edited").
 
 ## Tests
 - Core: the match tiers (hash, EXIF only, none), including a differing PhotoIdentifier beating an equal time and whole-second times; EXIF (PhotoIdentifier too) read from JPEG and HEIC. The pre-commit hook rejects committed images with metadata, so build the EXIF in test code (as `decode`'s orientation test does) rather than committing photos; ask the user if a real HEIC fixture is unavoidable, corner and box scaling, old projects without EXIF still open.

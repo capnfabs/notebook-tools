@@ -9,15 +9,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use notebook_app::{Command, NotebookApp, SavePath, Transcriber, t};
+use notebook_app::{Command, NotebookApp, Transcriber, t};
 use notebook_core::project;
 use serde_json::Value;
 use tempfile::TempDir;
 
 use crate::common::*;
 
-/// A project, `notes.notebook`, of a.png, b.png (transcribed) and c.png, saved and then opened
-/// again once b.png and c.png have gone.
+/// A project, `notes.notebook`, of a.png, b.png (transcribed) and c.png, three different photos,
+/// saved and then opened again once b.png and c.png have gone.
 struct Opened {
     dir: TempDir,
     path: PathBuf,
@@ -30,12 +30,6 @@ struct Opened {
 
 fn saved(path: &Path) -> Value {
     serde_json::from_slice(&project::json(path).unwrap()).unwrap()
-}
-
-/// Saves `pages` to `path`, whatever it's asked.
-fn save_to(path: &Path) -> SavePath {
-    let path = path.to_path_buf();
-    Arc::new(move |_| Some(path.clone()))
 }
 
 fn opened_without_b_and_c(test: &str) -> Opened {
@@ -139,7 +133,7 @@ fn a_missing_pages_transcript_can_be_corrected() {
     assert_eq!(title(&harness), t!("window-title-edited", name = "notes"));
     press_command(&mut harness, Key::S);
     let pages = project::open(&path).unwrap();
-    let b = pages.find("b.png").unwrap();
+    let b = pages.iter().find(|p| p.name == "b.png").unwrap();
     assert!(b.missing_photo().is_some());
     assert!(b.transcript.as_ref().unwrap().corrected());
     assert_eq!(sent.load(Ordering::SeqCst), 0, "nothing sent");
@@ -205,13 +199,48 @@ fn exporting_needs_the_photos() {
     );
 }
 
+/// Its photo, under any name, gives a missing page its photo back: see
+/// `decisions/2026-11-15-page-ids.md`.
 #[test]
-fn a_photo_named_like_a_missing_page_isnt_added() {
+fn a_dropped_photo_fills_in_its_missing_page() {
+    let Opened {
+        dir,
+        path,
+        mut harness,
+        ..
+    } = opened_without_b_and_c("found");
+    let moved = dir.path().join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    drop_files_in(&mut harness, &moved, &[("IMG_0002.png", page_photo())]);
+    assert_eq!(thumbnails(&harness), ["a.png", "IMG_0002.png", "c.png"]);
+    assert_eq!(selected_thumbnails(&harness), ["IMG_0002.png"]);
+    let found = t!("photo-found", name = "b.png");
+    assert!(harness.query_by_label(&found).is_some());
+    assert!(harness.query_by_label(&t!("missing-photo-title")).is_none());
+    assert_eq!(title(&harness), t!("window-title-edited", name = "notes"));
+
+    press_command(&mut harness, Key::S);
+    let pages = project::open(&path).unwrap();
+    let page = pages.get(1).unwrap();
+    assert_eq!(page.name, "IMG_0002.png");
+    assert_eq!(page.path, Some(moved.join("IMG_0002.png")));
+    assert!(page.missing_photo().is_none());
+    assert!(page.transcript.is_some(), "its transcript stays");
+}
+
+#[test]
+fn another_photo_named_like_a_missing_page_is_another_page() {
     let Opened { mut harness, .. } = opened_without_b_and_c("same_name");
     drop_files(&mut harness, &[("b.png", png())]);
-    assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png"]);
-    let error = t!("already-missing", name = "b.png");
-    assert!(harness.query_by_label(&error).is_some());
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png", "b.png", "c.png"]);
+    let summary = t!("photos-missing", count = 2, names = "b.png, c.png");
+    assert!(
+        harness.query_by_label(&summary).is_none(),
+        "a drop clears it"
+    );
+    // The missing one is still missing.
+    press_command(&mut harness, Key::ArrowRight);
+    assert!(harness.query_by_label(&t!("missing-photo-title")).is_some());
 }
 
 #[test]

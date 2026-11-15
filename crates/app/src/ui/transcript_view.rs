@@ -26,7 +26,7 @@ use notebook_core::clean::Crop;
 use notebook_core::reframe::Reframe;
 use notebook_core::transcript::{Bbox, Span, Transcript, Unfound, struck_ranges};
 
-use crate::eval_log::{Event, Via};
+use crate::eval_log::{Event, PageRef, Via};
 use crate::t;
 
 /// Room for corrections to lengthen lines, as a multiple of the longest line.
@@ -58,7 +58,7 @@ pub fn natural_width(ui: &egui::Ui, transcript: &Transcript) -> f32 {
 #[derive(Default)]
 pub struct TranscriptView {
     /// The page this state belongs to.
-    page: String,
+    page: Option<PageRef>,
     /// What's under the pointer, and what has the keyboard focus, last frame: highlighted on both
     /// sides.
     seen: Seen,
@@ -216,22 +216,21 @@ impl TranscriptView {
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
-        page: &str,
+        page: PageRef,
         transcript: &mut Transcript,
         image: Option<(Rect, Crop)>,
         text_rect: Rect,
     ) -> Vec<Event> {
         let pass = ui.ctx().cumulative_pass_nr();
-        if self.page != page {
+        // A page's name can change, as when its photo is found, without it being another page.
+        if self.page.as_ref().is_none_or(|p| p.id != page.id) {
             let had_focus = self.focused_in_pass.is_some_and(|p| p + 1 == pass);
-            *self = Self {
-                page: page.to_owned(),
-                ..Self::default()
-            };
+            *self = Self::default();
             if had_focus {
                 self.refocus_next = Some(Refocus::TOP);
             }
         }
+        self.page = Some(page.clone());
         if ui.input(|i| i.pointer.any_pressed()) {
             self.hint = None;
         }
@@ -268,7 +267,7 @@ impl TranscriptView {
         if open > 0 && transcript.open_uncertain() == 0 {
             let spans = transcript.uncertain_spans();
             self.events.push(Event::AllResolved {
-                page: page.to_owned(),
+                page,
                 model: transcript.model.clone(),
                 uncertain: spans.len(),
                 unfound: spans.iter().filter(|s| s.is_none()).count(),
@@ -492,9 +491,12 @@ impl TranscriptView {
             let (enter, escape) =
                 ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
             let return_to = return_to.take();
-            if !escape && *from != *text {
+            if !escape
+                && *from != *text
+                && let Some(page) = self.page.clone()
+            {
                 self.events.push(Event::LineEdited {
-                    page: self.page.clone(),
+                    page,
                     model: transcript.model.clone(),
                     line,
                     from: from.clone(),
@@ -747,7 +749,10 @@ impl TranscriptView {
         // Escape and picking a reading put the focus back; clicking elsewhere doesn't.
         let mut done = ui.input(|i| i.key_pressed(Key::Escape));
         if let Some(choice) = choice {
-            let event = apply(transcript, &self.page, &c.target, choice);
+            let event = self
+                .page
+                .clone()
+                .and_then(|page| apply(transcript, page, &c.target, choice));
             self.events.extend(event);
             done = true;
         }
@@ -827,8 +832,13 @@ fn line_targets(
 }
 
 /// Makes `choice` for `target`, returning what to log if it changed anything.
-fn apply(transcript: &mut Transcript, page: &str, target: &Target, choice: Pick) -> Option<Event> {
-    let (page, model) = (page.to_owned(), transcript.model.clone());
+fn apply(
+    transcript: &mut Transcript,
+    page: PageRef,
+    target: &Target,
+    choice: Pick,
+) -> Option<Event> {
+    let model = transcript.model.clone();
     match (target, choice) {
         (&Target::Uncertain(word), choice) => {
             let from = transcript.uncertain.get(word)?.text.clone();

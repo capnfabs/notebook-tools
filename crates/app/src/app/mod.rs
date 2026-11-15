@@ -26,7 +26,7 @@ use std::sync::Arc;
 use eframe::egui;
 use notebook_core::cache::Cache;
 use notebook_core::clean::CleanParams;
-use notebook_core::page::Pages;
+use notebook_core::page::{PageId, Pages};
 use notebook_core::settings::Settings;
 use textures::Textures;
 
@@ -76,8 +76,8 @@ impl Default for Input {
 pub struct NotebookApp {
     ingest: Ingest,
     pages: Pages,
-    /// Name of the page the user picked. The first page is shown until they pick one.
-    selected: Option<String>,
+    /// The page the user picked. The first page is shown until they pick one.
+    selected: Option<PageId>,
     /// The strip of page thumbnails.
     thumbnails: Thumbnails,
     /// Stays the same when another page is selected.
@@ -95,14 +95,14 @@ pub struct NotebookApp {
     transcript_split: Split,
     export: Export,
     /// The transcribed page the user asked to delete, until they confirm.
-    confirm_delete: Option<String>,
+    confirm_delete: Option<PageId>,
     /// The user asked to transcribe more than [`pages::TRANSCRIBE_ALL_CONFIRM_ABOVE`] pages, until
     /// they confirm.
     confirm_transcribe_all: bool,
     /// The corrected page the user asked to retranscribe, until they confirm.
-    confirm_retranscribe: Option<String>,
+    confirm_retranscribe: Option<PageId>,
     /// The page whose corrections the user asked to drop, until they confirm.
-    confirm_reset: Option<String>,
+    confirm_reset: Option<PageId>,
     settings_dialog: SettingsDialog,
     /// Where pages' credentials come from. Without it, the transcriber given is all there is.
     auth: Option<Auth>,
@@ -270,16 +270,16 @@ impl NotebookApp {
         while let Some(done) = self.transcriptions.next() {
             // The page may have been deleted meanwhile. Only a forced retranscription replaces a
             // transcript: a late cache hit mustn't undo the user's corrections.
-            if let Some(page) = self.pages.find_mut(&done.name)
+            if let Some(page) = self.pages.find_mut(done.id)
                 && (done.forced || page.transcript.is_none())
             {
-                let event = Event::transcribed(&done.name, &done.transcript, done.elapsed);
+                let event = Event::transcribed(page, &done.transcript, done.elapsed);
                 self.eval_log.record(event);
                 page.transcript = Some(done.transcript);
                 if done.forced {
                     self.transcript_view = TranscriptView::default();
                 }
-                self.restyle_if_stale(&done.name);
+                self.restyle_if_stale(done.id);
             }
         }
     }
@@ -320,9 +320,9 @@ impl NotebookApp {
             self.errors.push(error);
         }
         self.transcriptions.set_settings(settings);
-        let names: Vec<String> = self.pages.iter().map(|p| p.name.clone()).collect();
-        for name in names {
-            self.restyle_if_stale(&name);
+        let ids: Vec<PageId> = self.pages.iter().map(|p| p.id).collect();
+        for id in ids {
+            self.restyle_if_stale(id);
         }
     }
 
@@ -370,12 +370,12 @@ impl NotebookApp {
         self.transcriptions.set_transcriber(auth.transcriber());
     }
 
-    /// Reads the page named `name`'s transcript again from Claude's answer if it's in another
+    /// Reads page `id`'s transcript again from Claude's answer if it's in another
     /// style than the settings', unless the user has corrected it: that would lose their
     /// corrections.
-    fn restyle_if_stale(&mut self, name: &str) {
+    fn restyle_if_stale(&mut self, id: PageId) {
         let style = &self.transcriptions.settings().markdown;
-        let Some(page) = self.pages.find_mut(name) else {
+        let Some(page) = self.pages.find_mut(id) else {
             return;
         };
         let Some(transcript) = &page.transcript else {
@@ -389,7 +389,7 @@ impl NotebookApp {
                 page.transcript = Some(restyled);
                 self.transcript_view = TranscriptView::default();
             }
-            Err(err) => log::warn!("{name}: couldn't restyle the transcript: {err}"),
+            Err(err) => log::warn!("{}: couldn't restyle the transcript: {err}", page.name),
         }
     }
 }

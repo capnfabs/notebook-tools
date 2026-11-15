@@ -38,13 +38,15 @@ fn clicking_a_thumbnail_selects_it() {
 #[test]
 fn later_drops_merge_in_order_and_keep_selection() {
     let mut harness = harness();
-    drop_files(&mut harness, &[("b.png", png()), ("d.png", png())]);
+    let b = png();
+    drop_files(&mut harness, &[("b.png", b.clone()), ("d.png", png())]);
     harness.get_by_label("d.png").click();
     settle(&mut harness);
 
+    // b.png again is the same photo, so it's left out.
     drop_files(
         &mut harness,
-        &[("c.png", png()), ("b.png", png()), ("a.png", png())],
+        &[("c.png", png()), ("b.png", b), ("a.png", png())],
     );
 
     assert_eq!(thumbnails(&harness), ["a.png", "b.png", "c.png", "d.png"]);
@@ -436,7 +438,7 @@ fn export_follows_page_order() {
     let mut harness = harness_with(transcriber());
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     show_transcript(&mut harness);
     harness.get_by_label("b.png").click();

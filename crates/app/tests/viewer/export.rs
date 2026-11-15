@@ -209,7 +209,7 @@ fn exports_a_pdf() {
     );
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     click_command(&harness, Command::TranscribeAll);
     step_until_transcribed(&mut harness);

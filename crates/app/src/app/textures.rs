@@ -12,15 +12,15 @@ use image::RgbaImage;
 use notebook_core::decode::decode;
 use notebook_core::imaging::shrink_to_fit;
 use notebook_core::loaded::Loaded;
-use notebook_core::page::Page;
+use notebook_core::page::{Page, PageId};
 
 use crate::jobs::{Jobs, Waker};
 use crate::timing::timed;
 
 #[derive(Default)]
 pub(super) struct Textures {
-    /// One pair per loaded page, by name.
-    thumbs: HashMap<String, Thumbs>,
+    /// One pair per loaded page.
+    thumbs: HashMap<PageId, Thumbs>,
     /// The selected page's photo, then its cleaned image, at full size.
     full: [Option<FullSize>; 2],
     decodes: Decodes,
@@ -45,10 +45,12 @@ impl Showing {
     }
 }
 
-/// One of a page's full-size images: its name, whether it's the cleaned one, and its JPEG, which
+/// One of a page's full-size images: its page, whether it's the cleaned one, and its JPEG, which
 /// changes when the page is cleaned again.
 #[derive(Clone)]
 struct ImageKey {
+    id: PageId,
+    /// For the logs.
     name: String,
     cleaned: bool,
     jpeg: Arc<[u8]>,
@@ -56,9 +58,7 @@ struct ImageKey {
 
 impl PartialEq for ImageKey {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.cleaned == other.cleaned
-            && Arc::ptr_eq(&self.jpeg, &other.jpeg)
+        self.id == other.id && self.cleaned == other.cleaned && Arc::ptr_eq(&self.jpeg, &other.jpeg)
     }
 }
 
@@ -108,29 +108,29 @@ impl Textures {
         self.decodes.jobs.running() > 0
     }
 
-    /// Makes textures of `loaded`'s thumbnails for the page named `name`.
-    pub(super) fn add_thumbnails(&mut self, ctx: &egui::Context, name: &str, loaded: &Loaded) {
+    /// Makes textures of `loaded`'s thumbnails for `page`.
+    pub(super) fn add_thumbnails(&mut self, ctx: &egui::Context, page: &Page, loaded: &Loaded) {
         let texture = |suffix: &str, img: &RgbaImage| {
-            let name = format!("{name}{suffix}");
+            let name = format!("{}{suffix}", page.name);
             ctx.load_texture(name, color_image(img), TextureOptions::LINEAR)
         };
         let thumbs = Thumbs {
             photo: texture("", &loaded.photo_thumbnail),
             cleaned: texture(" (cleaned)", &loaded.cleaned_thumbnail),
         };
-        self.thumbs.insert(name.to_owned(), thumbs);
+        self.thumbs.insert(page.id, thumbs);
     }
 
-    /// The thumbnail of the photo of the page named `name`, once it's loaded.
-    pub(super) fn thumbnail(&self, name: &str) -> Option<&TextureHandle> {
-        self.thumbs.get(name).map(|t| &t.photo)
+    /// The thumbnail of the photo of page `id`, once it's loaded.
+    pub(super) fn thumbnail(&self, id: PageId) -> Option<&TextureHandle> {
+        self.thumbs.get(&id).map(|t| &t.photo)
     }
 
-    /// Drops the deleted page named `name`'s textures.
-    pub(super) fn forget(&mut self, name: &str) {
-        self.thumbs.remove(name);
+    /// Drops deleted page `id`'s textures.
+    pub(super) fn forget(&mut self, id: PageId) {
+        self.thumbs.remove(&id);
         for full in &mut self.full {
-            if full.as_ref().is_some_and(|f| f.key.name == name) {
+            if full.as_ref().is_some_and(|f| f.key.id == id) {
                 *full = None;
             }
         }
@@ -153,12 +153,13 @@ impl Textures {
             &loaded.photo_jpeg
         };
         let key = ImageKey {
+            id: page.id,
             name: page.name.clone(),
             cleaned,
             jpeg: jpeg.clone(),
         };
         let slot = usize::from(cleaned);
-        let full = self.full[slot].as_ref().filter(|f| f.key.name == page.name);
+        let full = self.full[slot].as_ref().filter(|f| f.key.id == page.id);
         let recleaning = cleaned && loaded.corners != page.corners;
         if let Some(full) = full.filter(|f| f.key == key) {
             let texture = full.texture.clone();
@@ -178,7 +179,7 @@ impl Textures {
             });
             self.decodes.wanted[slot] = Some(key);
         }
-        let thumb = self.thumbs.get(&page.name).map(|t| t.get(cleaned));
+        let thumb = self.thumbs.get(&page.id).map(|t| t.get(cleaned));
         let replaced = full.map(|f| &f.texture);
         Showing::Placeholder(replaced.or(thumb).cloned())
     }
@@ -200,7 +201,7 @@ impl Textures {
                 // It decoded when the page loaded, so this shouldn't happen.
                 Err(err) => {
                     log::error!("Couldn't decode {name}: {err}");
-                    let Some(thumbs) = self.thumbs.get(name) else {
+                    let Some(thumbs) = self.thumbs.get(&key.id) else {
                         continue;
                     };
                     thumbs.get(key.cleaned).clone()

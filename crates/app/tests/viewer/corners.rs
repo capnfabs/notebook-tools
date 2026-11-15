@@ -324,7 +324,7 @@ fn a_focused_corner_is_ringed_and_moves_with_the_arrows() {
     let mut harness = harness();
     drop_files(
         &mut harness,
-        &[("a.png", page_photo()), ("b.png", page_photo())],
+        &[("a.png", page_photo()), ("b.png", another_page_photo())],
     );
     click_command(&harness, Command::ViewCleaned);
     settle(&mut harness);
