@@ -33,3 +33,7 @@ PhotoIdentifier is in Apple's MakerNote, not standard EXIF: on mac, ImageIO give
 ## Tests
 - Core: the match tiers (hash, EXIF only, none), including a differing PhotoIdentifier beating an equal time and whole-second times; EXIF (PhotoIdentifier too) read from JPEG and HEIC. The pre-commit hook rejects committed images with metadata, so build the EXIF in test code (as `decode`'s orientation test does) rather than committing photos; ask the user if a real HEIC fixture is unavoidable, corner and box scaling, old projects without EXIF still open.
 - UI (`crates/app/tests/viewer/`): Relink… with a stand-in chooser for each tier, Use Changed File, the warning's cancel/proceed, saving after a relink, and keyboard focus on the new buttons and dialogs.
+
+## also
+
+Somewhere, on the missing page warnings, we should include a note saying that users can drag-n-drop files to reconnect them.
