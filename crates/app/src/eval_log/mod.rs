@@ -324,7 +324,11 @@ mod tests {
 
     /// A page called `name`, with an ID of its own.
     fn page(name: &str) -> PageRef {
-        PageRef::of(&Page::new(name.to_owned(), Arc::from(&[][..])))
+        PageRef::of(&Page::new(
+            name.to_owned(),
+            Arc::from(&[][..]),
+            Default::default(),
+        ))
     }
 
     thread_local! {

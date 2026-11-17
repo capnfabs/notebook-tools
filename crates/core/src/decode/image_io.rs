@@ -10,9 +10,12 @@ use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGColorSpaceModel, CGContext, CGImage, CGImageAlphaInfo,
     kCGColorSpaceSRGB,
 };
-use objc2_image_io::{CGImageSource, kCGImagePropertyOrientation};
+use objc2_image_io::{
+    CGImageSource, kCGImagePropertyOrientation, kCGImagePropertyPixelHeight,
+    kCGImagePropertyPixelWidth,
+};
 
-use super::{DecodeError, Decoder, is_heic, upright};
+use super::{DecodeError, Decoder, is_heic, upright, upright_size};
 
 /// HEIC, as iPhones take, through ImageIO.
 pub(super) struct ImageIo;
@@ -23,10 +26,7 @@ impl Decoder for ImageIo {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
-        let data = CFData::from_bytes(bytes);
-        // SAFETY: no options.
-        let source = unsafe { CGImageSource::with_data(&data, None) }
-            .ok_or_else(|| DecodeError::Heic("ImageIO can't read it".into()))?;
+        let source = source(bytes)?;
         // SAFETY: no options; the index comes from the source itself.
         let (image, orientation) = unsafe {
             let index = source.primary_image_index();
@@ -42,6 +42,36 @@ impl Decoder for ImageIo {
             orientation,
         ))
     }
+
+    fn size(&self, bytes: &[u8]) -> Result<(u32, u32), DecodeError> {
+        let source = source(bytes)?;
+        // SAFETY: no options; the index comes from the source itself, and ImageIO's property
+        // dictionaries have CFString keys.
+        let (size, orientation) = unsafe {
+            let index = source.primary_image_index();
+            let properties = source.properties_at_index(index, None).ok_or_else(|| {
+                DecodeError::Heic(format!("ImageIO status {}", source.status().0))
+            })?;
+            let properties = properties.cast_unchecked::<CFString, CFType>();
+            let number = |key: &CFString| {
+                let value = properties.get(key)?;
+                u32::try_from(value.downcast_ref::<CFNumber>()?.as_i64()?).ok()
+            };
+            let width = number(kCGImagePropertyPixelWidth);
+            let height = number(kCGImagePropertyPixelHeight);
+            (width.zip(height), orientation(&source, index))
+        };
+        let size = size.ok_or_else(|| DecodeError::Heic("no pixel size".into()))?;
+        Ok(upright_size(size, orientation))
+    }
+}
+
+/// ImageIO's reader for `bytes`.
+fn source(bytes: &[u8]) -> Result<CFRetained<CGImageSource>, DecodeError> {
+    let data = CFData::from_bytes(bytes);
+    // SAFETY: no options.
+    unsafe { CGImageSource::with_data(&data, None) }
+        .ok_or_else(|| DecodeError::Heic("ImageIO can't read it".into()))
 }
 
 /// The EXIF-style orientation of image `index` in `source`, or none if it doesn't say.

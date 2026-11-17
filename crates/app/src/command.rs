@@ -44,6 +44,11 @@ pub enum Command {
     PlaceCorners,
     /// Back to the corners cleaning found.
     ResetCorners,
+    /// Pick the file a page missing its photo should have. See
+    /// `decisions/2026-11-17-relink-photos.md`.
+    RelinkPhoto,
+    /// Take the file now at a page's photo's path, which has changed, as its photo.
+    UseChangedFile,
     Delete,
 }
 
@@ -76,7 +81,7 @@ const COMMAND_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 const COMMAND_ALT: Modifiers = Modifiers::COMMAND.plus(Modifiers::ALT);
 
 impl Command {
-    pub const ALL: [Command; 24] = [
+    pub const ALL: [Command; 26] = [
         Self::Settings,
         Self::Quit,
         Self::NewProject,
@@ -100,6 +105,8 @@ impl Command {
         Self::SortByName,
         Self::PlaceCorners,
         Self::ResetCorners,
+        Self::RelinkPhoto,
+        Self::UseChangedFile,
         Self::Delete,
     ];
 
@@ -137,6 +144,8 @@ impl Command {
             Self::SortByName => ("sort-by-name", None, false),
             Self::PlaceCorners => ("place-corners", None, false),
             Self::ResetCorners => ("reset-corners", None, false),
+            Self::RelinkPhoto => ("relink-photo", None, false),
+            Self::UseChangedFile => ("use-changed-file", None, false),
             Self::Delete => ("delete", keys(Modifiers::COMMAND, Key::Backspace), true),
         };
         let checkable = matches!(
@@ -177,6 +186,8 @@ impl Command {
             Self::SortByName => t!("command-sort-by-name"),
             Self::PlaceCorners => t!("command-place-corners"),
             Self::ResetCorners => t!("command-reset-corners"),
+            Self::RelinkPhoto => t!("command-relink-photo"),
+            Self::UseChangedFile => t!("command-use-changed-file"),
             Self::Delete => t!("command-delete"),
         }
     }
@@ -299,6 +310,9 @@ pub const MENUS: &[Menu] = {
                 Sep,
                 Do(C::PlaceCorners),
                 Do(C::ResetCorners),
+                Sep,
+                Do(C::RelinkPhoto),
+                Do(C::UseChangedFile),
                 Sep,
                 Do(C::Delete),
             ],

@@ -5,8 +5,11 @@
 //! can't be found when the project opens leaves its page [missing](Page::missing) its photo, still
 //! in its place, so that saving again loses nothing.
 //!
-//! See `decisions/2026-10-31-projects.md`, `decisions/2026-10-31-gzip-projects.md` and
-//! `decisions/2026-11-15-missing-pages-shown.md`.
+//! Each photo's size and EXIF IDs are saved too, so it can be told again if it moves: see
+//! `crate::relink`.
+//!
+//! See `decisions/2026-10-31-projects.md`, `decisions/2026-10-31-gzip-projects.md`,
+//! `decisions/2026-11-15-missing-pages-shown.md` and `decisions/2026-11-17-relink-photos.md`.
 
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
@@ -18,6 +21,7 @@ use crate::cache::sha256_hex;
 use crate::geom::Quad;
 use crate::json_file;
 use crate::page::{Page, Pages, Why};
+use crate::photo_meta::{PhotoIds, PhotoMeta};
 use crate::transcript::Transcript;
 
 /// Version of the project file. Bump it when the format changes in a way an older build would
@@ -48,6 +52,10 @@ pub struct Photo {
     pub sha256: String,
     /// The file's size in bytes.
     pub len: u64,
+    /// The photo's width and height, upright.
+    pub size: (u32, u32),
+    #[serde(default, skip_serializing_if = "PhotoIds::is_empty")]
+    pub exif: PhotoIds,
 }
 
 #[derive(Debug)]
@@ -82,6 +90,8 @@ impl SavedPage {
                 path: page.path.clone()?,
                 sha256: page.sha256.clone(),
                 len: page.len,
+                size: page.meta.size,
+                exif: page.meta.exif.clone(),
             },
             corners: page.corners,
             transcript: page.transcript.clone(),
@@ -93,6 +103,8 @@ impl SavedPage {
         self.name == page.name
             && page.path.as_ref() == Some(&self.photo.path)
             && self.photo.sha256 == page.sha256
+            && self.photo.size == page.meta.size
+            && self.photo.exif == page.meta.exif
             && self.corners == page.corners
             && self.transcript == page.transcript
     }
@@ -144,8 +156,15 @@ pub fn open(path: &Path) -> Result<Pages, OpenError> {
             ..saved.photo
         };
         let page = match read_photo(&photo) {
-            Ok(bytes) => Page::new(saved.name, bytes).at(photo.path),
-            Err(why) => Page::missing(saved.name, photo.path, photo.sha256, photo.len, why),
+            // The same file, so what it says about itself is what was saved.
+            Ok(bytes) => {
+                let meta = PhotoMeta {
+                    size: photo.size,
+                    exif: photo.exif,
+                };
+                Page::new(saved.name, bytes, meta).at(photo.path)
+            }
+            Err(why) => Page::missing(saved.name, photo, why),
         };
         Page {
             corners: saved.corners,

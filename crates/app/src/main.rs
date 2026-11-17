@@ -106,7 +106,8 @@ fn save_dialog() -> notebook_app::SavePath {
     })
 }
 
-/// Asks which photos to add, or which project to open, with the system's open dialog.
+/// Asks which photos to add, which project to open, or which photo a page is missing, with the
+/// system's open dialog.
 fn file_picker() -> notebook_app::PickFiles {
     std::sync::Arc::new(|pick| match pick {
         Pick::Photos => rfd::FileDialog::new()
@@ -118,6 +119,15 @@ fn file_picker() -> notebook_app::PickFiles {
             .pick_file()
             .into_iter()
             .collect(),
+        Pick::Relink { near } => {
+            let dialog =
+                rfd::FileDialog::new().add_filter(t!("file-type-photos"), &decode::EXTENSIONS);
+            let dialog = match near {
+                Some(dir) => dialog.set_directory(dir),
+                None => dialog,
+            };
+            dialog.pick_file().into_iter().collect()
+        }
     })
 }
 

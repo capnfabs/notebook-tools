@@ -8,6 +8,7 @@
 //! - [`transcript_panel`]: the transcript's status and transcription progress.
 //! - [`chrome`]: the drop zone, toolbar, page strip and status line.
 //! - [`project`]: New, Open, Save and Save As, and asking to save before changes are lost.
+//! - [`relink`]: giving pages whose photos are missing their photos again.
 //! - [`textures`]: the images those show, decoded off the UI thread.
 //!
 //! See `decisions/2026-10-31-code-layout.md`.
@@ -16,6 +17,7 @@ mod chrome;
 mod commands;
 mod pages;
 mod project;
+mod relink;
 mod textures;
 mod transcript_panel;
 mod views;
@@ -124,6 +126,8 @@ pub struct NotebookApp {
     /// [`Self::frame_time_for_logs`] last looked.
     asked_which_files: bool,
     project: project::Project,
+    /// Relinking pages whose photos are missing, and the questions it asks.
+    relinking: relink::Relinking,
     /// Repaints the UI when work finishes off the UI thread. Set on the first frame.
     waker: Option<Waker>,
     /// A passing note for the status line, and the time (`InputState::time`) it goes.

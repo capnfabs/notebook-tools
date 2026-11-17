@@ -112,15 +112,28 @@ pub fn buttons_with_discard(
     stakes: Stakes,
 ) -> Option<Choice> {
     let pressed = ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Backspace));
+    let choice = buttons_with_other(ui, affirmative, discard, &t!("dialog-cancel"), stakes);
+    if pressed {
+        Some(Choice::Discard)
+    } else {
+        choice
+    }
+}
+
+/// [`buttons_saying`], plus `other` at the bottom left, which gives [`Choice::Discard`]: another
+/// way to go on, like Add as New Page, rather than one that loses work, so no key clicks it.
+pub fn buttons_with_other(
+    ui: &mut egui::Ui,
+    affirmative: &str,
+    other: &str,
+    cancel: &str,
+    stakes: Stakes,
+) -> Option<Choice> {
     ui.add_space(PADDING / 2.0);
     ui.horizontal(|ui| {
-        let discarded = ui.button(discard).clicked() || pressed;
-        let choice = right_buttons(ui, affirmative, &t!("dialog-cancel"), stakes, true);
-        if discarded {
-            Some(Choice::Discard)
-        } else {
-            choice
-        }
+        let other = ui.button(other).clicked();
+        let choice = right_buttons(ui, affirmative, cancel, stakes, true);
+        if other { Some(Choice::Discard) } else { choice }
     })
     .inner
 }

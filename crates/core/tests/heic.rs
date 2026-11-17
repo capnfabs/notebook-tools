@@ -4,7 +4,7 @@ mod common;
 
 use common::fixture;
 use image::RgbaImage;
-use notebook_core::decode::decode;
+use notebook_core::decode::{decode, size};
 
 /// The mean difference per channel between two images the same size.
 fn mean_difference(a: &RgbaImage, b: &RgbaImage) -> f64 {
@@ -37,4 +37,20 @@ fn rotated_heic_is_turned_upright() {
     assert_eq!(heic.dimensions(), (600, 800));
     let mean = mean_difference(&heic, &jpeg);
     assert!(mean < 4.0, "mean difference {mean:.1}");
+}
+
+/// Reading the size from the header gives what decoding would, turned upright.
+#[test]
+fn header_sizes_match_decoded_sizes() {
+    for name in [
+        "page-grey-table.heic",
+        "page-grey-table.jpg",
+        "page-rotated.heic",
+        "page-rotated.jpg",
+        "spread-wood-1.jpg",
+    ] {
+        let bytes = fixture(name);
+        let decoded = decode(&bytes).unwrap().dimensions();
+        assert_eq!(size(&bytes).unwrap(), decoded, "{name}");
+    }
 }

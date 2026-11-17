@@ -62,6 +62,7 @@ impl NotebookApp {
         self.transcribe_all_dialog(ui.ctx());
         self.retranscribe_dialog(ui.ctx());
         self.reset_dialog(ui.ctx());
+        self.relink_dialogs(ui.ctx());
         self.export
             .dialog(ui.ctx(), &self.pages, self.selected_index());
 
@@ -151,8 +152,8 @@ impl NotebookApp {
         });
     }
 
-    /// Loading and transcription progress, errors from the last drop, and what the last export
-    /// did.
+    /// Loading and transcription progress, which photos are missing, errors from the last drop,
+    /// and what the last export did.
     pub(super) fn show_status(&self, ui: &mut egui::Ui) {
         if self.ingest.pending() > 0 {
             spinner(ui, &t!("status-loading", count = self.ingest.pending()));
@@ -163,6 +164,9 @@ impl NotebookApp {
         }
         if let Some(count) = self.export.running() {
             spinner(ui, &t!("status-exporting", count = count));
+        }
+        if let Some(missing) = self.missing_summary() {
+            ui.colored_label(ui.visuals().error_fg_color, missing);
         }
         for err in &self.errors {
             ui.colored_label(ui.visuals().error_fg_color, err);
@@ -183,6 +187,26 @@ impl NotebookApp {
             }
             None => {}
         }
+    }
+}
+
+impl NotebookApp {
+    /// Which pages' photos are missing, if any are: as they are now, so it changes as they're
+    /// relinked, deleted or found by a drop.
+    fn missing_summary(&self) -> Option<String> {
+        let missing: Vec<&str> = self
+            .pages
+            .iter()
+            .filter(|p| p.missing_photo().is_some())
+            .map(|p| p.name.as_str())
+            .collect();
+        (!missing.is_empty()).then(|| {
+            t!(
+                "photos-missing",
+                count = missing.len(),
+                names = missing.join(", ")
+            )
+        })
     }
 }
 

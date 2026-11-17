@@ -17,8 +17,10 @@ pub mod llm_model;
 pub mod loaded;
 pub mod markdown_style;
 pub mod page;
+pub mod photo_meta;
 pub mod project;
 pub mod reframe;
+pub mod relink;
 pub mod settings;
 #[cfg(test)]
 mod test_images;

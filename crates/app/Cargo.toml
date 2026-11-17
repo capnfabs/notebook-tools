@@ -24,6 +24,8 @@ similar = "2"
 
 [dev-dependencies]
 egui_kittest.workspace = true
+# Photos with EXIF, made up in code: `photo_meta::testing`.
+notebook_core = { workspace = true, features = ["test-support"] }
 # Reads the project files the tests save.
 serde_json.workspace = true
 tempfile.workspace = true

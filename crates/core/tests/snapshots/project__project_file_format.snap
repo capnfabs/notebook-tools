@@ -1,6 +1,7 @@
 ---
 source: crates/core/tests/project.rs
-expression: "std::fs::read_to_string(&path).unwrap()"
+assertion_line: 361
+expression: "String::from_utf8(project::json(&path).unwrap()).unwrap()"
 ---
 {
   "version": 1,
@@ -10,7 +11,17 @@ expression: "std::fs::read_to_string(&path).unwrap()"
       "photo": {
         "path": "IMG_0001.jpg",
         "sha256": "55c64d0fcd6f9d5f7c828093857e3fdfda68478bb4e9bd24d481ef391c7804e8",
-        "len": 5
+        "len": 5,
+        "size": [
+          4032,
+          3024
+        ],
+        "exif": {
+          "photo_identifier": "6F1C2A8E-1B4D-4C1A-9E77-0D3B5A2F9C10",
+          "date_time_original": "2026:05:01 12:34:56",
+          "sub_sec_time_original": "123",
+          "offset_time_original": "+10:00"
+        }
       },
       "corners": [
         [

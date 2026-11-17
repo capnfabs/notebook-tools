@@ -11,6 +11,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::cache::sha256_hex;
 use crate::geom::Quad;
 use crate::loaded::Loaded;
+use crate::photo_meta::PhotoMeta;
+use crate::project::Photo;
+use crate::relink::Shape;
 use crate::transcript::Transcript;
 
 /// An image file the user opened.
@@ -32,6 +35,8 @@ pub struct Page {
     pub sha256: String,
     /// The file's size in bytes.
     pub len: u64,
+    /// The photo's size and EXIF, which tell it again if it's moved: see `crate::relink`.
+    pub meta: PhotoMeta,
     /// Filled in off the UI thread, as loading decodes and cleans the whole photo.
     pub loaded: Option<Loaded>,
     /// Claude's transcription, once there is one.
@@ -42,14 +47,16 @@ pub struct Page {
 }
 
 impl Page {
-    /// A page that isn't [`Loaded`] yet.
-    pub fn new(name: String, bytes: Arc<[u8]>) -> Self {
+    /// A page that isn't [`Loaded`] yet, of a photo that says `meta` about itself
+    /// ([`crate::photo_meta::read`]).
+    pub fn new(name: String, bytes: Arc<[u8]>, meta: PhotoMeta) -> Self {
         Self {
             id: PageId::next(),
             name,
             path: None,
             sha256: sha256_hex(&bytes),
             len: bytes.len() as u64,
+            meta,
             bytes: Ok(bytes),
             loaded: None,
             transcript: None,
@@ -57,16 +64,20 @@ impl Page {
         }
     }
 
-    /// A page whose photo, the file at `path` with this hash and size, couldn't be read, and
-    /// `why`. It never loads, and can't be transcribed.
-    pub fn missing(name: String, path: PathBuf, sha256: String, len: u64, why: Why) -> Self {
+    /// A page whose `photo` couldn't be read, and `why`. It never loads, and can't be
+    /// transcribed.
+    pub fn missing(name: String, photo: Photo, why: Why) -> Self {
         Self {
             id: PageId::next(),
             name,
-            path: Some(path),
+            path: Some(photo.path),
             bytes: Err(why),
-            sha256,
-            len,
+            sha256: photo.sha256,
+            len: photo.len,
+            meta: PhotoMeta {
+                size: photo.size,
+                exif: photo.exif,
+            },
             loaded: None,
             transcript: None,
             corners: None,
@@ -91,14 +102,24 @@ impl Page {
         }
     }
 
-    /// Gives a page missing its photo the photo, found as the file `name` at `path` (if known)
-    /// with the same hash. The page takes the file's name; its corners and transcript stay.
-    pub fn found(&mut self, name: String, path: Option<PathBuf>, bytes: Arc<[u8]>) {
-        self.name = name;
-        if path.is_some() {
-            self.path = path;
+    /// Gives a page missing its photo `photo`'s, whose [`Shape`] beside the old one is `shape`.
+    /// The page takes the file's name, path (if known), hash, size and EXIF; its ID, corners and
+    /// transcript stay, scaled to a resized photo. See `decisions/2026-11-17-relink-photos.md`.
+    pub fn relink(&mut self, photo: &Page, shape: Shape) {
+        let Some(bytes) = photo.bytes() else {
+            return;
+        };
+        if let Some((x, y)) = shape.scale() {
+            crate::relink::scale_page(self, x, y);
         }
-        self.bytes = Ok(bytes);
+        self.name = photo.name.clone();
+        if photo.path.is_some() {
+            self.path = photo.path.clone();
+        }
+        self.bytes = Ok(bytes.clone());
+        self.sha256 = photo.sha256.clone();
+        self.len = photo.len;
+        self.meta = photo.meta.clone();
     }
 }
 
@@ -224,7 +245,22 @@ mod tests {
     use crate::test_images::png;
 
     fn page(name: &str) -> Page {
-        Page::new(name.to_owned(), png(2, 2).into())
+        photo_page(name, png(2, 2))
+    }
+
+    fn photo_page(name: &str, bytes: Vec<u8>) -> Page {
+        let meta = crate::photo_meta::read(&bytes).unwrap();
+        Page::new(name.to_owned(), bytes.into(), meta)
+    }
+
+    fn photo(path: &str, sha256: &str, len: u64) -> Photo {
+        Photo {
+            path: PathBuf::from(path),
+            sha256: sha256.into(),
+            len,
+            size: (2, 2),
+            exif: Default::default(),
+        }
     }
 
     fn names(pages: &Pages) -> Vec<&str> {
@@ -333,7 +369,7 @@ mod tests {
     #[test]
     fn finds_pages_by_photo() {
         let mut pages = pages(&["a.png"]);
-        pages.add(Page::new("b.png".into(), png(3, 3).into()));
+        pages.add(photo_page("b.png", png(3, 3)));
         let sha256 = sha256_hex(&png(2, 2));
         let found: Vec<_> = pages.with_photo(&sha256).map(|p| p.name.as_str()).collect();
         assert_eq!(found, ["a.png"]);
@@ -357,36 +393,62 @@ mod tests {
 
     #[test]
     fn missing_pages_have_no_photo() {
-        let path = PathBuf::from("/photos/a.png");
-        let page = Page::missing("a.png".into(), path.clone(), "ab".into(), 3, Why::NotFound);
+        let page = Page::missing(
+            "a.png".into(),
+            photo("/photos/a.png", "ab", 3),
+            Why::NotFound,
+        );
         assert!(page.bytes().is_none());
         assert_eq!(page.missing_photo(), Some(&Why::NotFound));
         assert_eq!(
-            (page.path, page.sha256, page.len),
-            (Some(path), "ab".into(), 3)
+            (page.path, page.sha256, page.len, page.meta.size),
+            (Some(PathBuf::from("/photos/a.png")), "ab".into(), 3, (2, 2))
         );
     }
 
     #[test]
     fn found_photos_fill_in_missing_pages() {
-        let photo: Arc<[u8]> = png(2, 2).into();
-        let (old, new) = (PathBuf::from("/a/b.png"), PathBuf::from("/c/d.png"));
+        let bytes = png(2, 2);
         let mut page = Page::missing(
             "b.png".into(),
-            old,
-            sha256_hex(&photo),
-            photo.len() as u64,
+            photo("/a/b.png", &sha256_hex(&bytes), bytes.len() as u64),
             Why::NotFound,
         );
         page.corners = Some([[1.0; 2]; 4]);
         let id = page.id;
 
-        page.found("d.png".into(), Some(new.clone()), photo.clone());
+        let new = PathBuf::from("/c/d.png");
+        let found = photo_page("d.png", bytes).at(new.clone());
+        page.relink(&found, Shape::Same);
         assert_eq!(page.id, id);
         assert_eq!(page.name, "d.png");
         assert_eq!(page.path, Some(new));
-        assert_eq!(page.bytes(), Some(&photo));
+        assert_eq!(page.bytes(), found.bytes());
         assert_eq!(page.corners, Some([[1.0; 2]; 4]));
+    }
+
+    #[test]
+    fn relinked_pages_take_the_new_photo() {
+        let mut page = Page::missing("b.png".into(), photo("/a/b.png", "ab", 3), Why::Changed);
+        page.corners = Some([[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]);
+        let found = photo_page("c.png", png(4, 4));
+        page.relink(
+            &found,
+            Shape::Scaled {
+                from: (2, 2),
+                to: (4, 4),
+            },
+        );
+        assert_eq!(
+            (page.sha256.as_str(), page.len),
+            (found.sha256.as_str(), found.len)
+        );
+        assert_eq!(page.meta, found.meta);
+        assert!(page.missing_photo().is_none());
+        assert_eq!(
+            page.corners,
+            Some([[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]])
+        );
     }
 
     #[test]

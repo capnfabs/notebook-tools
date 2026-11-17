@@ -1,16 +1,15 @@
 //! Adding, loading, deleting, moving and transcribing pages, and the dialogs that confirm the ones
 //! that would lose work.
 
-use std::sync::Arc;
-
 use eframe::egui;
 use notebook_core::geom::Quad;
 use notebook_core::page::{Page, PageId};
+use notebook_core::relink::{Dropped, Shape};
 use notebook_core::transcript::Transcript;
 
 use super::commands::shortcut_text;
 use super::project::After;
-use super::{NotebookApp, View};
+use super::{NotebookApp, View, relink};
 use crate::command::Command;
 use crate::eval_log::{Event, PageRef};
 use crate::ingest::{Dropping, Ingest, Pick, Received};
@@ -103,48 +102,75 @@ impl NotebookApp {
 
     /// Adds `received` as pages, and starts loading them. Pages are usable before they've
     /// loaded: they can be moved, deleted and transcribed. A photo that's already a page is
-    /// skipped, and one that a page is missing is given to it. See
-    /// `decisions/2026-11-15-page-ids.md`.
+    /// skipped, and one that a page is missing is given to it, without asking. One that only looks
+    /// like a missing page's photo, by its EXIF, asks whether it is, after the rest are added. See
+    /// `decisions/2026-11-15-page-ids.md` and `decisions/2026-11-17-relink-photos.md`.
     pub(super) fn add_received(&mut self, ctx: &egui::Context, received: Vec<Received>) {
         if !received.is_empty() {
             self.errors.clear();
         }
         for (name, path, bytes) in received {
-            let bytes: Arc<[u8]> = match bytes {
-                Ok(bytes) => bytes.into(),
+            let photo =
+                bytes.and_then(|bytes| relink::read_photo(name.clone(), path, bytes.into()));
+            let photo = match photo {
+                Ok(photo) => photo,
                 Err(err) => {
                     self.open_failed(&name, err);
                     continue;
                 }
             };
-            let page = Page::new(name, bytes.clone());
-            let page = match path {
-                Some(path) => page.at(path),
-                None => page,
-            };
             let missing_it: Vec<PageId> = self
                 .pages
-                .with_photo(&page.sha256)
+                .with_photo(&photo.sha256)
                 .filter(|p| p.missing_photo().is_some())
                 .map(|p| p.id)
                 .collect();
-            for &id in &missing_it {
-                let Some(found) = self.pages.find_mut(id) else {
-                    continue;
-                };
-                let hint = t!("photo-found", name = found.name.as_str());
-                found.found(page.name.clone(), page.path.clone(), bytes.clone());
-                self.start_loading(id);
-                self.selected = Some(id);
-                self.show_hint(ctx, hint);
+            if !missing_it.is_empty() {
+                for id in missing_it {
+                    self.fill_in(ctx, id, &photo);
+                }
+                continue;
             }
-            // Otherwise a photo that's already a page is left out.
-            if missing_it.is_empty() && self.pages.with_photo(&page.sha256).next().is_none() {
-                let id = page.id;
-                self.pages.add(page);
-                self.start_loading(id);
+            // A photo that's already a page is left out.
+            if self.pages.with_photo(&photo.sha256).next().is_some() {
+                continue;
+            }
+            match notebook_core::relink::dropped(&self.pages, &photo) {
+                Dropped::Ask(candidates) => self.ask_which_page(photo, candidates),
+                Dropped::OtherShape(pages) => {
+                    let hint = t!(
+                        "relink-dropped-other-shape",
+                        file = photo.name.as_str(),
+                        pages = pages.join(", ")
+                    );
+                    self.show_hint(ctx, hint);
+                    self.add_page(photo);
+                }
+                Dropped::Unrelated => self.add_page(photo),
             }
         }
+    }
+
+    /// Gives page `id`, missing its photo, `photo`, the same file, and loads it.
+    fn fill_in(&mut self, ctx: &egui::Context, id: PageId, photo: &Page) {
+        let Some(page) = self.pages.find_mut(id) else {
+            return;
+        };
+        let hint = t!("photo-found", name = page.name.as_str());
+        page.relink(photo, Shape::Same);
+        self.start_loading(id);
+        self.selected = Some(id);
+        self.show_hint(ctx, hint);
+    }
+
+    /// Adds `page` and starts loading it, unless its photo is already a page's.
+    pub(super) fn add_page(&mut self, page: Page) {
+        if self.pages.with_photo(&page.sha256).next().is_some() {
+            return;
+        }
+        let id = page.id;
+        self.pages.add(page);
+        self.start_loading(id);
     }
 
     /// Starts loading page `id`, if it has its photo, and looking it up in the cache if it

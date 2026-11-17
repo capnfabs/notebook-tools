@@ -3,6 +3,7 @@
 
 use eframe::egui;
 use egui::Response;
+use notebook_core::page::Why;
 use notebook_core::transcript::Transcript;
 
 use super::project::After;
@@ -49,6 +50,12 @@ impl NotebookApp {
             Command::PreviousPage | Command::MoveLeft => page.is_some() && index > 0,
             Command::NextPage | Command::MoveRight => index + 1 < self.pages.len(),
             Command::SortByName => !self.pages.is_sorted(),
+            Command::RelinkPhoto => {
+                self.pick_files.is_some() && page.is_some_and(|p| p.missing_photo().is_some())
+            }
+            Command::UseChangedFile => {
+                page.is_some_and(|p| p.missing_photo() == Some(&Why::Changed))
+            }
             Command::Delete => page.is_some(),
         }
     }
@@ -92,6 +99,7 @@ impl NotebookApp {
             || self.settings_dialog.is_open()
             || self.key_dialog.is_open()
             || self.confirming_unsaved()
+            || self.relinking.dialog_open()
     }
 
     /// Runs the commands given since the last frame.
@@ -149,6 +157,8 @@ impl NotebookApp {
             Command::SortByName => self.sort_pages(),
             Command::PlaceCorners => self.place_corners(index),
             Command::ResetCorners => self.set_corners(index, None),
+            Command::RelinkPhoto => self.relink_picked(ctx),
+            Command::UseChangedFile => self.use_changed_file(ctx),
             Command::Delete => self.request_delete(),
         }
     }

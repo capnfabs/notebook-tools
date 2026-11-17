@@ -39,11 +39,16 @@ command-move-right = Move Right
 command-sort-by-name = Sort by Name
 command-place-corners = Place Corners
 command-reset-corners = Reset Corners
+command-relink-photo = Relink Photo…
+command-use-changed-file = Use Changed File
 command-delete = Delete
 
 ## Dialogs
 
 dialog-cancel = Cancel
+# Cancel, when more questions like it would follow: it stops them all.
+dialog-cancel-all = Cancel All
+dialog-ok = OK
 confirm-delete = Delete { $name } and its transcript?
 confirm-delete-button = Delete page
 confirm-transcribe-all = { $count ->
@@ -225,8 +230,8 @@ project-no-path = Couldn't save: { $names } { $count ->
     [one] it
    *[other] them
 } again with { command-add-pages }.
-# Pages whose photos weren't found when the project opened. They're shown as placeholders, and saved
-# again as they were. $names are the pages', joined with ", ".
+# Pages whose photos weren't found when the project opened, until they're found. They're shown as
+# placeholders, and saved again as they were. $names are the pages', joined with ", ".
 photos-missing = { $count ->
     [one] A photo is missing: { $names }
    *[other] { $count } photos are missing: { $names }
@@ -246,6 +251,45 @@ photo-unreadable = Couldn't read { $path }: { $error }
 missing-thumbnail = { $name }: { $why }
 # In place of the transcript, and on the disabled Force Retranscribe button.
 cant-transcribe-missing = Can't transcribe { $name } until its photo is found.
+# Under the buttons to relink it.
+missing-photo-drop-note = Tip: you can also drag-n'-drop images onto this window and we'll reconnect them automatically.
+
+## Relinking a page to its photo. See `decisions/2026-11-17-relink-photos.md`.
+## $file is the file's name, $page the page's.
+
+# One photo's line in the dialogs. $size is like 4032×3024; $taken one of the two below.
+relink-photo-line = { $name }: { $size }, { $taken }
+relink-taken = taken { $when }
+relink-taken-unknown = date taken unknown
+# The table comparing the page's photo with the file. $name is the photo's file name.
+relink-column-old = { $name } (old)
+relink-column-new = { $name } (new)
+relink-field-size = Pixel size
+relink-field-aspect = Aspect ratio
+relink-field-taken = Date taken
+relink-field-photo-id = Photo ID (Apple)
+relink-field-unique-id = Image unique ID
+# A field one photo has and the other doesn't.
+relink-no-value = —
+# $ratio is width over height, like 1.333; $turned one of the three below.
+relink-aspect = { $ratio }, { $turned }
+relink-landscape = landscape
+relink-portrait = portrait
+relink-square = square
+relink-looks-alike = { $file } looks like the same photo as { $page }, but isn't a perfect match. Relink it anyway?
+relink-unmatched = { $file } doesn't look like the same photo as { $page }. Relink it anyway?
+relink-button = Relink
+relink-anyway-button = Relink Anyway
+relink-refused-title = Can't relink this photo
+relink-already-a-page = { $file } is already in the project, as { $page }.
+# The comparison table beside it shows both sizes.
+relink-different-shape = Can't relink this photo: it's a different aspect ratio to the original.
+# A dropped file that looks like the photo of missing pages, by its EXIF.
+relink-dropped-one = { $file } looks like the photo for { $page }. Relink it?
+relink-dropped-several = { $file } looks like the photo for one of these pages. Which?
+relink-add-as-new-page = Add as New Page
+# $pages are the pages' names, joined with ", ".
+relink-dropped-other-shape = { $file } looks like the photo for { $pages }, but it's a different shape, so it was added as a new page.
 
 ## The command line, in the terminal. See `decisions/2026-10-31-open-by-drop-and-argument.md`
 ## and `decisions/2026-11-01-manual-cache-clearing.md`.

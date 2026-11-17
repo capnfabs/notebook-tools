@@ -247,25 +247,11 @@ impl NotebookApp {
         self
     }
 
-    /// Puts `pages`, the project read from `path`, in place of this one. Says which photos are
-    /// missing; their pages never load.
+    /// Puts `pages`, the project read from `path`, in place of this one. Pages whose photos are
+    /// missing never load; the status line says which they are until they're found.
     fn show_opened(&mut self, path: &Path, pages: Pages) {
         self.new_project();
         self.pages = pages;
-        let missing: Vec<&str> = self
-            .pages
-            .iter()
-            .filter(|p| p.missing_photo().is_some())
-            .map(|p| p.name.as_str())
-            .collect();
-        if !missing.is_empty() {
-            let error = t!(
-                "photos-missing",
-                count = missing.len(),
-                names = missing.join(", ")
-            );
-            self.errors.push(error);
-        }
         self.project.path = Some(path.to_path_buf());
         let ids: Vec<PageId> = self.pages.iter().map(|p| p.id).collect();
         for id in ids {

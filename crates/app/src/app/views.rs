@@ -121,9 +121,9 @@ impl NotebookApp {
 
     /// The page named `name`, its `cleaned` image or its photo, as large as fits in `rect`,
     /// centred, returning where it went. A placeholder gets a spinner, and a page that's loading
-    /// only a spinner. A page whose photo is missing says why instead.
+    /// only a spinner. A page whose photo is missing says why instead, with ways to find it.
     pub(super) fn show_page(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         name: &str,
         showing: &Showing,
@@ -131,7 +131,7 @@ impl NotebookApp {
         cleaned: bool,
     ) -> Option<Rect> {
         if let Showing::Missing(why) = showing {
-            show_missing(ui, why, rect);
+            self.show_missing(ui, why, rect);
             return None;
         }
         let spinner = Rect::from_center_size(rect.center(), Vec2::splat(32.0));
@@ -219,18 +219,36 @@ impl NotebookApp {
     }
 }
 
-/// In place of a page whose photo is missing: that it is, and `why`, centred in `rect`. Nothing
-/// here takes the focus.
-fn show_missing(ui: &mut egui::Ui, why: &str, rect: Rect) {
-    let layout = egui::Layout::top_down(egui::Align::Center);
-    ui.scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
-        // Roughly centred: the title and a line or two of reason.
-        ui.add_space((rect.height() / 2.0 - 48.0).max(0.0));
-        let warn = ui.visuals().warn_fg_color;
-        let (icon, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
-        icons::paint_warning(ui.painter(), icon, warn);
-        let title = egui::RichText::new(t!("missing-photo-title")).heading();
-        ui.add(egui::Label::new(title.color(warn)).selectable(false));
-        ui.add(egui::Label::new(why).wrap().selectable(false));
-    });
+impl NotebookApp {
+    /// In place of a page whose photo is missing: that it is, `why`, and ways to find it, centred
+    /// in `rect`. Only the buttons take the focus.
+    fn show_missing(&mut self, ui: &mut egui::Ui, why: &str, rect: Rect) {
+        let layout = egui::Layout::top_down(egui::Align::Center);
+        let clicked = ui
+            .scope_builder(UiBuilder::new().max_rect(rect).layout(layout), |ui| {
+                // Roughly centred: the title, a line or two of reason, the buttons and the note.
+                ui.add_space((rect.height() / 2.0 - 80.0).max(0.0));
+                let warn = ui.visuals().warn_fg_color;
+                let (icon, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
+                icons::paint_warning(ui.painter(), icon, warn);
+                let title = egui::RichText::new(t!("missing-photo-title")).heading();
+                ui.add(egui::Label::new(title.color(warn)).selectable(false));
+                ui.add(egui::Label::new(why).wrap().selectable(false));
+                ui.add_space(ui.spacing().item_spacing.y * 2.0);
+                let mut clicked = None;
+                for command in [Command::RelinkPhoto, Command::UseChangedFile] {
+                    let shown = command == Command::RelinkPhoto || self.can(command);
+                    if shown && self.command_button(ui, command).clicked() {
+                        clicked = Some(command);
+                    }
+                }
+                let note = egui::RichText::new(t!("missing-photo-drop-note")).weak();
+                ui.add(egui::Label::new(note).wrap().selectable(false));
+                clicked
+            })
+            .inner;
+        if let Some(command) = clicked {
+            self.run(ui.ctx(), command);
+        }
+    }
 }

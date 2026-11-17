@@ -35,4 +35,12 @@ impl Decoder for Heif {
         RgbaImage::from_raw(w, h, pixels)
             .ok_or_else(|| DecodeError::Heic(format!("short {w}x{h} RGBA plane")))
     }
+
+    fn size(&self, bytes: &[u8]) -> Result<(u32, u32), DecodeError> {
+        let heif = |err: libheif_rs::HeifError| DecodeError::Heic(err.to_string());
+        let context = HeifContext::read_from_bytes(bytes).map_err(heif)?;
+        let handle = context.primary_image_handle().map_err(heif)?;
+        // After the file's rotation, as decoding applies it.
+        Ok((handle.width(), handle.height()))
+    }
 }

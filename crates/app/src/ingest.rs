@@ -29,12 +29,14 @@ pub type PickFiles = Arc<dyn Fn(Pick) -> Vec<PathBuf> + Send + Sync>;
 pub type OpenedFiles = std::sync::mpsc::Receiver<Vec<PathBuf>>;
 
 /// What [`PickFiles`] asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// Photos to add as pages.
     Photos,
     /// One project to open.
     Project,
+    /// One photo for a page missing its own, looking `near` where it was, if that's still there.
+    Relink { near: Option<PathBuf> },
 }
 
 /// What dropping some files does: a project among them opens, in place of adding pages. See

@@ -304,8 +304,8 @@ fn another_photo_named_like_a_missing_page_is_another_page() {
     assert_eq!(thumbnails(&harness), ["a.png", "b.png", "b.png", "c.png"]);
     let summary = t!("photos-missing", count = 2, names = "b.png, c.png");
     assert!(
-        harness.query_by_label(&summary).is_none(),
-        "a drop clears it"
+        harness.query_by_label(&summary).is_some(),
+        "still missing, so still said"
     );
     // The missing one is still missing.
     press_command(&mut harness, Key::ArrowRight);
@@ -313,7 +313,7 @@ fn another_photo_named_like_a_missing_page_is_another_page() {
 }
 
 #[test]
-fn the_placeholder_never_takes_focus() {
+fn the_placeholders_text_never_takes_focus() {
     let Opened {
         dir, mut harness, ..
     } = opened_without_b_and_c("focus");

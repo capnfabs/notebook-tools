@@ -26,6 +26,8 @@ trait Decoder: Sync {
     fn recognizes(&self, bytes: &[u8]) -> bool;
     /// `bytes` decoded and turned upright.
     fn decode(&self, bytes: &[u8]) -> Result<RgbaImage, DecodeError>;
+    /// The size [`Decoder::decode`] would give, from the file's header, without decoding it.
+    fn size(&self, bytes: &[u8]) -> Result<(u32, u32), DecodeError>;
 }
 
 /// This platform's HEIC decoder.
@@ -65,17 +67,36 @@ impl From<image::ImageError> for DecodeError {
 
 /// Decodes a JPEG, PNG or HEIC, turned upright.
 pub fn decode(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
+    decoder(bytes)?.decode(bytes)
+}
+
+/// A JPEG, PNG or HEIC's width and height once turned upright, as [`decode`] would give them,
+/// read from its header: much quicker than decoding it.
+pub fn size(bytes: &[u8]) -> Result<(u32, u32), DecodeError> {
+    decoder(bytes)?.size(bytes)
+}
+
+fn decoder(bytes: &[u8]) -> Result<&'static dyn Decoder, DecodeError> {
     DECODERS
         .iter()
         .find(|d| d.recognizes(bytes))
-        .ok_or(DecodeError::Unrecognized)?
-        .decode(bytes)
+        .copied()
+        .ok_or(DecodeError::Unrecognized)
 }
 
 /// Whether `bytes` start like a HEIC: an ISO box `ftyp` first, then the major brand.
 fn is_heic(bytes: &[u8]) -> bool {
     const BRANDS: [&[u8]; 4] = [b"heic", b"heix", b"heim", b"mif1"];
     bytes.get(4..8) == Some(b"ftyp") && bytes.get(8..12).is_some_and(|b| BRANDS.contains(&b))
+}
+
+/// The size of a `width` x `height` image once turned upright from `orientation`.
+fn upright_size((width, height): (u32, u32), orientation: Orientation) -> (u32, u32) {
+    use Orientation::{Rotate90, Rotate90FlipH, Rotate270, Rotate270FlipH};
+    match orientation {
+        Rotate90 | Rotate270 | Rotate90FlipH | Rotate270FlipH => (height, width),
+        _ => (width, height),
+    }
 }
 
 /// `img` turned upright, given the EXIF-style `orientation` it was stored with.
@@ -96,13 +117,24 @@ impl Decoder for ImageCrate {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
-        let mut decoder = ImageReader::new(Cursor::new(bytes))
-            .with_guessed_format()
-            .map_err(image::ImageError::IoError)?
-            .into_decoder()?;
+        let mut decoder = image_decoder(bytes)?;
         let orientation = decoder.orientation()?;
         Ok(upright(DynamicImage::from_decoder(decoder)?, orientation))
     }
+
+    fn size(&self, bytes: &[u8]) -> Result<(u32, u32), DecodeError> {
+        let mut decoder = image_decoder(bytes)?;
+        let orientation = decoder.orientation()?;
+        Ok(upright_size(decoder.dimensions(), orientation))
+    }
+}
+
+/// A decoder for `bytes` that has read their header.
+fn image_decoder(bytes: &[u8]) -> Result<impl image::ImageDecoder + '_, DecodeError> {
+    Ok(ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(image::ImageError::IoError)?
+        .into_decoder()?)
 }
 
 #[cfg(test)]
@@ -145,6 +177,17 @@ mod tests {
     fn applies_exif_orientation() {
         let img = decode(&rotated_jpeg(16, 8)).unwrap();
         assert_eq!(img.dimensions(), (8, 16));
+    }
+
+    #[test]
+    fn sizes_come_upright_from_the_header() {
+        assert_eq!(size(&rotated_jpeg(16, 8)).unwrap(), (8, 16));
+        assert_eq!(size(&png(3, 2)).unwrap(), (3, 2));
+        assert!(matches!(
+            size(b"just some notes"),
+            Err(DecodeError::Unrecognized)
+        ));
+        assert!(matches!(size(HEIC_HEADER), Err(DecodeError::Heic(_))));
     }
 
     #[test]

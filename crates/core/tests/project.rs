@@ -12,6 +12,7 @@ use notebook_core::geom::Quad;
 use notebook_core::llm_model::Usage;
 use notebook_core::markdown_style::MarkdownStyle;
 use notebook_core::page::{Page, Pages, Why};
+use notebook_core::photo_meta::{PhotoIds, PhotoMeta};
 use notebook_core::project::{self, OpenError, PROJECT_VERSION, SaveError};
 use notebook_core::transcript::{Deleted, Line, Side, Transcript, Uncertain};
 use serde_json::Value;
@@ -25,13 +26,38 @@ fn dir(test: &str) -> TempDir {
         .unwrap()
 }
 
-/// A page read from a new file at `dir/name` holding `contents`.
+/// A page read from a new file at `dir/name` holding `contents`, which says it's a 40 x 30 photo
+/// without EXIF.
 fn photo(dir: &Path, name: &str, contents: &str) -> Page {
+    photo_saying(dir, name, contents, meta())
+}
+
+fn photo_saying(dir: &Path, name: &str, contents: &str, meta: PhotoMeta) -> Page {
     let path = dir.join(name);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, contents).unwrap();
     let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
-    Page::new(file_name, Arc::from(contents.as_bytes())).at(path)
+    Page::new(file_name, Arc::from(contents.as_bytes()), meta).at(path)
+}
+
+fn meta() -> PhotoMeta {
+    PhotoMeta {
+        size: (40, 30),
+        exif: PhotoIds::default(),
+    }
+}
+
+fn with_exif() -> PhotoMeta {
+    PhotoMeta {
+        size: (4032, 3024),
+        exif: PhotoIds {
+            photo_identifier: Some("6F1C2A8E-1B4D-4C1A-9E77-0D3B5A2F9C10".into()),
+            date_time_original: Some("2026:05:01 12:34:56".into()),
+            sub_sec_time_original: Some("123".into()),
+            offset_time_original: Some("+10:00".into()),
+            ..PhotoIds::default()
+        },
+    }
 }
 
 /// The recorded success, corrected: a word resolved, a line edited, a word deleted.
@@ -193,6 +219,50 @@ fn missing_photos_leave_their_pages_in_place() {
 }
 
 #[test]
+fn photos_keep_their_size_and_exif() {
+    let dir = dir("meta");
+    let pages = Pages::in_order(vec![
+        photo_saying(dir.path(), "a.heic", "photo a", with_exif()),
+        photo(dir.path(), "b.png", "photo b"),
+    ]);
+    let path = dir.path().join("p.notebook");
+    project::save(&path, &pages).unwrap();
+    let saved = file(&path);
+    assert_eq!(
+        saved["pages"][0]["photo"]["size"],
+        serde_json::json!([4032, 3024])
+    );
+    assert_eq!(
+        saved["pages"][0]["photo"]["exif"]["sub_sec_time_original"],
+        "123"
+    );
+    assert!(
+        saved["pages"][1]["photo"].get("exif").is_none(),
+        "no EXIF, nothing saved"
+    );
+
+    let opened = project::open(&path).unwrap();
+    let metas: Vec<&PhotoMeta> = opened.iter().map(|p| &p.meta).collect();
+    assert_eq!(metas, [&with_exif(), &meta()]);
+
+    std::fs::remove_file(dir.path().join("a.heic")).unwrap();
+    let opened = project::open(&path).unwrap();
+    let a = opened.get(0).unwrap();
+    assert!(a.missing_photo().is_some());
+    assert_eq!(a.meta, with_exif(), "kept for relinking");
+}
+
+/// The photo's size is needed to relink it, so a project from before it was saved won't open.
+#[test]
+fn projects_without_photo_sizes_are_refused() {
+    let dir = dir("no_size");
+    let path = dir.path().join("p.notebook");
+    let page = r#"{"name": "a.jpg", "photo": {"path": "a.jpg", "sha256": "ab", "len": 1}}"#;
+    write_gzipped(&path, &format!(r#"{{"version": 1, "pages": [{page}]}}"#));
+    assert!(matches!(project::open(&path), Err(OpenError::Format(_))));
+}
+
+#[test]
 fn a_missing_first_page_stays_first() {
     let dir = dir("missing_first");
     let pages = Pages::in_order(vec![
@@ -217,7 +287,7 @@ fn a_missing_first_page_stays_first() {
 #[test]
 fn pages_without_a_file_cant_be_saved() {
     let dir = dir("no_path");
-    let dropped = Page::new("dropped.jpg".to_owned(), Arc::from(&b"bytes"[..]));
+    let dropped = Page::new("dropped.jpg".to_owned(), Arc::from(&b"bytes"[..]), meta());
     let pages = Pages::in_order(vec![photo(dir.path(), "a.jpg", "photo a"), dropped]);
     let path = dir.path().join("p.notebook");
     let Err(SaveError::NoPath(names)) = project::save(&path, &pages) else {
@@ -290,7 +360,7 @@ fn project_file_format() {
     let page = Page {
         corners: Some([[0.0, 0.0], [10.0, 0.0], [10.0, 20.0], [0.0, 20.0]]),
         transcript: Some(transcript),
-        ..photo(dir.path(), "IMG_0001.jpg", "photo")
+        ..photo_saying(dir.path(), "IMG_0001.jpg", "photo", with_exif())
     };
     let path = dir.path().join("p.notebook");
     project::save(&path, &Pages::in_order(vec![page])).unwrap();

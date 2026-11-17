@@ -13,6 +13,7 @@ mod keys;
 mod missing;
 mod pages;
 mod project;
+mod relink;
 mod same_names;
 mod settings;
 mod status;

@@ -56,7 +56,14 @@ fn saved_project(dir: &Path) -> PathBuf {
     let photo = dir.join("a.png");
     std::fs::write(&photo, "a photo").unwrap();
     let mut pages = Pages::default();
-    pages.add(Page::new("a.png".into(), Arc::from(&b"a photo"[..])).at(photo));
+    pages.add(
+        Page::new(
+            "a.png".into(),
+            Arc::from(&b"a photo"[..]),
+            Default::default(),
+        )
+        .at(photo),
+    );
     let path = dir.join("notes.notebook");
     project::save(&path, &pages).unwrap();
     path
