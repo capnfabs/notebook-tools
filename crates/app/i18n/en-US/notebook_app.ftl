@@ -174,12 +174,14 @@ export-markdown-file = Markdown to file
 export-pdf = PDF
 export-go = Export
 export-crashed = Couldn't export: it crashed
-# $reasons are the export-not-… messages below, joined with ". ".
+# $reasons are the messages below, up to export-no-pages, joined with ". ".
 export-blocked = Couldn't export. { $reasons }
 # $names are the pages', joined with ", ".
 export-not-transcribed = Not transcribed yet: { $names }
 export-still-loading = Still loading: { $names }
-export-photo-missing = Photo missing: { $names }
+# Pages whose photos are missing, which a PDF needs.
+export-needs-relink = Need to relink these photos for export: { $names }
+export-needs-relink-and-transcribe = Need to relink and transcribe these photos for export: { $names }
 export-no-pages = No pages to export
 # $name is the page's when there's one.
 export-copied = { $count ->

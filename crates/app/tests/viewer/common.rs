@@ -633,6 +633,14 @@ pub fn disabled(harness: &Harness<'_, NotebookApp>, label: &str) -> bool {
     harness.get_by_label(label).accesskit_node().is_disabled()
 }
 
+/// Whether the export dialog's Export button is disabled. It shares its label with the command.
+pub fn export_go_disabled(harness: &Harness<'_, NotebookApp>) -> bool {
+    harness
+        .get_by_role_and_label(Role::Button, &t!("export-go"))
+        .accesskit_node()
+        .is_disabled()
+}
+
 /// Drags the bottom-right corner to `(x, y)` on the photo, and waits for the page to be cleaned
 /// again.
 pub fn move_bottom_right(harness: &mut Harness<'_, NotebookApp>, x: f32, y: f32) {

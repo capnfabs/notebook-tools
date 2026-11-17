@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use eframe::egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
-use notebook_app::{Command, NotebookApp, Transcriber, t};
+use notebook_app::{Command, NotebookApp, SavePath, Transcriber, t};
 use notebook_core::project;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -49,8 +49,20 @@ fn opened_without_b_and_c(test: &str) -> Opened {
     }
 
     let (fetch, sent) = counting_fetch();
+    // Markdown exports go to `notes.md` beside it, rather than over the project.
+    let save_path: SavePath = {
+        let (path, markdown) = (path.clone(), dir.path().join("notes.md"));
+        Arc::new(move |suggested| {
+            let to = if suggested.ends_with(".md") {
+                &markdown
+            } else {
+                &path
+            };
+            Some(to.clone())
+        })
+    };
     let app = NotebookApp::with_transcription(Some(Transcriber::new(fetch)), None)
-        .with_save_path(save_to(&path))
+        .with_save_path(save_path)
         .with_project(&path, project::open(&path).unwrap());
     let mut harness = harness_for(app);
     settle(&mut harness);
@@ -183,20 +195,77 @@ fn missing_pages_can_be_moved_and_deleted() {
     assert_eq!(names, ["b.png", "a.png"]);
 }
 
+/// Opens the export dialog and chooses `options`.
+fn export_dialog(harness: &mut Harness<'_, NotebookApp>, options: &[&str]) {
+    click_command(harness, Command::ExportAs);
+    settle(harness);
+    for option in options {
+        harness.get_by_label(option).click();
+        settle(harness);
+    }
+}
+
+/// See `decisions/2026-11-17-missing-page-export.md`.
 #[test]
-fn exporting_needs_the_photos() {
-    let Opened { mut harness, .. } = opened_without_b_and_c("export");
-    click_command(&harness, Command::ExportAs);
+fn a_pdf_needs_the_photos() {
+    let Opened { mut harness, .. } = opened_without_b_and_c("export_pdf");
+    let everything = [t!("export-everything"), t!("export-pdf")];
+    export_dialog(&mut harness, &everything.each_ref().map(String::as_str));
+    // Each page once; missing pages aren't loading.
+    let blocked = [
+        t!("export-needs-relink", names = "b.png"),
+        t!("export-needs-relink-and-transcribe", names = "c.png"),
+        t!("export-not-transcribed", names = "a.png"),
+    ];
+    harness.get_by_label(&blocked.join(". "));
+    assert!(export_go_disabled(&harness));
+    harness.get_by_label(&t!("dialog-cancel")).click();
     settle(&mut harness);
-    harness.get_by_label(&t!("export-everything")).click();
-    settle(&mut harness);
-    let missing = t!("export-photo-missing", names = "b.png, c.png");
-    assert!(harness.query_by_label_contains(&missing).is_some());
-    let loading = before_mark(t!("export-still-loading", names = MARK));
-    assert!(
-        harness.query_by_label_contains(&loading).is_none(),
-        "missing pages aren't loading"
+
+    // a.png, the current page, has its photo.
+    press_command(&mut harness, Key::T);
+    step_until_transcribed(&mut harness);
+    export_dialog(
+        &mut harness,
+        &[&t!("export-current-page"), &t!("export-pdf")],
     );
+    assert!(!export_go_disabled(&harness));
+}
+
+#[test]
+fn markdown_has_missing_pages_transcripts() {
+    let Opened {
+        dir, mut harness, ..
+    } = opened_without_b_and_c("export_markdown");
+    press_command(&mut harness, Key::T);
+    step_until_transcribed(&mut harness);
+    // c.png has no transcript, so it goes without asking.
+    press_command(&mut harness, Key::ArrowRight);
+    press_command(&mut harness, Key::ArrowRight);
+    press_command(&mut harness, Key::Backspace);
+    assert_eq!(thumbnails(&harness), ["a.png", "b.png"]);
+
+    let copied = export_to_clipboard(&mut harness);
+    let (a, b) = copied.split_once("<!-- b.png -->").expect(&copied);
+    assert!(a.starts_with("<!-- a.png -->"), "{copied}");
+    assert!(b.contains("ring the plumber re:"), "{copied}");
+
+    export(
+        &mut harness,
+        &[&t!("export-everything"), &t!("export-markdown-file")],
+    );
+    step_until(&mut harness, &exported(2, ""));
+    let written = std::fs::read_to_string(dir.path().join("notes.md")).unwrap();
+    assert_eq!(written, copied);
+}
+
+#[test]
+fn markdown_needs_missing_pages_transcribed() {
+    let Opened { mut harness, .. } = opened_without_b_and_c("export_untranscribed");
+    let options = [t!("export-everything"), t!("export-markdown-clipboard")];
+    export_dialog(&mut harness, &options.each_ref().map(String::as_str));
+    harness.get_by_label(&t!("export-not-transcribed", names = "a.png, c.png"));
+    assert!(export_go_disabled(&harness));
 }
 
 /// Its photo, under any name, gives a missing page its photo back: see

@@ -52,24 +52,27 @@ fn export_waits_for_pages_to_load() {
     click_command(&harness, Command::ExportAs);
     harness.step();
     harness.step();
+    harness.get_by_label(&t!("export-pdf")).click();
+    harness.step();
+    harness.step();
     harness.get_by_label(&t!("export-still-loading", names = "a.png"));
-    assert!(
-        harness
-            .get_by_role_and_label(Role::Button, &t!("export-go"))
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(export_go_disabled(&harness));
 
-    drop(held);
-    settle(&mut harness);
+    // Markdown needs only the transcript.
+    harness
+        .get_by_label(&t!("export-markdown-clipboard"))
+        .click();
+    harness.step();
+    harness.step();
     let blocked = before_mark(t!("export-still-loading", names = MARK));
     assert!(harness.query_by_label_contains(&blocked).is_none());
-    assert!(
-        !harness
-            .get_by_role_and_label(Role::Button, &t!("export-go"))
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(!export_go_disabled(&harness));
+
+    harness.get_by_label(&t!("export-pdf")).click();
+    drop(held);
+    settle(&mut harness);
+    assert!(harness.query_by_label_contains(&blocked).is_none());
+    assert!(!export_go_disabled(&harness));
 }
 
 #[test]

@@ -1,10 +1,11 @@
 //! The export dialog, and Re-export, which repeats the last export without asking.
 //!
-//! Only transcribed, loaded pages can be exported: if any page in scope isn't, the dialog says which
-//! and won't go. Files are chosen through a [`SavePath`], so tests can stand in for the save
-//! dialog. The export itself runs on a thread, as a PDF of a whole notebook takes a moment.
+//! Only transcribed pages can be exported, and a PDF also needs each page's photo, loaded: if any
+//! page in scope falls short, the dialog says which and won't go. Markdown needs only the saved
+//! transcripts. Files are chosen through a [`SavePath`], so tests can stand in for the save dialog.
+//! The export itself runs on a thread, as a PDF of a whole notebook takes a moment.
 //!
-//! See `decisions/2026-10-23-export-rules.md`.
+//! See `decisions/2026-10-23-export-rules.md` and `decisions/2026-11-17-missing-page-export.md`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -162,7 +163,7 @@ impl Export {
             ] {
                 ui.radio_value(&mut settings.format, format, label);
             }
-            let blocked = in_scope(pages, selected, settings.scope).err();
+            let blocked = in_scope(pages, selected, *settings).err();
             if let Some(blocked) = &blocked {
                 ui.colored_label(ui.visuals().warn_fg_color, blocked);
             }
@@ -196,7 +197,7 @@ impl Export {
         if self.running.is_some() {
             return;
         }
-        let in_scope = match in_scope(pages, selected, settings.scope) {
+        let in_scope = match in_scope(pages, selected, settings) {
             Ok(in_scope) => in_scope,
             Err(blocked) => {
                 self.status = Some(Err(t!("export-blocked", reasons = blocked)));
@@ -241,10 +242,16 @@ impl Export {
 /// A page to export, as it was when the export started.
 struct Snapshot {
     name: String,
-    /// Shared with the page, not copied.
-    cleaned: Arc<[u8]>,
-    size: (u32, u32),
     transcript: Transcript,
+    /// The cleaned page, for a PDF; Markdown doesn't need it.
+    image: Option<Cleaned>,
+}
+
+/// A page's cleaned image, as a PDF embeds it.
+struct Cleaned {
+    /// Shared with the page, not copied.
+    jpeg: Arc<[u8]>,
+    size: (u32, u32),
 }
 
 /// Exports `pages` as `format` to `path`, or for the clipboard if there's no path.
@@ -265,15 +272,24 @@ fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<E
     };
     let contents = match format {
         Format::Pdf => {
-            let pdf_pages: Vec<PdfPage> = pages
+            // [`in_scope`] gives every page its image for a PDF.
+            let pdf_pages = pages
                 .iter()
-                .map(|p| PdfPage {
-                    name: &p.name,
-                    jpeg: &p.cleaned,
-                    size: p.size,
-                    transcript: &p.transcript,
+                .map(|p| {
+                    let image = p.image.as_ref().ok_or_else(|| {
+                        t!(
+                            "export-blocked",
+                            reasons = t!("export-needs-relink", names = &p.name)
+                        )
+                    })?;
+                    Ok(PdfPage {
+                        name: &p.name,
+                        jpeg: &image.jpeg,
+                        size: image.size,
+                        transcript: &p.transcript,
+                    })
                 })
-                .collect();
+                .collect::<Result<Vec<PdfPage>, String>>()?;
             let markdown_name = path.with_extension("md");
             let markdown_name = markdown_name.file_name().unwrap_or_default();
             notebook_core::export::pdf(&pdf_pages, &markdown_name.to_string_lossy())
@@ -300,34 +316,44 @@ fn export(format: Format, pages: &[Snapshot], path: Option<PathBuf>) -> Result<E
     }
 }
 
-/// The pages `scope` covers, or why they can't be exported: which aren't transcribed or loaded, or
-/// are missing their photos.
-fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot>, String> {
-    let covered: Vec<&Page> = match scope {
+/// The pages `settings` cover, or why they can't be exported. Each page that can't is named once:
+/// for a PDF, under its missing photo (and transcript), else as untranscribed or still loading;
+/// for Markdown, only as untranscribed. See `decisions/2026-11-17-missing-page-export.md`.
+fn in_scope(
+    pages: &Pages,
+    selected: usize,
+    settings: ExportOptions,
+) -> Result<Vec<Snapshot>, String> {
+    let covered: Vec<&Page> = match settings.scope {
         Scope::Current => pages.get(selected).into_iter().collect(),
         Scope::Everything => pages.iter().collect(),
     };
-    let names = |missing: fn(&Page) -> bool| -> Vec<&str> {
-        let names = covered.iter().filter(|p| missing(p));
+    let pdf = settings.format == Format::Pdf;
+    let names = |blocks: &dyn Fn(&Page) -> bool| -> Vec<&str> {
+        let names = covered.iter().filter(|p| blocks(p));
         names.map(|p| p.name.as_str()).collect()
     };
-    let untranscribed = names(|p| p.transcript.is_none());
-    // Until `tasks/missing-page-export.md`, every format needs the photo.
-    let missing = names(|p| p.missing_photo().is_some());
-    let loading = names(|p| p.loaded.is_none() && p.missing_photo().is_none());
+    let missing = |p: &Page| pdf && p.missing_photo().is_some();
+    let untranscribed = |p: &Page| p.transcript.is_none();
     let mut blocked = Vec::new();
-    if !missing.is_empty() {
-        blocked.push(t!("export-photo-missing", names = missing.join(", ")));
-    }
-    if !untranscribed.is_empty() {
-        blocked.push(t!(
-            "export-not-transcribed",
-            names = untranscribed.join(", ")
-        ));
-    }
-    if !loading.is_empty() {
-        blocked.push(t!("export-still-loading", names = loading.join(", ")));
-    }
+    let mut add = |names: Vec<&str>, message: fn(String) -> String| {
+        if !names.is_empty() {
+            blocked.push(message(names.join(", ")));
+        }
+    };
+    add(names(&|p| missing(p) && !untranscribed(p)), |names| {
+        t!("export-needs-relink", names = names)
+    });
+    add(names(&|p| missing(p) && untranscribed(p)), |names| {
+        t!("export-needs-relink-and-transcribe", names = names)
+    });
+    add(names(&|p| !missing(p) && untranscribed(p)), |names| {
+        t!("export-not-transcribed", names = names)
+    });
+    add(
+        names(&|p| pdf && p.missing_photo().is_none() && p.loaded.is_none()),
+        |names| t!("export-still-loading", names = names),
+    );
     if covered.is_empty() {
         blocked.push(t!("export-no-pages"));
     }
@@ -337,14 +363,24 @@ fn in_scope(pages: &Pages, selected: usize, scope: Scope) -> Result<Vec<Snapshot
     Ok(covered
         .into_iter()
         .filter_map(|p| {
-            let (loaded, transcript) = (p.loaded.as_ref()?, p.transcript.as_ref()?);
+            let transcript = p.transcript.as_ref()?;
+            if !pdf {
+                return Some(Snapshot {
+                    name: p.name.clone(),
+                    transcript: transcript.clone(),
+                    image: None,
+                });
+            }
+            let loaded = p.loaded.as_ref()?;
             Some(Snapshot {
                 name: p.name.clone(),
-                cleaned: loaded.cleaned_jpeg.clone(),
-                size: loaded.report.output_size,
                 // Boxes follow the page if its corners moved since it was transcribed, staying
                 // upright: `decisions/2026-10-30-pdf-text-upright-boxes.md`.
                 transcript: transcript.reframed(loaded.report.crop()),
+                image: Some(Cleaned {
+                    jpeg: loaded.cleaned_jpeg.clone(),
+                    size: loaded.report.output_size,
+                }),
             })
         })
         .collect())
