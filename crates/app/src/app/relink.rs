@@ -10,7 +10,7 @@ use std::sync::Arc;
 use eframe::egui;
 use notebook_core::page::{Page, PageId};
 use notebook_core::photo_meta::{self, PhotoIds, PhotoMeta};
-use notebook_core::relink::{self, Plan, Refusal, Shape, Tier};
+use notebook_core::relink::{self, Aspect, Plan, Ratio, Refusal, Shape, Tier, Turn};
 
 use super::NotebookApp;
 use crate::ingest::Pick;
@@ -222,12 +222,11 @@ fn rows(old: &PhotoMeta, new: &PhotoMeta) -> Vec<Row> {
             size_text(new.size),
             old.size == new.size,
         ),
-        row(
-            t!("relink-field-aspect"),
-            aspect_text(old.size),
-            aspect_text(new.size),
-            !Shape::of(old.size, new.size).is_different(),
-        ),
+        {
+            let shape = Shape::of(old.size, new.size);
+            let [old, new] = aspect_texts(old.size, new.size, shape);
+            row(t!("relink-field-aspect"), old, new, !shape.is_different())
+        },
     ];
     let none = || t!("relink-no-value");
     if when_fields(&old.exif) != [None; 3] || when_fields(&new.exif) != [None; 3] {
@@ -271,16 +270,53 @@ fn exif_date(at: &str) -> String {
         .to_owned()
 }
 
-/// Width over height, to three places, and which way the photo is turned. See
-/// `tasks/aspect-ratio-display.md`.
-fn aspect_text((w, h): (u32, u32)) -> String {
-    let ratio = format!("{:.3}", f64::from(w) / f64::from(h.max(1)));
-    let turned = match w.cmp(&h) {
-        std::cmp::Ordering::Greater => t!("relink-landscape"),
-        std::cmp::Ordering::Less => t!("relink-portrait"),
-        std::cmp::Ordering::Equal => t!("relink-square"),
+/// Places a ratio that isn't named is written to, unless that hides a difference.
+const RATIO_PLACES: usize = 2;
+
+/// Most places a ratio is written to, to tell two shapes apart.
+const MOST_RATIO_PLACES: usize = 6;
+
+/// A photo's shape as people say it, long side first, and which way it's turned: `4:3,
+/// landscape`, or `1.43:1, portrait` for a ratio that isn't named, to `places`. See
+/// `decisions/2026-11-18-aspect-names-and-min-size.md`.
+fn aspect_text(aspect: Aspect, places: usize) -> String {
+    let ratio = match aspect.ratio {
+        Ratio::Named(long, short) => format!("{long}:{short}"),
+        Ratio::Other(ratio) => format!("{ratio:.places$}:1"),
+    };
+    let turned = match aspect.turn {
+        Turn::Landscape => t!("relink-landscape"),
+        Turn::Portrait => t!("relink-portrait"),
+        Turn::Square => t!("relink-square"),
     };
     t!("relink-aspect", ratio = ratio, turned = turned)
+}
+
+/// The shapes of the page's photo, `old`, and the file, `new`, which is `shape` beside it, as
+/// [`aspect_text`]s that agree exactly when relink does. The same shape, resized, reads as the
+/// page's. Another shape that would read the same, being near the same named ratio or rounding
+/// alike, is written in places enough to tell them apart.
+fn aspect_texts(old_size: (u32, u32), new_size: (u32, u32), shape: Shape) -> [String; 2] {
+    let old = Aspect::of(old_size);
+    if !shape.is_different() {
+        let text = aspect_text(old, RATIO_PLACES);
+        return [text.clone(), text];
+    }
+    let new = Aspect::of(new_size);
+    let texts = |old, new, places| [aspect_text(old, places), aspect_text(new, places)];
+    let named = texts(old, new, RATIO_PLACES);
+    if named[0] != named[1] {
+        return named;
+    }
+    let unnamed = |(w, h): (u32, u32), aspect: Aspect| Aspect {
+        ratio: Ratio::Other(f64::from(w.max(h)) / f64::from(w.min(h).max(1))),
+        ..aspect
+    };
+    let (old, new) = (unnamed(old_size, old), unnamed(new_size, new));
+    (RATIO_PLACES..=MOST_RATIO_PLACES)
+        .map(|places| texts(old, new, places))
+        .find(|[old, new]| old != new)
+        .unwrap_or_else(|| texts(old, new, MOST_RATIO_PLACES))
 }
 
 /// Why the file `new` can't be relinked. A different shape is shown in the table beside it.
@@ -558,7 +594,7 @@ mod tests {
             compared(&old, &new),
             [
                 ("4032×3024".into(), "1008×756".into(), false),
-                (aspect_text((4032, 3024)), aspect_text((1008, 756)), true),
+                (four_three(), four_three(), true),
                 (when.into(), when.into(), true),
                 (none, "ABC".into(), false),
             ]
@@ -595,6 +631,24 @@ mod tests {
         assert_eq!(id.full, [Some(uuid.to_owned()), None]);
     }
 
+    fn aspect(ratio: &str, turned: String) -> String {
+        t!("relink-aspect", ratio = ratio, turned = turned)
+    }
+
+    fn four_three() -> String {
+        aspect("4:3", t!("relink-landscape"))
+    }
+
+    /// The aspect row's `(old, new, matches)` for photos of sizes `old` and `new`.
+    fn aspects(old: (u32, u32), new: (u32, u32)) -> (String, String, bool) {
+        let rows = rows(
+            &meta(old, PhotoIds::default()),
+            &meta(new, PhotoIds::default()),
+        );
+        let row = &rows[1];
+        (row.old.clone(), row.new.clone(), row.matches)
+    }
+
     #[test]
     fn another_shape_is_a_mismatch() {
         let rows = rows(
@@ -603,21 +657,51 @@ mod tests {
         );
         assert_eq!(rows.len(), 2, "no EXIF on either, so no EXIF rows");
         assert!(!rows[1].matches);
+        assert_eq!(rows[1].old, four_three());
+        assert_eq!(rows[1].new, aspect("4:3", t!("relink-portrait")));
+    }
+
+    #[test]
+    fn shapes_are_named_or_written_to_two_places() {
+        let landscape = || t!("relink-landscape");
         assert_eq!(
-            rows[1].old,
-            t!(
-                "relink-aspect",
-                ratio = "1.333",
-                turned = t!("relink-landscape")
-            )
+            aspects((6000, 4000), (6000, 4000)).0,
+            aspect("3:2", landscape())
         );
         assert_eq!(
-            rows[1].new,
-            t!(
-                "relink-aspect",
-                ratio = "0.750",
-                turned = t!("relink-portrait")
-            )
+            aspects((2000, 2000), (2000, 2000)).0,
+            aspect("1:1", t!("relink-square"))
         );
+        assert_eq!(
+            aspects((4032, 3000), (4032, 3000)).0,
+            aspect("1.34:1", landscape())
+        );
+    }
+
+    #[test]
+    fn a_resized_photo_reads_as_the_pages_shape() {
+        assert_eq!(
+            aspects((4032, 3024), (1001, 751)),
+            (four_three(), four_three(), true)
+        );
+        // Neither is named, and rounded alone they'd read 1.43:1 and 1.42:1.
+        let (old, new, matches) = aspects((4000, 2807), (1000, 702));
+        assert!(matches);
+        assert_eq!(old, new);
+        assert_eq!(old, aspect("1.43:1", t!("relink-landscape")));
+    }
+
+    #[test]
+    fn other_shapes_never_read_the_same() {
+        // Both within a pixel of 4:3, but two pixels apart: relink refuses it.
+        let (old, new, matches) = aspects((4001, 3000), (3999, 3000));
+        assert!(!matches);
+        let landscape = || t!("relink-landscape");
+        assert_eq!(old, aspect("1.334:1", landscape()));
+        assert_eq!(new, aspect("1.333:1", landscape()));
+        // Neither named, and the same to two places.
+        let (old, new, matches) = aspects((4000, 2990), (4000, 2995));
+        assert!(!matches);
+        assert_ne!(old, new);
     }
 }

@@ -60,11 +60,20 @@ impl PhotoIds {
     }
 }
 
+/// The fewest pixels a photo can have on a side to be a page: fewer can't be read, and a pixel's
+/// rounding would be too much of a side to tell one shape from another
+/// ([`crate::relink::Shape`]). See `decisions/2026-11-18-aspect-names-and-min-size.md`.
+pub const MIN_SIDE: u32 = 200;
+
 /// What `bytes`, a JPEG, PNG or HEIC, say about the photo, from their headers. An error if they
-/// aren't an image that can be decoded; no EXIF is fine.
+/// aren't an image that can be decoded, or are smaller than [`MIN_SIDE`]; no EXIF is fine.
 pub fn read(bytes: &[u8]) -> Result<PhotoMeta, DecodeError> {
+    let size = decode::size(bytes)?;
+    if size.0.min(size.1) < MIN_SIDE {
+        return Err(DecodeError::TooSmall { size });
+    }
     Ok(PhotoMeta {
-        size: decode::size(bytes)?,
+        size,
         exif: read_ids(bytes),
     })
 }
@@ -303,8 +312,8 @@ mod tests {
 
     #[test]
     fn reads_every_id_from_a_jpeg() {
-        let meta = read(&jpeg_of(16, 8, &all_ids())).unwrap();
-        assert_eq!(meta.size, (16, 8));
+        let meta = read(&jpeg_of(400, 200, &all_ids())).unwrap();
+        assert_eq!(meta.size, (400, 200));
         assert_eq!(meta.exif, all_ids());
     }
 
@@ -320,14 +329,25 @@ mod tests {
             date_time_original: Some("2019:01:02 03:04:05".into()),
             ..PhotoIds::default()
         };
-        assert_eq!(read(&jpeg_of(4, 4, &ids)).unwrap().exif, ids);
+        assert_eq!(read(&jpeg_of(200, 200, &ids)).unwrap().exif, ids);
     }
 
     #[test]
     fn photos_without_exif_have_no_ids() {
-        let meta = read(&png(3, 2)).unwrap();
-        assert_eq!(meta.size, (3, 2));
+        let meta = read(&png(300, 200)).unwrap();
+        assert_eq!(meta.size, (300, 200));
         assert!(meta.exif.is_empty());
+    }
+
+    #[test]
+    fn photos_smaller_than_the_minimum_are_errors() {
+        for (w, h) in [(199, 300), (300, 199), (1, 1)] {
+            assert!(
+                matches!(read(&png(w, h)), Err(DecodeError::TooSmall { size }) if size == (w, h)),
+                "{w}×{h}"
+            );
+        }
+        assert!(read(&png(MIN_SIDE, MIN_SIDE)).is_ok());
     }
 
     #[test]

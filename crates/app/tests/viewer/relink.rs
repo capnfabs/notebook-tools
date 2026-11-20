@@ -16,8 +16,9 @@ use tempfile::TempDir;
 
 use crate::common::*;
 
-/// The size the photos are taken at.
-const SIZE: (u32, u32) = (200, 150);
+/// The size the photos are taken at: as small as can be added (`notebook_core::photo_meta::MIN_SIDE`),
+/// to load quickly.
+const SIZE: (u32, u32) = (268, 201);
 
 /// When b.jpg was taken, to the second only: some cameras say no more.
 fn b_taken() -> PhotoIds {
@@ -266,7 +267,7 @@ fn a_reencoded_photo_asks_first() {
         assert!(shown(&opened.harness, &cell), "{cell}");
     }
     assert_eq!(count(&opened.harness, "2026-05-01 12:34:56"), 2);
-    assert_eq!(count(&opened.harness, "200×150"), 2);
+    assert_eq!(count(&opened.harness, "268×201"), 2);
 
     click(&mut opened.harness, &t!("dialog-cancel"));
     assert!(!found(&opened.harness) && !edited(&opened.harness));
@@ -282,12 +283,12 @@ fn a_reencoded_photo_asks_first() {
 fn a_resized_photo_scales_corners_and_transcript() {
     let mut opened = opened_without_b("resized");
     let before = opened.saved_b();
-    let half = opened.write("small.jpg", &photo(120, (100, 75), &b_taken()));
-    opened.relink(&half);
-    assert!(shown(&opened.harness, "200×150") && shown(&opened.harness, "100×75"));
+    let double = opened.write("big.jpg", &photo(120, (536, 402), &b_taken()));
+    opened.relink(&double);
+    assert!(shown(&opened.harness, "268×201") && shown(&opened.harness, "536×402"));
     let aspect = t!(
         "relink-aspect",
-        ratio = "1.333",
+        ratio = "4:3",
         turned = t!("relink-landscape")
     );
     assert_eq!(count(&opened.harness, &aspect), 2);
@@ -295,7 +296,7 @@ fn a_resized_photo_scales_corners_and_transcript() {
     assert!(found(&opened.harness));
 
     let after = opened.saved_b();
-    assert_eq!(after["photo"]["size"], serde_json::json!([100, 75]));
+    assert_eq!(after["photo"]["size"], serde_json::json!([536, 402]));
     let corners = |page: &Value| -> Vec<f64> {
         let corners = page["transcript"]["crop"]["corners"].as_array().unwrap();
         corners
@@ -303,9 +304,9 @@ fn a_resized_photo_scales_corners_and_transcript() {
             .flat_map(|p| p.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()))
             .collect()
     };
-    let halved: Vec<f64> = corners(&before).iter().map(|c| c / 2.0).collect();
-    for (after, halved) in corners(&after).iter().zip(&halved) {
-        assert_near(*after, *halved, 0.01);
+    let doubled: Vec<f64> = corners(&before).iter().map(|c| c * 2.0).collect();
+    for (after, doubled) in corners(&after).iter().zip(&doubled) {
+        assert_near(*after, *doubled, 0.01);
     }
 }
 
@@ -326,7 +327,7 @@ fn another_photo_warns_but_can_be_relinked() {
 fn another_shape_is_refused() {
     let mut opened = opened_without_b("other_shape");
     // The same photo, cropped.
-    let cropped = opened.write("cropped.jpg", &photo(120, (150, 150), &b_taken()));
+    let cropped = opened.write("cropped.jpg", &photo(120, (201, 201), &b_taken()));
     opened.relink(&cropped);
     let refused = t!("relink-different-shape");
     assert!(shown(&opened.harness, &refused));
@@ -340,6 +341,21 @@ fn another_shape_is_refused() {
     );
     click(&mut opened.harness, &t!("dialog-ok"));
     assert!(!shown(&opened.harness, &refused));
+    assert!(!found(&opened.harness) && !edited(&opened.harness));
+}
+
+#[test]
+fn a_photo_too_small_to_read_is_refused() {
+    let mut opened = opened_without_b("too_small");
+    // The same photo, shrunk past what can be read.
+    let tiny = opened.write("tiny.jpg", &photo(120, (4, 3), &b_taken()));
+    opened.relink(&tiny);
+    let error = t!(
+        "open-failed",
+        name = "tiny.jpg",
+        error = t!("decode-too-small", size = "4×3", min = 200)
+    );
+    assert!(shown(&opened.harness, &error));
     assert!(!found(&opened.harness) && !edited(&opened.harness));
 }
 
@@ -440,7 +456,7 @@ fn another_shape_dropped_is_another_page() {
     drop_files_in(
         &mut opened.harness,
         &dir,
-        &[("sq.jpg", photo(120, (150, 150), &b_taken()))],
+        &[("sq.jpg", photo(120, (201, 201), &b_taken()))],
     );
     let hint = t!(
         "relink-dropped-other-shape",
@@ -498,7 +514,7 @@ fn a_photo_like_several_pages_asks_which() {
     let c = t!(
         "relink-photo-line",
         name = "c.jpg",
-        size = "200×150",
+        size = "268×201",
         taken = taken
     );
     opened
@@ -527,7 +543,7 @@ fn the_status_line_says_whats_still_missing() {
     assert!(shown(&opened.harness, &c));
 
     // Relinked after asking.
-    let c_resized = photo(130, (100, 75), &b_taken());
+    let c_resized = photo(130, (536, 402), &b_taken());
     drop_files_in(&mut opened.harness, &dir, &[("IMG_0003.jpg", c_resized)]);
     assert!(shown(&opened.harness, &c), "until the user answers");
     click(&mut opened.harness, &t!("relink-button"));

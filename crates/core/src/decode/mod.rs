@@ -45,6 +45,10 @@ pub enum DecodeError {
     Image(image::ImageError),
     /// The HEIC decoder failed, saying why.
     Heic(String),
+    /// Smaller than [`crate::photo_meta::MIN_SIDE`] on a side: this size.
+    TooSmall {
+        size: (u32, u32),
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -53,6 +57,11 @@ impl fmt::Display for DecodeError {
             Self::Unrecognized => write!(f, "not a JPEG, PNG or HEIC image"),
             Self::Image(err) => err.fmt(f),
             Self::Heic(err) => write!(f, "couldn't decode HEIC: {err}"),
+            Self::TooSmall { size: (w, h) } => write!(
+                f,
+                "too small ({w}×{h}): photos need to be at least {} pixels on each side",
+                crate::photo_meta::MIN_SIDE
+            ),
         }
     }
 }

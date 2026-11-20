@@ -41,7 +41,8 @@ impl egui::DroppedFile for TestFile {
     }
 }
 
-/// A small, nearly blank photo.
+/// A nearly blank photo, as small as a photo can be to be added
+/// (`notebook_core::photo_meta::MIN_SIDE` on its short side) at 4:3.
 ///
 /// Each call gives another photo, all the same size: pages with the same photo are one page (see
 /// `decisions/2026-11-15-page-ids.md`), so dropping `png()` twice adds two pages. Keep one to drop
@@ -49,7 +50,7 @@ impl egui::DroppedFile for TestFile {
 pub fn png() -> Vec<u8> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let mut img = image::RgbaImage::new(40, 30);
+    let mut img = image::RgbaImage::new(268, 201);
     img.put_pixel(0, 0, image::Rgba(n.to_le_bytes()));
     encode_png(&img)
 }
@@ -71,8 +72,14 @@ pub fn another_page_photo() -> Vec<u8> {
     page_photo_on([121, 80, 50, 255])
 }
 
+/// How many pixels of [`page_photo`] there are to a point of the 200x150 its page is laid out in
+/// (and [`on_photo`] takes), so it's big enough to be added.
+pub const PAGE_PHOTO_SCALE: u32 = 2;
+
 fn page_photo_on(table: [u8; 4]) -> Vec<u8> {
-    let img = image::RgbaImage::from_fn(200, 150, |x, y| {
+    let s = PAGE_PHOTO_SCALE;
+    let img = image::RgbaImage::from_fn(200 * s, 150 * s, |x, y| {
+        let (x, y) = (x / s, y / s);
         if (40..160).contains(&x) && (20..130).contains(&y) {
             image::Rgba([235, 225, 200, 255])
         } else {
@@ -603,7 +610,7 @@ pub fn cleaned_view(harness: &mut Harness<'_, NotebookApp>) {
     settle(harness);
 }
 
-/// Where pixel `(x, y)` of `page_photo`, 200 x 150, is on screen in a.png's photo.
+/// Where point `(x, y)` of `page_photo`, laid out in 200 x 150, is on screen in a.png's photo.
 pub fn on_photo(harness: &Harness<'_, NotebookApp>, x: f32, y: f32) -> egui::Pos2 {
     let label = t!("current-page", name = "a.png");
     let bounds = harness.get_by_label(&label);

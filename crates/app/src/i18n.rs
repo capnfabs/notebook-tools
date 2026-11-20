@@ -89,6 +89,11 @@ pub fn decode_error(err: &DecodeError) -> String {
         DecodeError::Unrecognized => t!("decode-unrecognized"),
         DecodeError::Image(error) => error.to_string(),
         DecodeError::Heic(error) => t!("decode-heic", error = error.as_str()),
+        DecodeError::TooSmall { size: (w, h) } => t!(
+            "decode-too-small",
+            size = format!("{w}×{h}"),
+            min = notebook_core::photo_meta::MIN_SIDE
+        ),
     }
 }
 

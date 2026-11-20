@@ -264,8 +264,9 @@ fn transcription_uses_the_users_corners() {
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0], None);
     let [_, _, [x, y], _] = sent[1].expect("the user's corners");
+    let s = PAGE_PHOTO_SCALE as f32;
     assert!(
-        (x - 160.0).abs() < 2.0 && (y - 75.0).abs() < 2.0,
+        (x - 160.0 * s).abs() < 2.0 * s && (y - 75.0 * s).abs() < 2.0 * s,
         "{:?}",
         sent[1]
     );

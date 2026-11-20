@@ -67,6 +67,27 @@ fn reports_files_that_are_not_images() {
 }
 
 #[test]
+fn photos_too_small_to_read_are_refused() {
+    let mut harness = harness();
+    let small = image::RgbaImage::new(150, 100);
+    let mut bytes = Vec::new();
+    small
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    drop_files(&mut harness, &[("small.png", bytes), ("a.png", png())]);
+
+    assert_eq!(thumbnails(&harness), ["a.png"]);
+    harness.get_by_label(&t!(
+        "open-failed",
+        name = "small.png",
+        error = t!("decode-too-small", size = "150×100", min = 200)
+    ));
+}
+
+#[test]
 fn files_that_are_not_images_drop_out_of_the_strip() {
     let mut harness = harness();
     drop_files(&mut harness, &[("a.png", png()), ("c.png", png())]);

@@ -4,7 +4,6 @@
 See [done/index.md](done/index.md).
 
 ## M0
-- [ ] [Aspect ratios people can read](aspect-ratio-display.md)
 - [ ] [Scroll pos on transcripts when tabbing through pages](per-transcript-scroll-pos.md)
 
 

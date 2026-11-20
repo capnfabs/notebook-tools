@@ -50,3 +50,4 @@ In the order they were finished.
 - [x] [Pages keyed by something other than their name](page-ids.md)
 - [x] [Export with missing pages](missing-page-export.md)
 - [x] [Relink moved photos](relink-photos.md)
+- [x] [Aspect ratios people can read](aspect-ratio-display.md)

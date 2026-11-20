@@ -399,3 +399,4 @@ ocr-parse = unexpected response from Claude: { $error }
 
 decode-unrecognized = not a JPEG, PNG or HEIC image
 decode-heic = couldn't decode HEIC: { $error }
+decode-too-small = too small ({ $size }): photos need to be at least { $min } pixels on each side

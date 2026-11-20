@@ -249,7 +249,11 @@ mod tests {
     }
 
     fn photo_page(name: &str, bytes: Vec<u8>) -> Page {
-        let meta = crate::photo_meta::read(&bytes).unwrap();
+        // Any size: these are about pages, not what makes a photo one.
+        let meta = crate::photo_meta::PhotoMeta {
+            size: crate::decode::size(&bytes).unwrap(),
+            exif: Default::default(),
+        };
         Page::new(name.to_owned(), bytes.into(), meta)
     }
 
