@@ -51,3 +51,4 @@ In the order they were finished.
 - [x] [Export with missing pages](missing-page-export.md)
 - [x] [Relink moved photos](relink-photos.md)
 - [x] [Aspect ratios people can read](aspect-ratio-display.md)
+- [x] [Scroll pos on transcripts when tabbing through pages](per-transcript-scroll-pos.md)

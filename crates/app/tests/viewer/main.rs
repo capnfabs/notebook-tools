@@ -15,6 +15,7 @@ mod pages;
 mod project;
 mod relink;
 mod same_names;
+mod scroll;
 mod settings;
 mod status;
 mod transcription;

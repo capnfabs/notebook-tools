@@ -890,3 +890,16 @@ pub fn tab_to(harness: &mut Harness<'_, NotebookApp>, label: &str) {
     }
     panic!("Tab never reached {label}, only {reached:?}");
 }
+
+/// Scrolls the transcript down `by` points with the mouse wheel, pointing at its heading.
+pub fn scroll_transcript(harness: &mut Harness<'_, NotebookApp>, by: f32) {
+    harness.hover_at(centre(harness, "# Thurs 23 Oct"));
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -by),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
+        modifiers: egui::Modifiers::NONE,
+    });
+    settle(harness);
+}

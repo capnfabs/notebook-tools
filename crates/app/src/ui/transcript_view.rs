@@ -54,7 +54,9 @@ pub fn natural_width(ui: &egui::Ui, transcript: &Transcript) -> f32 {
     widest * EDIT_ROOM + ui.spacing().scroll.allocated_width()
 }
 
-/// What the user is doing in the view. Starts afresh when another page is shown.
+/// What the user is doing in the view. Starts afresh when another page is shown, except for where
+/// its transcript is scrolled to, which egui keeps for each page while the app runs (see
+/// `decisions/2026-11-18-transcript-scroll-per-page.md`).
 #[derive(Default)]
 pub struct TranscriptView {
     /// The page this state belongs to.
@@ -231,6 +233,7 @@ impl TranscriptView {
             }
         }
         self.page = Some(page.clone());
+        let id = page.id;
         if ui.input(|i| i.pointer.any_pressed()) {
             self.hint = None;
         }
@@ -254,6 +257,7 @@ impl TranscriptView {
         }
         ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
             egui::ScrollArea::vertical()
+                .id_salt(("transcript", id))
                 .auto_shrink(false)
                 .show(ui, |ui| {
                     self.lines(ui, transcript, &spans, &marks, &mut seen);
