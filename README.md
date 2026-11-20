@@ -4,7 +4,7 @@ For more details, see [capnfabs.net/notebook-tools](https://capnfabs.net/noteboo
 
 ## Setup
 
-See the 'Releases' tab for a DMG that you can install from.
+See the 'Releases' tab for a DMG that you can install from. Note that it's not notarized, so you'll need to allow it in `System Settings` → `Privacy and Security` → `Security` → `Open Anyway`.
 
 You'll need a [Claude API token](https://platform.claude.com/settings/keys) on a dev account with some credit. The app will attempt to walk you through it when you first try to transcribe an image. If you've got a signed in `ant` application we'll use credentials from that automatically.
 
