@@ -71,5 +71,5 @@ The app and DMG land in `target/bundle/`.
 You can run `scripts/bundle-macos.sh --identity NAME` to sign with your own cert, so you don't need to re-grant keychain access after each install.
 
 To make one: Keychain Access → Certificate Assistant → Create a Certificate…, name it (e.g.
-`Notebook Tools Local`), Identity Type *Self-Signed Root*, Certificate Type *Code Signing*. It
+`Notebook Tools`), Identity Type *Self-Signed Root*, Certificate Type *Code Signing*. It
 doesn't need to be marked as trusted. Check it's there with `security find-identity -p codesigning`.
