@@ -2,8 +2,9 @@
 # Clippy and the tests on Linux (arm64), in an apple/container VM, so the code macOS never compiles
 # (the libheif decoder) gets built and run. `scripts/check.sh` runs this last. The image is rebuilt
 # only when `scripts/linux/Containerfile` or `rust-toolchain.toml` changes; builds are cached in
-# container volumes (`container volume rm notebook-tools-linux-target notebook-tools-linux-cargo`
-# clears them). See `decisions/2026-11-15-local-linux-ci.md`.
+# container volumes, a fresh target volume whenever those or `Cargo.lock` change
+# (`container volume rm` clears them). See `decisions/2026-11-15-local-linux-ci.md` and
+# `decisions/2026-11-18-linux-target-volume-per-lockfile.md`.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,17 +25,29 @@ if ! container image inspect "$image" >/dev/null 2>&1; then
     container build --build-arg "RUST_VERSION=$rust_version" -t "$image" scripts/linux || exit 1
 fi
 
-for volume in notebook-tools-linux-target notebook-tools-linux-cargo; do
+# Cargo keeps every stale build beside the new one, and files deleted in a volume don't shrink it on
+# the Mac, so each lockfile and toolchain gets its own target volume and the others are removed.
+target_hash=$(cat scripts/linux/Containerfile rust-toolchain.toml Cargo.lock | shasum -a 256 | cut -c1-12)
+target_volume="notebook-tools-linux-target-$target_hash"
+container volume ls -q | grep '^notebook-tools-linux-target' | grep -vxF "$target_volume" \
+    | while read -r stale; do
+        echo "check-linux: removing stale build cache $stale"
+        container volume rm "$stale" >/dev/null || echo "check-linux: couldn't remove $stale" >&2
+    done
+
+for volume in "$target_volume" notebook-tools-linux-cargo; do
     container volume inspect "$volume" >/dev/null 2>&1 \
         || container volume create "$volume" >/dev/null || exit 1
 done
 
-# The source is read-only; builds go to the volumes. Runs every step, like check.sh.
+# The source is read-only; builds go to the volumes. Runs every step, like check.sh. Debug info is
+# only line tables: Linux links it into every test binary, which made them 800 MB each.
 container run --rm --cpus "$(sysctl -n hw.ncpu)" --memory 8G \
     --mount "type=bind,source=$PWD,target=/src,readonly" \
-    -v notebook-tools-linux-target:/target \
+    -v "$target_volume":/target \
     -v notebook-tools-linux-cargo:/cargo \
     -e CARGO_TARGET_DIR=/target -e CARGO_HOME=/cargo -e PATH=/usr/local/cargo/bin:/usr/bin:/bin \
+    -e CARGO_PROFILE_DEV_DEBUG=line-tables-only \
     -w /src "$image" bash -c '
         failed=()
         cargo clippy --locked --workspace --all-targets -- -D warnings || failed+=("clippy")

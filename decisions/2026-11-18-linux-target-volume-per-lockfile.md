@@ -1,0 +1,5 @@
+# A Linux target volume per lockfile
+
+`scripts/check-linux.sh` names its cargo target volume after a hash of `scripts/linux/Containerfile`, `rust-toolchain.toml` and `Cargo.lock`, and removes any other `notebook-tools-linux-target*` volume, so a dependency or toolchain change starts from a clean build. Cargo never deletes the binaries a changed lockfile leaves behind (four generations of 700 MB test binaries had built up), and files deleted inside the VM don't shrink the volume's sparse image on the Mac, so pruning inside the container wouldn't have given the space back. The cargo registry volume stays shared. The cost is a full rebuild (about 7 minutes) after each such change. The VM also builds with only line-table debug info (`CARGO_PROFILE_DEV_DEBUG=line-tables-only`): Linux links debug info into every test binary, making each 700–800 MB, and the first cold build failed to link. Backtraces keep file:line, and nobody runs a debugger there; Mac builds keep full debug info.
+
+Reason: Human Taste (recreating the volume over pruning inside it, line tables only in the VM); unquestioned agent recommendation (the hash inputs, naming it like the image).

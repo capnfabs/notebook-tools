@@ -32,6 +32,7 @@ step "cargo fmt" cargo fmt --all --check
 step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
 step "cargo test" cargo test --workspace
 step "check-images tests" scripts/test-check-images.sh
+step "check-linux tests" scripts/test-check-linux.sh
 # The libheif decoder only compiles off macOS: `decisions/2026-11-15-local-linux-ci.md`.
 if $linux; then
     step "linux" scripts/check-linux.sh
